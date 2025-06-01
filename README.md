@@ -1,6 +1,6 @@
 # karaoke-scripts
 
-
+To build complete statically linked executable go to `src/main/song-sanitizer` and run `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -tags netgo -ldflags '-w -extldflags "-static"' -o mybin *.go`
 
 ## Getting started
 
