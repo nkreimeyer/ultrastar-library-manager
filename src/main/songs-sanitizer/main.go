@@ -15,13 +15,19 @@ import (
 
 func main() {
 	// Define command-line flags
-	songDir := flag.String("s", "songs", "Path to the folder containing song subfolders")
-	runFixVideos := flag.Bool("m", false, "Run the video-fixing and re-encoding module")
+	songDir := flag.String("s", "", "Path to the folder containing song sub-folders")
 	runFixTxt := flag.Bool("t", true, "Run the text-file sanitization module")
 	runCleanup := flag.Bool("c", true, "Run the cleanup module")
+	runFixVideos := flag.Bool("m", false, "Run the video-fixing and re-encoding module")
 	logLevel := flag.String("v", "info", "Log level (debug, info, warn, error, fatal, panic)")
 
 	flag.Parse()
+
+	// if songDir is not provided, print usage information and exit
+	if *songDir == "" {
+		flag.Usage() // Print usage information to std
+		return
+	}
 
 	// Set log level
 	level, err := log.ParseLevel(*logLevel)
