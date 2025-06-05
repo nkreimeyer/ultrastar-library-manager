@@ -1,2 +1,6 @@
 mybin
 test/songs/
+test/extra-files
+test/notxt
+test/invalid/
+potentiallyCorruptedFiles.txt

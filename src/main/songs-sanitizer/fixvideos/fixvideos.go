@@ -8,8 +8,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/utils"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -18,21 +21,24 @@ const (
 	targetHeight     = 1080
 )
 
-func Run(SongDir string) error {
-	targetDir := SongDir
+var songDir string
+var configOnce sync.Once
+
+func Run(targetDir, logLevel string) error {
+	configOnce.Do(func() {
+		songDir = targetDir
+	})
+
+	// Set log level
+	level, _ := log.ParseLevel(logLevel)
+	log.SetLevel(level)
 
 	err := filepath.Walk(targetDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		// if info.IsDir() {
-		// 	fmt.Printf("Visiting directory: %s\n", path)
-		// } else {
-		// 	fmt.Printf("Visiting file: %s\n", path)
-		// }
 		if !info.IsDir() && isVideoFile(info.Name()) {
-			// fmt.Printf("Processing file: %s\n", path)
 			processVideoFile(path)
 		}
 		return nil
@@ -42,7 +48,7 @@ func Run(SongDir string) error {
 		return err
 	}
 
-	fmt.Println("All files have been processed.")
+	log.Infof("All video files have been processed.")
 	return nil
 }
 
@@ -50,18 +56,16 @@ func processVideoFile(file string) {
 	baseName := strings.TrimSuffix(file, filepath.Ext(file))
 	outputFile := baseName + "_output"
 
-	//fmt.Printf("Processing file: %s\n", file)
-
 	// Check if the file has an audio stream
-	hasAudio := hasAudioStream(file)
+	needsRemoveAudio := needsRemoveAudio(file)
 
 	needsResize := getNeedsResize(file)
 	needsReEncode := getNeedsReEncode(file) || needsResize
 
-	//fmt.Printf("File: %s, HasAudio: %v, NeedsResize: %v, NeedsReEncode: %v\n", file, hasAudio, needsResize, needsReEncode)
+	log.Debugf("File: %s, needsRemoveAudio: %v, NeedsResize: %v, NeedsReEncode: %v\n", file, needsRemoveAudio, needsResize, needsReEncode)
 
-	if !hasAudio && !needsReEncode {
-		//fmt.Printf("No processing needed for: %s\n", file)
+	if !needsRemoveAudio && !needsReEncode {
+		log.Debugf("No processing needed for: %s\n", file)
 		return
 	}
 
@@ -72,8 +76,10 @@ func processVideoFile(file string) {
 		"error",
 		"-i", filepath.Clean(file)}
 
-	if hasAudio {
+	if needsRemoveAudio {
 		args = append(args, "-an")
+	} else {
+		args = append(args, "-c:a", "copy")
 	}
 
 	crf := 23
@@ -86,13 +92,15 @@ func processVideoFile(file string) {
 	}
 
 	// Re-encoding with variable bitrate if the bitrate is too high or if we need to scale down the video
+	// only encode the first video stream, copy all other streams
 	if needsReEncode {
 		args = append(args,
+			"-map", "0:v:0", // Select only the first video stream
 			"-c:v", "libx264",
 			"-crf", fmt.Sprint(crf), // Constant Rate Factor (18-28, lower = higher quality)
 			"-maxrate", "2.75M", // Maximum bitrate cap
 			"-bufsize", "5.5M", // Buffer size (typically 2x maxrate)
-			"-preset", "medium", // Encoding speed vs compression efficiency
+			"-preset", "fast", // Encoding speed vs compression efficiency
 		)
 		outputFile += ".mp4"
 	} else {
@@ -109,19 +117,26 @@ func processVideoFile(file string) {
 
 	args = append(args, "-y", filepath.Clean(outputFile))
 
-	//fmt.Printf("Re-encoding file: %s\n", file)
-	fmt.Printf("Running ffmpeg with args: %v\n", args)
+	log.Infof("Re-encoding file: %s\n", file)
+	log.Debugf("Running ffmpeg with args: %v\n", args)
 	// Run ffmpeg command
 	cmd := exec.Command("ffmpeg", args...)
 	if err := cmd.Run(); err != nil {
-		fmt.Printf("Error processing %s: %v\n", file, err)
+		os.Remove(outputFile)
+		// if ffmpeg returns 183, it means it encountered an error while reading the file, so it could be corrupted
+		// in this case, we flag the file in ../potentially-corrupted-files.txt
+		if exitError, ok := err.(*exec.ExitError); ok && exitError.ExitCode() == 183 {
+			// Write the file path to the list of potentially corrupted files
+			flagPotentiallyCorruptedFile(file)
+		} else {
+			// Print the error if it's not a 183 error
+			fmt.Printf("Error processing %s: %v\n", file, err)
+		}
 		return
 	}
 
 	// Replace original file with processed file
 	replaceOriginalFile(file, outputFile)
-
-	fmt.Printf("Processed file: %s\n", file)
 }
 
 func replaceOriginalFile(file, outputFile string) {
@@ -141,25 +156,29 @@ func replaceOriginalFile(file, outputFile string) {
 		os.Remove(file)
 	}
 	if err := os.Rename(outputFile, newFileName); err != nil {
-		fmt.Printf("Error renaming %s to %s: %v\n", outputFile, file, err)
+		log.Warnf("Error renaming %s to %s: %v\n", outputFile, file, err)
 	}
 }
 
-func hasAudioStream(file string) bool {
+func needsRemoveAudio(file string) bool {
 	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "default=nokey=1:noprint_wrappers=1", "--", filepath.Clean(file))
 	output, err := cmd.Output()
-	// fmt.Printf("Checking audio stream for %s\n", file)
-	// fmt.Print(string(output))
+	log.Debugf("Checking audio stream for %s\n", file)
+	log.Debugf(string(output))
 	if err != nil {
-		fmt.Printf("Error checking audio stream for %s: %v\n", file, err)
+		log.Debugf("Error checking audio stream for %s: %v\n", file, err)
 		return false
 	}
-	return strings.Contains(string(output), "audio")
+	audioInVideo := strings.Contains(string(output), "audio")
+
+	// do not remove if no audio file exists in directory
+	audioFileExists := utils.AudioFileExists(filepath.Dir(file))
+
+	return audioFileExists && audioInVideo
 }
 
 func isVideoFile(filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
-	// fmt.Print(ext)
 	return ext == ".mp4" || ext == ".mpeg" || ext == ".mpg" || ext == ".m4v" || ext == ".m2v" || ext == ".avi" ||
 		ext == ".mov" || ext == ".mkv" || ext == ".flv" || ext == ".wmv" || ext == ".webm"
 }
@@ -168,31 +187,81 @@ func getNeedsReEncode(file string) bool {
 	// Check video bitrate
 	bitrate, err := getVideoBitrate(file)
 	if err != nil {
-		fmt.Printf("Error getting bitrate for %s: %v\n", file, err)
+		log.Debugf("Error getting bitrate for %s: %v\n", file, err)
 		bitrate = 9999999999
 	}
 
 	// check if the file is vp9 or av1 encoded
 	codec, err := getVideoCodec(file)
 	if err != nil {
-		fmt.Printf("Error getting codec for %s: %v\n", file, err)
+		log.Debugf("Error getting codec for %s: %v\n", file, err)
 		return true
 	}
 
 	// vp9, av1 and hevc are too new, everything older than x264 is too  and thus too inefficient
 	codecsNeedReencode := []string{"vp9", "av1", "hevc", "mpeg4", "mpeg2video", "msmpeg4v2", "msmpeg4v3", "flv1", "h263", "h263p"}
 
+	// estimate the size of the reencoded video based on its resolution, framerate and duration
+	// and determine if it's worth reencoding based on size of input file
+	sizeOutput, err := estimatedSizeOfReEncodedVideo(file)
+	if err != nil {
+		log.Debugf("Error getting size for %s: %v\n", file, err)
+	}
+	infoInput, err := os.Stat(file)
+	if err != nil {
+		log.Debugf("Error getting size for %s: %v\n", file, err)
+	}
+	sizeInput := infoInput.Size()
+
 	// Determine if we need to re-encode or resize
-	needsReEncode := bitrate > bitrateThreshold || slices.Contains(codecsNeedReencode, codec)
+	needsReEncode := (bitrate > bitrateThreshold || slices.Contains(codecsNeedReencode, codec)) && sizeOutput < sizeInput
 
 	return needsReEncode
+}
+
+func estimatedSizeOfReEncodedVideo(file string) (int64, error) {
+	// Get video duration
+	duration, err := getVideoDuration(file)
+	if err != nil {
+		return 0, err
+	}
+	// Get video resolution
+	width, height, err := getVideoResolution(file)
+	if err != nil {
+		return 0, err
+	}
+	// Scale down the resolution if it's too large
+	// Preserve aspect ratio
+	if width > 1920 || height > 1080 {
+		aspectRatio := float64(width) / float64(height)
+		if width > 1920 {
+			width = 1920
+			height = int(float64(width) / aspectRatio)
+		}
+		if height > 1080 {
+			height = 1080
+			width = int(float64(height) * aspectRatio)
+		}
+	}
+
+	// Get video framerate
+	framerate, err := getVideoFramerate(file)
+	if err != nil {
+		return 0, err
+	}
+	// Estimate the bitrate of the reencoded video with 1.2mbps as a base for 1080p 30fps
+	// and scale it down for lower resolutions and framerates
+	bitrate := 1200000 * (float64(width) / 1920) * (float64(height) / 1080) * (framerate / 30)
+	// Calculate the estimated size in bytes
+	size := int64(bitrate * duration / 8)
+	return size, nil
 }
 
 func getNeedsResize(file string) bool {
 	// Check video resolution
 	width, _, err := getVideoResolution(file)
 	if err != nil {
-		fmt.Printf("Error getting resolution for %s: %v\n", file, err)
+		log.Debugf("Error getting resolution for %s: %v\n", file, err)
 		return false
 	}
 	return width > fullHDWidth
@@ -201,11 +270,10 @@ func getNeedsResize(file string) bool {
 func getVideoCodec(file string) (string, error) {
 	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", "--", filepath.Clean(file))
 	output, err := cmd.Output()
-	// fmt.Printf("Checking video codec for %s\n", file)
-	// fmt.Print(string(output))
 	if err != nil {
 		return "", err
 	}
+	log.Debugf("Video codec for %s: %s\n", file, output)
 	codec := strings.TrimSpace(string(output))
 	return codec, nil
 }
@@ -265,4 +333,69 @@ func getVideoResolution(file string) (int, int, error) {
 		return 0, 0, err
 	}
 	return width, height, nil
+}
+
+func getVideoFramerate(file string) (float64, error) {
+	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate", "-of",
+		"csv=p=0", "--", filepath.Clean(file))
+	output, err := cmd.Output()
+	if err != nil {
+		return 30.0, err
+	}
+	framerate := strings.Split(strings.TrimSpace(string(output)), "/")
+	if len(framerate) != 2 {
+		return 30.0, fmt.Errorf("unexpected framerate format: %s", output)
+	}
+	numerator, err := strconv.Atoi(framerate[0])
+	if err != nil {
+		return 30.0, err
+	}
+	denominator, err := strconv.Atoi(framerate[1])
+	if err != nil {
+		return 30.0, err
+	}
+	return float64(numerator) / float64(denominator), nil
+}
+
+func getVideoDuration(file string) (float64, error) {
+	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", "--", filepath.Clean(file))
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+	duration, err := strconv.ParseFloat(strings.TrimSpace(string(output)), 64)
+	if err != nil {
+		return 0, err
+	}
+	return duration, nil
+}
+
+func flagPotentiallyCorruptedFile(file string) error {
+	// set the logfile path to 2 levels up from the given file path
+	// and name potentiallyCorruptedFiles.txt
+	logFilePath := filepath.Join(filepath.Dir(songDir), "potentiallyCorruptedFiles.txt")
+	// if not exist, create the logfile
+	if _, err := os.Stat(logFilePath); os.IsNotExist(err) {
+		os.Create(logFilePath)
+	}
+	// open the logfile at ../potentiallyCorruptedFiles.txt
+	logFile, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+	// write the file path to the logfile, when it is not already in the logfile
+	// read the logfile
+	logFileContent, err := os.ReadFile(logFilePath)
+	if err != nil {
+		return err
+	}
+	// check if the file is already in the logfile
+	if strings.Contains(string(logFileContent), file) {
+		return nil
+	}
+	// finally, if the file is not in the logfile, write the file path to the logfile
+	log.Warnf("Potentially corrupted video file %q. Writing to logfile.", file)
+	_, err = logFile.WriteString(file + "\n")
+	return err
 }

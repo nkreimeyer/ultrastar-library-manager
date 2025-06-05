@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,13 +12,19 @@ import (
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // Run scans all subfolders in songDir and applies the text sanitization rules:
 //   - If no .txt files → move to ../notxt/
 //   - If exactly one .txt file → do nothing
 //   - If more than one .txt file → keep only the least recently modified file
-func Run(songDir string) error {
+func Run(songDir, logLevel string) error {
+	// Set log level
+	level, _ := log.ParseLevel(logLevel)
+	log.SetLevel(level)
+
 	entries, err := os.ReadDir(songDir)
 	if err != nil {
 		return fmt.Errorf("reading songDir %q: %w", songDir, err)
@@ -35,7 +40,7 @@ func Run(songDir string) error {
 
 		txtFiles, err := getTxtFiles(folderPath)
 		if err != nil {
-			log.Printf("[WARN] Could not read folder %s: %v", folderPath, err)
+			log.Warnf(" Could not read folder %s: %v", folderPath, err)
 			continue
 		}
 
@@ -43,19 +48,19 @@ func Run(songDir string) error {
 		case 0:
 			// Move entire folder to ../notxt/
 			if err := moveToNoTxt(folderPath); err != nil {
-				log.Printf("[WARN] Could not move folder %s to ../notxt/: %v", folderPath, err)
+				log.Warnf(" Could not move folder %s to ../notxt/: %v", folderPath, err)
 			} else {
-				fmt.Printf("Moved folder %s -> ../notxt/\n", folderPath)
+				log.Infof("Moved folder %s -> ../notxt/\n", folderPath)
 			}
 		case 1:
 			// Exactly one .txt file, do nothing
-			//fmt.Printf("Folder %s has one TXT file. Nothing to do.\n", folderPath)
+			//log.Infof("Folder %s has one TXT file. Nothing to do.\n", folderPath)
 		default:
 			// More than 1 .txt file; keep only the least recently modified
 			if err := keepMostRecentlyModified(txtFiles); err != nil {
-				log.Printf("[WARN] Could not remove extra .txt files in %s: %v", folderPath, err)
+				log.Warnf(" Could not remove extra .txt files in %s: %v", folderPath, err)
 			} else {
-				fmt.Printf("Folder %s had %d .txt files. Kept the least recently modified.\n",
+				log.Infof("Folder %s had %d .txt files. Kept the least recently modified.\n",
 					folderPath, len(txtFiles))
 			}
 		}
@@ -111,7 +116,7 @@ func keepMostRecentlyModified(txtFiles []string) error {
 	for i, file := range txtFiles {
 		info, err := os.Stat(file)
 		if err != nil {
-			log.Printf("[WARN] could not stat %s: %v", file, err)
+			log.Warnf(" could not stat %s: %v", file, err)
 			continue
 		}
 
@@ -119,7 +124,7 @@ func keepMostRecentlyModified(txtFiles []string) error {
 		// else continue so it gets ignored and deleted later
 		content, err := os.ReadFile(file)
 		if err != nil {
-			log.Printf("[WARN] could not read %s: %v", file, err)
+			log.Warnf(" could not read %s: %v", file, err)
 			continue
 		}
 		if !strings.Contains(string(content), "#MP3") {
@@ -139,9 +144,9 @@ func keepMostRecentlyModified(txtFiles []string) error {
 			continue
 		}
 		if err := os.Remove(file); err != nil {
-			log.Printf("[WARN] could not delete file %s: %v", file, err)
+			log.Warnf(" could not delete file %s: %v", file, err)
 		} else {
-			fmt.Printf("Deleted extra .txt file: %s\n", file)
+			log.Infof("Deleted extra .txt file: %s\n", file)
 		}
 	}
 	return nil
@@ -235,7 +240,7 @@ func updateMP3Filenames(rootDir string) error {
 			// Try reading the txt file using different possible encodings
 			lines, err := tryReadWithEncoding(txtFile)
 			if err != nil {
-				fmt.Printf("Error reading %s. Unable to determine file encoding.\n", txtFile)
+				log.Errorf("reading %s. Unable to determine file encoding.\n", txtFile)
 				return nil
 			}
 
@@ -248,7 +253,7 @@ func updateMP3Filenames(rootDir string) error {
 					if len(parts) == 2 {
 						currentMP3 := strings.TrimSpace(parts[1])
 						if currentMP3 != mp3File {
-							fmt.Printf("Updating %s: %s to %s\n", txtFile, currentMP3, mp3File)
+							log.Infof("Updating %s: %s to %s\n", txtFile, currentMP3, mp3File)
 							line = fmt.Sprintf("#MP3:%s\n", mp3File)
 						}
 					}
@@ -258,7 +263,7 @@ func updateMP3Filenames(rootDir string) error {
 
 			// Write the updated list of lines back to the file using UTF-8 encoding
 			if err := writeFileAsUTF8(txtFile, updatedLines); err != nil {
-				fmt.Printf("Error writing to %s: %v\n", txtFile, err)
+				log.Errorf("writing to %s: %v\n", txtFile, err)
 			}
 		}
 		return nil

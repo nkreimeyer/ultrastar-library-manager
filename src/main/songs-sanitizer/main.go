@@ -2,46 +2,63 @@ package main
 
 import (
 	"flag"
-	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 
+	"github.com/nkreimeyer/ultrastar-songs-sanitizer/cleanup"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fixtxt"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fixvideos"
 	_ "github.com/nkreimeyer/ultrastar-songs-sanitizer/utils"
+
+	log "github.com/sirupsen/logrus"
 )
 
 func main() {
 	// Define command-line flags
-	songDir := flag.String("song-dir", "songs", "Path to the folder containing song subfolders")
-	runFixVideos := flag.Bool("fix-videos", false, "Run the video-fixing and re-encoding module")
-	runFixTxt := flag.Bool("fix-txt", true, "Run the text-file sanitization module")
+	songDir := flag.String("s", "songs", "Path to the folder containing song subfolders")
+	runFixVideos := flag.Bool("m", false, "Run the video-fixing and re-encoding module")
+	runFixTxt := flag.Bool("t", true, "Run the text-file sanitization module")
+	runCleanup := flag.Bool("c", true, "Run the cleanup module")
+	logLevel := flag.String("v", "info", "Log level (debug, info, warn, error, fatal, panic)")
 
 	flag.Parse()
+
+	// Set log level
+	level, err := log.ParseLevel(*logLevel)
+	if err != nil {
+		log.Fatalf("Invalid log level: %v", err)
+	}
+	log.SetLevel(level)
 
 	// Check if the supplied song folder exists
 	absSongDir, err := filepath.Abs(*songDir)
 	if err != nil {
 		log.Fatalf("Invalid song-dir: %v", err)
+		return
 	}
 	if st, err := os.Stat(absSongDir); err != nil || !st.IsDir() {
 		log.Fatalf("song-dir must be a path to an existing directory: %v", err)
+		return
 	}
 
-	// Run fixtxt module if requested
 	if *runFixTxt {
-		fmt.Println("Running fixtxt module...")
-		if err := fixtxt.Run(absSongDir); err != nil {
-			log.Printf("[WARN] fixtxt encountered an error: %v", err)
+		log.Infof("Running fixtxt module...")
+		if err := fixtxt.Run(absSongDir, *logLevel); err != nil {
+			log.Warnf("fixtxt encountered an error: %v", err)
 		}
 	}
 
-	// Run fixvideos module if requested
+	if *runCleanup {
+		log.Infof("Running cleanup module...")
+		cleanup.Run(absSongDir, *logLevel)
+	}
+
 	if *runFixVideos {
-		fmt.Println("Running fixvideos module...")
-		if err := fixvideos.Run(absSongDir); err != nil {
-			log.Printf("[WARN] fixvideos encountered an error: %v", err)
+		log.Infof("Running fixvideos module...")
+		if err := fixvideos.Run(absSongDir, *logLevel); err != nil {
+			log.Warnf("fixvideos encountered an error: %v", err)
 		}
 	}
+
+	log.Infof("Done.")
 }

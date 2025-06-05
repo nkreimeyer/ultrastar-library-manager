@@ -39,7 +39,6 @@ func findFirstTxtFile(searchPath string) (string, error) {
 			txtFile = path
 			return filepath.SkipAll // Stop walking after finding first txt file
 		}
-
 		return nil
 	})
 
@@ -54,5 +53,42 @@ func findFirstTxtFile(searchPath string) (string, error) {
 	return txtFile, nil
 }
 
-// Usage example:
-// err := replaceInFile("myfile.txt", "old text", "new text")
+func IsFileReferenced(dirpath, checkFilename string) bool {
+	// Placeholder function to determine if a file is referenced in the txt file.
+	// Read the file
+	filename, err := findFirstTxtFile(dirpath)
+	if err != nil {
+		return true
+	}
+
+	// Read the file
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return true
+	}
+
+	// Check if the file is referenced in the txt file
+	return strings.Contains(string(data), checkFilename)
+}
+
+func AudioFileExists(dirpath string) bool {
+	// Placeholder function to determine if an audio file exists in the directory.
+	// Read the directory
+	files, err := os.ReadDir(dirpath)
+	if err != nil {
+		return false
+	}
+	// Check if an audio file exists
+	for _, file := range files {
+		if isAudioFile(file.Name()) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAudioFile(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	return ext == ".mp3" || ext == ".ogg" || ext == ".wav" || ext == ".flac" || ext == ".m4a" || ext == ".aac"
+	// Add more audio file extensions as needed
+}
