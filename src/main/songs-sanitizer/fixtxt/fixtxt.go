@@ -1,6 +1,7 @@
 package fixtxt
 
 import (
+	"bufio"
 	"fmt"
 	"io/fs"
 	"log"
@@ -8,6 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/unicode"
+	"golang.org/x/text/transform"
 )
 
 // Run scans all subfolders in songDir and applies the text sanitization rules:
@@ -55,6 +60,8 @@ func Run(songDir string) error {
 			}
 		}
 	}
+	// now loop over all folders in songDir and fix encoding and check if the MP3 Tag is correctly referencing the music file
+	updateMP3Filenames(songDir)
 	return nil
 }
 
@@ -138,4 +145,122 @@ func keepMostRecentlyModified(txtFiles []string) error {
 		}
 	}
 	return nil
+}
+
+// tryReadWithEncoding attempts to read a file with different encodings and returns the successfully decoded content
+func tryReadWithEncoding(filePath string) ([]string, error) {
+	encodings := []struct {
+		name    string
+		decoder transform.Transformer
+	}{
+		{"utf-8", unicode.UTF8.NewDecoder()},
+		{"ISO-8859-1", charmap.ISO8859_1.NewDecoder()},
+		{"cp1252", charmap.Windows1252.NewDecoder()},
+	}
+	for _, enc := range encodings {
+		file, err := os.Open(filePath)
+		if err != nil {
+			return nil, err
+		}
+
+		reader := transform.NewReader(file, enc.decoder)
+		scanner := bufio.NewScanner(reader)
+		var lines []string
+		scanErr := false
+
+		for scanner.Scan() {
+			lines = append(lines, scanner.Text()+"\n")
+		}
+
+		if scanner.Err() != nil {
+			scanErr = true
+		}
+
+		file.Close()
+
+		if !scanErr {
+			return lines, nil
+		}
+	}
+
+	return nil, fmt.Errorf("unable to decode file %s with any of the supported encodings", filePath)
+}
+
+// writeFileAsUTF8 writes the file with UTF-8 encoding
+func writeFileAsUTF8(filePath string, lines []string) error {
+	file, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	for _, line := range lines {
+		_, err := file.WriteString(line)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// updateMP3Filenames walks through directories and updates MP3 filenames in txt files
+func updateMP3Filenames(rootDir string) error {
+
+	return filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !info.IsDir() {
+			return nil
+		}
+
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return err
+		}
+
+		var mp3File, txtFile string
+
+		// Identify the .mp3 and .txt files
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), ".mp3") {
+				mp3File = entry.Name()
+			} else if strings.HasSuffix(entry.Name(), ".txt") {
+				txtFile = filepath.Join(path, entry.Name())
+			}
+		}
+
+		if mp3File != "" && txtFile != "" {
+			// Try reading the txt file using different possible encodings
+			lines, err := tryReadWithEncoding(txtFile)
+			if err != nil {
+				fmt.Printf("Error reading %s. Unable to determine file encoding.\n", txtFile)
+				return nil
+			}
+
+			var updatedLines []string
+
+			for _, line := range lines {
+				// If the line contains the #MP3 tag, check for filename mismatch
+				if strings.HasPrefix(line, "#MP3:") {
+					parts := strings.SplitN(line, ":", 2)
+					if len(parts) == 2 {
+						currentMP3 := strings.TrimSpace(parts[1])
+						if currentMP3 != mp3File {
+							fmt.Printf("Updating %s: %s to %s\n", txtFile, currentMP3, mp3File)
+							line = fmt.Sprintf("#MP3:%s\n", mp3File)
+						}
+					}
+				}
+				updatedLines = append(updatedLines, line)
+			}
+
+			// Write the updated list of lines back to the file using UTF-8 encoding
+			if err := writeFileAsUTF8(txtFile, updatedLines); err != nil {
+				fmt.Printf("Error writing to %s: %v\n", txtFile, err)
+			}
+		}
+		return nil
+	})
 }
