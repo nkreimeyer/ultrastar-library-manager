@@ -24,6 +24,8 @@ const (
 var songDir string
 var configOnce sync.Once
 
+// The `Run` function reads directories in a target directory, processes video files in batches
+// concurrently, and logs the completion of processing.
 func Run(targetDir, logLevel string) error {
 	configOnce.Do(func() {
 		songDir = targetDir
@@ -33,25 +35,59 @@ func Run(targetDir, logLevel string) error {
 	level, _ := log.ParseLevel(logLevel)
 	log.SetLevel(level)
 
-	err := filepath.Walk(targetDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if !info.IsDir() && isVideoFile(info.Name()) {
-			processVideoFile(path)
-		}
-		return nil
-	})
-
+	entries, err := os.ReadDir(songDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("reading songDir %q: %w", songDir, err)
 	}
+
+	// Loop over all directories, build batches of songs and process them concurrently
+	batchSize := 100
+	validEntries := make([]os.DirEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			// We only care about directories. Remove the entry from the list.
+			continue
+		} else {
+			validEntries = append(validEntries, entry)
+		}
+	}
+	entries = validEntries
+
+	batches := utils.SplitIntoBatches(entries, batchSize)
+
+	// Process batches with a maximum of 4 running in parallel
+	semaphore := make(chan struct{}, 4)
+	var batchWg sync.WaitGroup
+	for _, batch := range batches {
+		batchWg.Add(1)
+		go func(batch []os.DirEntry) {
+			defer batchWg.Done()
+			semaphore <- struct{}{}        // Acquire semaphore
+			defer func() { <-semaphore }() // Release semaphore
+
+			for _, entry := range batch {
+				// find video files and process them
+				files, err := os.ReadDir(filepath.Join(songDir, entry.Name()))
+				if err != nil {
+					log.Errorf("reading directory %q: %v\n", filepath.Join(songDir, entry.Name()), err)
+					continue
+				}
+				for _, file := range files {
+					if utils.IsVideoFile(file.Name()) {
+						processVideoFile(filepath.Join(songDir, entry.Name(), file.Name()))
+					}
+				}
+			}
+		}(batch)
+	}
+	batchWg.Wait()
 
 	log.Infof("All video files have been processed.")
 	return nil
 }
 
+// The `processVideoFile` function processes a video file by potentially removing audio, resizing, and
+// re-encoding it using ffmpeg based on specified criteria.
 func processVideoFile(file string) {
 	baseName := strings.TrimSuffix(file, filepath.Ext(file))
 	outputFile := baseName + "_output"
@@ -139,6 +175,8 @@ func processVideoFile(file string) {
 	replaceOriginalFile(file, outputFile)
 }
 
+// The function `replaceOriginalFile` replaces the original file with a new file, considering file
+// extensions and sizes, and updates references in a text file before deleting the original file.
 func replaceOriginalFile(file, outputFile string) {
 	// determine new file name (take extension from outputFile)
 	newFileName := file[:len(file)-len(filepath.Ext(file))] + filepath.Ext(outputFile)
@@ -160,6 +198,8 @@ func replaceOriginalFile(file, outputFile string) {
 	}
 }
 
+// The function `needsRemoveAudio` checks if an audio stream exists in a video file and if an audio
+// file exists in the same directory before deciding if the audio should be removed.
 func needsRemoveAudio(file string) bool {
 	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "default=nokey=1:noprint_wrappers=1", "--", filepath.Clean(file))
 	output, err := cmd.Output()
@@ -177,12 +217,8 @@ func needsRemoveAudio(file string) bool {
 	return audioFileExists && audioInVideo
 }
 
-func isVideoFile(filename string) bool {
-	ext := strings.ToLower(filepath.Ext(filename))
-	return ext == ".mp4" || ext == ".mpeg" || ext == ".mpg" || ext == ".m4v" || ext == ".m2v" || ext == ".avi" ||
-		ext == ".mov" || ext == ".mkv" || ext == ".flv" || ext == ".wmv" || ext == ".webm"
-}
-
+// The function `getNeedsReEncode` determines if a video file needs to be re-encoded based on its
+// bitrate, codec, and estimated size of re-encoded video.
 func getNeedsReEncode(file string) bool {
 	// Check video bitrate
 	bitrate, err := getVideoBitrate(file)
@@ -219,6 +255,20 @@ func getNeedsReEncode(file string) bool {
 	return needsReEncode
 }
 
+// The function `getNeedsResize` checks if a video file needs to be resized based on its width compared
+// to a predefined full HD width.
+func getNeedsResize(file string) bool {
+	// Check video resolution
+	width, _, err := getVideoResolution(file)
+	if err != nil {
+		log.Debugf("Error getting resolution for %s: %v\n", file, err)
+		return false
+	}
+	return width > fullHDWidth
+}
+
+// The function estimates the size of a re-encoded video file based on its duration, resolution, and
+// framerate.
 func estimatedSizeOfReEncodedVideo(file string) (int64, error) {
 	// Get video duration
 	duration, err := getVideoDuration(file)
@@ -257,15 +307,39 @@ func estimatedSizeOfReEncodedVideo(file string) (int64, error) {
 	return size, nil
 }
 
-func getNeedsResize(file string) bool {
-	// Check video resolution
-	width, _, err := getVideoResolution(file)
-	if err != nil {
-		log.Debugf("Error getting resolution for %s: %v\n", file, err)
-		return false
+// The function `flagPotentiallyCorruptedFile` checks if a file is potentially corrupted and logs its
+// path in a separate file if not already present.
+func flagPotentiallyCorruptedFile(file string) error {
+	// set the logfile path to 2 levels up from the given file path
+	// and name potentiallyCorruptedFiles.txt
+	logFilePath := filepath.Join(filepath.Dir(songDir), "potentiallyCorruptedFiles.txt")
+	// if not exist, create the logfile
+	if _, err := os.Stat(logFilePath); os.IsNotExist(err) {
+		os.Create(logFilePath)
 	}
-	return width > fullHDWidth
+	// open the logfile at ../potentiallyCorruptedFiles.txt
+	logFile, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+	// write the file path to the logfile, when it is not already in the logfile
+	// read the logfile
+	logFileContent, err := os.ReadFile(logFilePath)
+	if err != nil {
+		return err
+	}
+	// check if the file is already in the logfile
+	if strings.Contains(string(logFileContent), file) {
+		return nil
+	}
+	// finally, if the file is not in the logfile, write the file path to the logfile
+	log.Warnf("Potentially corrupted video file %q. Writing to logfile.", file)
+	_, err = logFile.WriteString(file + "\n")
+	return err
 }
+
+// Internal Utility Functions -------------------------------------------------------------------------------
 
 func getVideoCodec(file string) (string, error) {
 	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", "--", filepath.Clean(file))
@@ -278,6 +352,8 @@ func getVideoCodec(file string) (string, error) {
 	return codec, nil
 }
 
+// The `getVideoBitrate` function retrieves the bitrate of a video file using ffprobe and calculates it
+// if not directly available.
 func getVideoBitrate(file string) (int, error) {
 	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=bit_rate", "-of", "csv=p=0", "--", filepath.Clean(file))
 	output, err := cmd.Output()
@@ -368,34 +444,4 @@ func getVideoDuration(file string) (float64, error) {
 		return 0, err
 	}
 	return duration, nil
-}
-
-func flagPotentiallyCorruptedFile(file string) error {
-	// set the logfile path to 2 levels up from the given file path
-	// and name potentiallyCorruptedFiles.txt
-	logFilePath := filepath.Join(filepath.Dir(songDir), "potentiallyCorruptedFiles.txt")
-	// if not exist, create the logfile
-	if _, err := os.Stat(logFilePath); os.IsNotExist(err) {
-		os.Create(logFilePath)
-	}
-	// open the logfile at ../potentiallyCorruptedFiles.txt
-	logFile, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer logFile.Close()
-	// write the file path to the logfile, when it is not already in the logfile
-	// read the logfile
-	logFileContent, err := os.ReadFile(logFilePath)
-	if err != nil {
-		return err
-	}
-	// check if the file is already in the logfile
-	if strings.Contains(string(logFileContent), file) {
-		return nil
-	}
-	// finally, if the file is not in the logfile, write the file path to the logfile
-	log.Warnf("Potentially corrupted video file %q. Writing to logfile.", file)
-	_, err = logFile.WriteString(file + "\n")
-	return err
 }

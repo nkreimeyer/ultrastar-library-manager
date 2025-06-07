@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"fmt"
+	"image"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,7 +56,6 @@ func findFirstTxtFile(searchPath string) (string, error) {
 }
 
 func IsFileReferenced(dirpath, checkFilename string) bool {
-	// Placeholder function to determine if a file is referenced in the txt file.
 	// Read the file
 	filename, err := findFirstTxtFile(dirpath)
 	if err != nil {
@@ -71,6 +72,22 @@ func IsFileReferenced(dirpath, checkFilename string) bool {
 	return strings.Contains(string(data), checkFilename)
 }
 
+// Check if file given exists in directory
+func DoesFileExist(dirpath, checkFilename string) bool {
+	// Read the directory
+	files, err := os.ReadDir(dirpath)
+	if err != nil {
+		return false
+	}
+	// Check if the file exists
+	for _, file := range files {
+		if file.Name() == checkFilename {
+			return true
+		}
+	}
+	return false
+}
+
 func AudioFileExists(dirpath string) bool {
 	// Placeholder function to determine if an audio file exists in the directory.
 	// Read the directory
@@ -80,15 +97,84 @@ func AudioFileExists(dirpath string) bool {
 	}
 	// Check if an audio file exists
 	for _, file := range files {
-		if isAudioFile(file.Name()) {
+		if IsAudioFile(file.Name()) {
 			return true
 		}
 	}
 	return false
 }
 
-func isAudioFile(filename string) bool {
+func IsAudioFile(filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
 	return ext == ".mp3" || ext == ".ogg" || ext == ".wav" || ext == ".flac" || ext == ".m4a" || ext == ".aac"
 	// Add more audio file extensions as needed
+}
+
+func IsVideoFile(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	return ext == ".mp4" || ext == ".mpeg" || ext == ".mpg" || ext == ".m4v" || ext == ".m2v" || ext == ".avi" ||
+		ext == ".mov" || ext == ".mkv" || ext == ".flv" || ext == ".wmv" || ext == ".webm"
+}
+
+func IsImageFile(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" || ext == ".bmp" || ext == ".tiff"
+}
+
+func SplitIntoBatches[T any](items []T, batchSize int) [][]T {
+	var batches [][]T
+	for batchSize < len(items) {
+		items, batches = items[batchSize:], append(batches, items[0:batchSize:batchSize])
+	}
+	batches = append(batches, items)
+	return batches
+}
+
+func FindCoverImage(rootDir string) (string, error) {
+	entries, err := os.ReadDir(rootDir)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		if IsImageFile(entry.Name()) {
+			imgFile := entry
+			// check if image is square
+			if reader, err := os.Open(entry.Name()); err == nil {
+				defer reader.Close()
+				im, _, err := image.DecodeConfig(reader)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s: %v\n", imgFile, err)
+					continue
+				}
+				if im.Width == im.Height {
+					return imgFile.Name(), nil
+				}
+			}
+		}
+	}
+	return "", nil
+}
+
+func FindBackgroundImage(rootDir string) (string, error) {
+	entries, err := os.ReadDir(rootDir)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		if IsImageFile(entry.Name()) {
+			imgFile := entry
+			// check if image is square
+			if reader, err := os.Open(entry.Name()); err == nil {
+				defer reader.Close()
+				im, _, err := image.DecodeConfig(reader)
+				if err != nil {
+					continue
+				}
+				if im.Width != im.Height {
+					return imgFile.Name(), nil
+				}
+			}
+		}
+	}
+	return "", nil
 }

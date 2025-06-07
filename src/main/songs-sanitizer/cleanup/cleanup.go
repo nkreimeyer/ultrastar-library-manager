@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/utils"
 
@@ -25,46 +26,58 @@ func Run(songDir, logLevel string) {
 			return
 		}
 	}
-
-	// Read all directories in songDir
-	entries, err := os.ReadDir(songDir)
-	if err != nil {
-		log.Errorf("reading song directory: %v\n", err)
-		return
+	extraFilesTargetDir := filepath.Join(filepath.Dir(songDir), "extra-files")
+	// Create the extra files directory if it doesn't exist
+	if _, err := os.Stat(extraFilesTargetDir); os.IsNotExist(err) {
+		err := os.Mkdir(extraFilesTargetDir, 0755)
+		if err != nil {
+			log.Errorf("creating cleanup directory %q: %v\n", extraFilesTargetDir, err)
+			return
+		}
 	}
 
+	entries, err := os.ReadDir(songDir)
+	if err != nil {
+		log.Fatalf("reading song directory: %v\n", err)
+		return
+	}
+	// Loop over all directories, build batches of songs and process them concurrently
+	batchSize := 100
+
+	validEntries := make([]os.DirEntry, 0, len(entries))
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-
-		dirPath := filepath.Join(songDir, entry.Name())
-		files, err := os.ReadDir(dirPath)
+		// get all files in the directory. check if folder is empty or only contains one file, then delete it from list
+		files, err := os.ReadDir(filepath.Join(songDir, entry.Name()))
 		if err != nil {
-			log.Errorf("reading directory %q: %v\n", dirPath, err)
+			log.Errorf("reading directory %q: %v\n", entry.Name(), err)
 			continue
 		}
-
-		if len(files) == 0 {
-			log.Infof("Removing empty folder: %s\n", dirPath)
-			err = os.Rename(dirPath, filepath.Join(invalidDir, entry.Name()))
+		if len(files) <= 1 {
+			// move the folder to invalid directory
+			err = os.Rename(filepath.Join(songDir, entry.Name()), filepath.Join(invalidDir, entry.Name()))
 			if err != nil {
-				log.Errorf("moving empty folder: %v\n", err)
+				log.Errorf("moving broken song: %v\n", err)
 			}
-			continue
+		} else {
+			validEntries = append(validEntries, entry)
 		}
+	}
+	entries = validEntries
 
-		if len(files) == 1 {
-			log.Infof("Removing folder with only one file: %s\n", dirPath)
-			err = os.Rename(dirPath, filepath.Join(invalidDir, entry.Name()))
-			if err != nil {
-				log.Errorf("moving single-file folder: %v\n", err)
-			}
-			continue
+	batches := utils.SplitIntoBatches(entries, batchSize)
+	for _, batch := range batches { // now run cleanup on each batch concurrently
+		var wg sync.WaitGroup
+		for _, entry := range batch {
+			wg.Add(1)
+			go func(entry os.DirEntry) {
+				defer wg.Done()
+				cleanupDirectory(filepath.Join(songDir, entry.Name()))
+			}(entry)
 		}
-
-		// Run utils.CleanupFolder on valid folders
-		cleanupDirectory(dirPath)
+		wg.Wait()
 	}
 }
 
@@ -80,15 +93,6 @@ func cleanupDirectory(dirPath string) {
 	if err != nil {
 		log.Errorf("reading directory %q: %v\n", dirPath, err)
 		return
-	}
-
-	// Create the cleanup directory if it doesn't exist
-	if _, err := os.Stat(extraFilesTargetDir); os.IsNotExist(err) {
-		err := os.Mkdir(extraFilesTargetDir, 0755)
-		if err != nil {
-			log.Errorf("creating cleanup directory %q: %v\n", extraFilesTargetDir, err)
-			return
-		}
 	}
 
 	for _, file := range files {
