@@ -126,7 +126,7 @@ func getTxtFiles(folderPath string) ([]string, error) {
 		if wErr != nil {
 			return wErr
 		}
-		if !d.IsDir() && filepath.Ext(d.Name()) == ".txt" {
+		if !d.IsDir() && strings.ToLower(filepath.Ext(d.Name())) == ".txt" {
 			txtFiles = append(txtFiles, path)
 		}
 		return nil

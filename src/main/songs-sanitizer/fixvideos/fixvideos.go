@@ -180,7 +180,7 @@ func processVideoFile(file string) {
 func replaceOriginalFile(file, outputFile string) {
 	// determine new file name (take extension from outputFile)
 	newFileName := file[:len(file)-len(filepath.Ext(file))] + filepath.Ext(outputFile)
-	if filepath.Ext(file) != filepath.Ext(outputFile) {
+	if strings.EqualFold(filepath.Ext(file), filepath.Ext(outputFile)) {
 		// Check if output file is larger than original file,
 		// and if so, remove the output file and return.
 		infoInput, errInput := os.Stat(file)
@@ -204,7 +204,7 @@ func needsRemoveAudio(file string) bool {
 	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "default=nokey=1:noprint_wrappers=1", "--", filepath.Clean(file))
 	output, err := cmd.Output()
 	log.Debugf("Checking audio stream for %s\n", file)
-	log.Debugf(string(output))
+	log.Debugf("ffprobe output: %s\n", string(output))
 	if err != nil {
 		log.Debugf("Error checking audio stream for %s: %v\n", file, err)
 		return false
