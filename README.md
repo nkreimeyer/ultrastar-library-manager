@@ -26,14 +26,6 @@ If all went well you nove have a statically linked executable in the current dir
   - reencode old or too new codecs
   - when transcoding fails due to invalid input data, flag the song as potentially corrupted in a logfile
 
-## Potential improvements
-
-- [ ] improve fixtxt to also fix other tags
-- [ ] fixtxt should move unfixable txt files (e.g. no audio) to invalid folder
-- [ ] remove other tracks from video files that are not needed like subtitles
-- [ ] multiprocessing: handle batches of songs in parallel
-- [ ] add a "dry-run" mode to all modules
-
 ## Usage
 
 Just call the binary. It outputs its usage information then.
