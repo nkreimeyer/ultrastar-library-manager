@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/cleanup"
+	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fixaudio"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fixtxt"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fixvideos"
 	_ "github.com/nkreimeyer/ultrastar-songs-sanitizer/utils"
@@ -19,6 +20,7 @@ func main() {
 	runFixTxt := flag.Bool("t", true, "Run the text-file sanitization module")
 	runCleanup := flag.Bool("c", true, "Run the cleanup module")
 	runFixVideos := flag.Bool("m", false, "Run the video-fixing and re-encoding module")
+	runFixAudio := flag.Bool("a", false, "Run the audio-fixing and re-encoding module")
 	logLevel := flag.String("v", "info", "Log level (debug, info, warn, error, fatal, panic)")
 
 	flag.Parse()
@@ -63,6 +65,13 @@ func main() {
 		log.Infof("Running fixvideos module...")
 		if err := fixvideos.Run(absSongDir, *logLevel); err != nil {
 			log.Warnf("fixvideos encountered an error: %v", err)
+		}
+	}
+
+	if *runFixAudio {
+		log.Infof("Running fixaudio module...")
+		if err := fixaudio.Run(absSongDir, *logLevel); err != nil {
+			log.Warnf("fixaudio encountered an error: %v", err)
 		}
 	}
 
