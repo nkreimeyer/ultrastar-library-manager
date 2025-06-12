@@ -44,6 +44,17 @@ func Run(songDir, logLevel string) {
 	// Loop over all directories, build batches of songs and process them concurrently
 	batchSize := 100
 
+	validEntries := filterEntries(entries, songDir, invalidDir)
+
+	batches := utils.SplitIntoBatches(validEntries, batchSize)
+	for _, batch := range batches { // now run cleanup on each batch concurrently
+		var wg sync.WaitGroup
+		handleBatch(batch, songDir, &wg)
+		wg.Wait()
+	}
+}
+
+func filterEntries(entries []os.DirEntry, songDir, invalidDir string) []os.DirEntry {
 	validEntries := make([]os.DirEntry, 0, len(entries))
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -65,19 +76,16 @@ func Run(songDir, logLevel string) {
 			validEntries = append(validEntries, entry)
 		}
 	}
-	entries = validEntries
+	return validEntries
+}
 
-	batches := utils.SplitIntoBatches(entries, batchSize)
-	for _, batch := range batches { // now run cleanup on each batch concurrently
-		var wg sync.WaitGroup
-		for _, entry := range batch {
-			wg.Add(1)
-			go func(entry os.DirEntry) {
-				defer wg.Done()
-				cleanupDirectory(filepath.Join(songDir, entry.Name()))
-			}(entry)
-		}
-		wg.Wait()
+func handleBatch(batch []os.DirEntry, songDir string, wg *sync.WaitGroup) {
+	for _, entry := range batch {
+		wg.Add(1)
+		go func(entry os.DirEntry) {
+			defer wg.Done()
+			cleanupDirectory(filepath.Join(songDir, entry.Name()))
+		}(entry)
 	}
 }
 
@@ -96,28 +104,32 @@ func cleanupDirectory(dirPath string) {
 	}
 
 	for _, file := range files {
-		if file.IsDir() {
-			continue
-		}
-		// Move files that are not referenced in the txt file.
-		if !utils.IsFileReferenced(dirPath, file.Name()) && !strings.Contains(file.Name(), ".txt") {
-			// Create a directory that matches the song directory name
-			songDirName := filepath.Base(dirPath)
-			cleanupSongDir := filepath.Join(extraFilesTargetDir, songDirName)
-			if _, err := os.Stat(cleanupSongDir); os.IsNotExist(err) {
-				err := os.MkdirAll(cleanupSongDir, 0755)
-				if err != nil {
-					log.Errorf("creating cleanup directory %q: %v\n", cleanupSongDir, err)
-					continue
-				}
-			}
-			// Move the file to the cleanup directory
-			srcPath := filepath.Join(dirPath, file.Name())
-			dstPath := filepath.Join(cleanupSongDir, file.Name())
-			err := os.Rename(srcPath, dstPath)
+		handleFileCleanup(file, dirPath, extraFilesTargetDir)
+	}
+}
+
+func handleFileCleanup(file os.DirEntry, dirPath, extraFilesTargetDir string) {
+	if file.IsDir() {
+		return
+	}
+	// Move files that are not referenced in the txt file.
+	if !utils.IsFileReferenced(dirPath, file.Name()) && !strings.Contains(file.Name(), ".txt") {
+		// Create a directory that matches the song directory name
+		songDirName := filepath.Base(dirPath)
+		cleanupSongDir := filepath.Join(extraFilesTargetDir, songDirName)
+		if _, err := os.Stat(cleanupSongDir); os.IsNotExist(err) {
+			err := os.MkdirAll(cleanupSongDir, 0755)
 			if err != nil {
-				log.Errorf("moving file %q to cleanup directory: %v\n", file.Name(), err)
+				log.Errorf("creating cleanup directory %q: %v\n", cleanupSongDir, err)
+				return
 			}
+		}
+		// Move the file to the cleanup directory
+		srcPath := filepath.Join(dirPath, file.Name())
+		dstPath := filepath.Join(cleanupSongDir, file.Name())
+		err := os.Rename(srcPath, dstPath)
+		if err != nil {
+			log.Errorf("moving file %q to cleanup directory: %v\n", file.Name(), err)
 		}
 	}
 }

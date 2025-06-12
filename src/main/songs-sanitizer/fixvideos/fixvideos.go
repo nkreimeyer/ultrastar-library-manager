@@ -24,6 +24,10 @@ const (
 var songDir string
 var configOnce sync.Once
 
+// constants
+const showEntries = "-show_entries"
+const selectStreams = "-select_streams"
+
 // The `Run` function reads directories in a target directory, processes video files in batches
 // concurrently, and logs the completion of processing.
 func Run(targetDir, logLevel string) error {
@@ -59,31 +63,37 @@ func Run(targetDir, logLevel string) error {
 	semaphore := make(chan struct{}, 4)
 	var batchWg sync.WaitGroup
 	for _, batch := range batches {
-		batchWg.Add(1)
-		go func(batch []os.DirEntry) {
-			defer batchWg.Done()
-			semaphore <- struct{}{}        // Acquire semaphore
-			defer func() { <-semaphore }() // Release semaphore
-
-			for _, entry := range batch {
-				// find video files and process them
-				files, err := os.ReadDir(filepath.Join(songDir, entry.Name()))
-				if err != nil {
-					log.Errorf("reading directory %q: %v\n", filepath.Join(songDir, entry.Name()), err)
-					continue
-				}
-				for _, file := range files {
-					if utils.IsVideoFile(file.Name()) {
-						processVideoFile(filepath.Join(songDir, entry.Name(), file.Name()))
-					}
-				}
-			}
-		}(batch)
+		handleBatch(batch, semaphore, &batchWg)
 	}
 	batchWg.Wait()
 
 	log.Infof("All video files have been processed.")
 	return nil
+}
+
+// The `handleBatch` function processes a batch of directory entries, finds video files, and processes
+// them concurrently using a semaphore to control access.
+func handleBatch(batch []os.DirEntry, semaphore chan struct{}, batchWg *sync.WaitGroup) {
+	batchWg.Add(1)
+	go func(batch []os.DirEntry) {
+		defer batchWg.Done()
+		semaphore <- struct{}{}        // Acquire semaphore
+		defer func() { <-semaphore }() // Release semaphore
+
+		for _, entry := range batch {
+			// find video files and process them
+			files, err := os.ReadDir(filepath.Join(songDir, entry.Name()))
+			if err != nil {
+				log.Errorf("reading directory %q: %v\n", filepath.Join(songDir, entry.Name()), err)
+				continue
+			}
+			for _, file := range files {
+				if utils.IsVideoFile(file.Name()) {
+					processVideoFile(filepath.Join(songDir, entry.Name(), file.Name()))
+				}
+			}
+		}
+	}(batch)
 }
 
 // The `processVideoFile` function processes a video file by potentially removing audio, resizing, and
@@ -92,7 +102,6 @@ func processVideoFile(file string) {
 	baseName := strings.TrimSuffix(file, filepath.Ext(file))
 	outputFile := baseName + "_output"
 
-	// Check if the file has an audio stream
 	needsRemoveAudio := needsRemoveAudio(file)
 
 	needsResize := getNeedsResize(file)
@@ -201,7 +210,8 @@ func replaceOriginalFile(file, outputFile string) {
 // The function `needsRemoveAudio` checks if an audio stream exists in a video file and if an audio
 // file exists in the same directory before deciding if the audio should be removed.
 func needsRemoveAudio(file string) bool {
-	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "default=nokey=1:noprint_wrappers=1", "--", filepath.Clean(file))
+
+	cmd := exec.Command("ffprobe", "-v", "error", showEntries, "stream=codec_type", "-of", "default=nokey=1:noprint_wrappers=1", "--", filepath.Clean(file))
 	output, err := cmd.Output()
 	log.Debugf("Checking audio stream for %s\n", file)
 	log.Debugf("ffprobe output: %s\n", string(output))
@@ -299,9 +309,9 @@ func estimatedSizeOfReEncodedVideo(file string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	// Estimate the bitrate of the reencoded video with 1.2mbps as a base for 1080p 30fps
+	// Estimate the bitrate of the reencoded video with 1.8mbps as a base for 1080p 30fps
 	// and scale it down for lower resolutions and framerates
-	bitrate := 1200000 * (float64(width) / 1920) * (float64(height) / 1080) * (framerate / 30)
+	bitrate := 1800000 * (float64(width) / 1920) * (float64(height) / 1080) * (framerate / 30)
 	// Calculate the estimated size in bytes
 	size := int64(bitrate * duration / 8)
 	return size, nil
@@ -342,7 +352,7 @@ func flagPotentiallyCorruptedFile(file string) error {
 // Internal Utility Functions -------------------------------------------------------------------------------
 
 func getVideoCodec(file string) (string, error) {
-	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", "--", filepath.Clean(file))
+	cmd := exec.Command("ffprobe", "-v", "error", selectStreams, "v:0", showEntries, "stream=codec_name", "-of", "csv=p=0", "--", filepath.Clean(file))
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -355,7 +365,7 @@ func getVideoCodec(file string) (string, error) {
 // The `getVideoBitrate` function retrieves the bitrate of a video file using ffprobe and calculates it
 // if not directly available.
 func getVideoBitrate(file string) (int, error) {
-	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=bit_rate", "-of", "csv=p=0", "--", filepath.Clean(file))
+	cmd := exec.Command("ffprobe", "-v", "error", selectStreams, "v:0", showEntries, "stream=bit_rate", "-of", "csv=p=0", "--", filepath.Clean(file))
 	output, err := cmd.Output()
 	if err != nil {
 		return 0, err
@@ -363,7 +373,7 @@ func getVideoBitrate(file string) (int, error) {
 	bitrateStr := strings.TrimSpace(string(output))
 	if bitrateStr == "N/A" {
 		// calculate bitrate from duration and file size using ffprobe
-		cmd = exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration,size", "-of", "csv=p=0", "--", filepath.Clean(file))
+		cmd = exec.Command("ffprobe", "-v", "error", showEntries, "format=duration,size", "-of", "csv=p=0", "--", filepath.Clean(file))
 		output, err = cmd.Output()
 		if err != nil {
 			return 0, err
@@ -391,7 +401,15 @@ func getVideoBitrate(file string) (int, error) {
 }
 
 func getVideoResolution(file string) (int, int, error) {
-	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", "--", filepath.Clean(file))
+	cmd := exec.Command(
+		"ffprobe",
+		"-v", "error",
+		selectStreams, "v:0",
+		showEntries, "stream=width,height",
+		"-of", "csv=p=0",
+		"--",
+		filepath.Clean(file),
+	)
 	output, err := cmd.Output()
 	if err != nil {
 		return 0, 0, err
@@ -412,8 +430,14 @@ func getVideoResolution(file string) (int, int, error) {
 }
 
 func getVideoFramerate(file string) (float64, error) {
-	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate", "-of",
-		"csv=p=0", "--", filepath.Clean(file))
+
+	cmd := exec.Command("ffprobe",
+		"-v", "error",
+		selectStreams, "v:0",
+		showEntries, "stream=r_frame_rate",
+		"-of", "csv=p=0",
+		"--",
+		filepath.Clean(file))
 	output, err := cmd.Output()
 	if err != nil {
 		return 30.0, err
@@ -434,7 +458,12 @@ func getVideoFramerate(file string) (float64, error) {
 }
 
 func getVideoDuration(file string) (float64, error) {
-	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", "--", filepath.Clean(file))
+	cmd := exec.Command("ffprobe",
+		"-v", "error",
+		showEntries, "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		"--",
+		filepath.Clean(file))
 	output, err := cmd.Output()
 	if err != nil {
 		return 0, err

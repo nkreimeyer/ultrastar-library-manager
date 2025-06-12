@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	log "github.com/sirupsen/logrus"
 )
 
 func ReplaceInUSTxtFile(parentPath, searchText, replacement string) error {
@@ -177,4 +179,29 @@ func FindBackgroundImage(rootDir string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// writeFileAsUTF8 writes the file with UTF-8 encoding
+func WriteFileAsUTF8(filePath string, lines []string) error {
+	file, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	for _, line := range lines {
+		_, err := file.WriteString(line)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func DeleteFiles(files []string) {
+	for _, file := range files {
+		if err := os.Remove(file); err != nil {
+			log.Errorf(" could not delete file %s: %v", file, err)
+		}
+	}
 }
