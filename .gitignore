@@ -1,1 +1,8 @@
 .vscode/settings.json
+.sonarlint/
+test-assets/songs/
+test-assets/extra-files
+test-assets/notxt
+test-assets/invalid/
+test-assets/potentiallyCorruptedFiles.txt
+test-assets/missing_files.txt
