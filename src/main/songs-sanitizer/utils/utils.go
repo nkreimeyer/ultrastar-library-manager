@@ -3,6 +3,8 @@ package utils
 import (
 	"fmt"
 	"image"
+	"image/jpeg"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -138,23 +140,23 @@ func FindCoverImage(rootDir string) (string, error) {
 		return "", err
 	}
 	for _, entry := range entries {
-		if IsImageFile(entry.Name()) {
-			imgFile := entry
+		name := filepath.Clean(entry.Name())
+		path := filepath.Join(rootDir, name)
+		if IsImageFile(name) {
+			//log.Debugf("Found image file %s", name)
 			// check if image is square
-			if reader, err := os.Open(entry.Name()); err == nil {
-				defer reader.Close()
-				im, _, err := image.DecodeConfig(reader)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "%s: %v\n", imgFile, err)
-					continue
-				}
-				if im.Width == im.Height {
-					return imgFile.Name(), nil
-				}
+			x, y, err := GetImageDimensions(path)
+			if err != nil {
+				log.Errorf("Error getting image dimensions for %s: %v", name, err)
+				continue
+			}
+			if x == y {
+				log.Debugf("Found cover image %s", name)
+				return name, nil
 			}
 		}
 	}
-	return "", nil
+	return "", fmt.Errorf("Found no cover image in %s", rootDir)
 }
 
 func FindBackgroundImage(rootDir string) (string, error) {
@@ -163,22 +165,23 @@ func FindBackgroundImage(rootDir string) (string, error) {
 		return "", err
 	}
 	for _, entry := range entries {
-		if IsImageFile(entry.Name()) {
-			imgFile := entry
+		name := filepath.Clean(entry.Name())
+		path := filepath.Join(rootDir, name)
+		if IsImageFile(name) {
+			//log.Debugf("Found image file %s", name)
 			// check if image is square
-			if reader, err := os.Open(entry.Name()); err == nil {
-				defer reader.Close()
-				im, _, err := image.DecodeConfig(reader)
-				if err != nil {
-					continue
-				}
-				if im.Width != im.Height {
-					return imgFile.Name(), nil
-				}
+			x, y, err := GetImageDimensions(path)
+			if err != nil {
+				log.Errorf("Error getting image dimensions for %s: %v", name, err)
+				continue
+			}
+			if x != y {
+				log.Debugf("Found background image %s", name)
+				return name, nil
 			}
 		}
 	}
-	return "", nil
+	return "", fmt.Errorf("Found no background image in %s", rootDir)
 }
 
 // writeFileAsUTF8 writes the file with UTF-8 encoding
@@ -204,4 +207,66 @@ func DeleteFiles(files []string) {
 			log.Errorf(" could not delete file %s: %v", file, err)
 		}
 	}
+}
+
+func GetImageDimensions(filePath string) (int, int, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer file.Close()
+
+	// Detect the image format
+	format, err := detectImageFormat(file)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	// Reset the file pointer to the beginning
+	_, err = file.Seek(0, 0)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var img image.Image
+	switch format {
+	case "jpeg":
+		img, err = jpeg.Decode(file)
+	case "png":
+		img, err = png.Decode(file)
+	default:
+		return 0, 0, fmt.Errorf("unsupported image format: %s", format)
+	}
+
+	if err != nil {
+		return 0, 0, err
+	}
+
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+
+	return width, height, nil
+}
+
+// detectImageFormat returns the format of the image file.
+func detectImageFormat(file *os.File) (string, error) {
+	// Read the first few bytes to determine the format
+	buffer := make([]byte, 8)
+	_, err := file.Read(buffer)
+	if err != nil {
+		return "", err
+	}
+
+	// Check for JPEG format
+	if strings.HasPrefix(string(buffer), "\xff\xd8\xff") {
+		return "jpeg", nil
+	}
+
+	// Check for PNG format
+	if strings.HasPrefix(string(buffer), "\x89PNG\r\n\x1a\n") {
+		return "png", nil
+	}
+
+	return "", fmt.Errorf("unknown image format")
 }

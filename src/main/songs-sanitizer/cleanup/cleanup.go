@@ -112,6 +112,10 @@ func handleFileCleanup(file os.DirEntry, dirPath, extraFilesTargetDir string) {
 	if file.IsDir() {
 		return
 	}
+	// skip usdb files by checking if the file name ends with .usdb
+	if strings.HasSuffix(file.Name(), ".usdb") {
+		return
+	}
 	// Move files that are not referenced in the txt file.
 	if !utils.IsFileReferenced(dirPath, file.Name()) && !strings.Contains(file.Name(), ".txt") {
 		// Create a directory that matches the song directory name

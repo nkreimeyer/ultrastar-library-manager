@@ -277,6 +277,7 @@ func fixFileTags(rootDir string) {
 	}
 
 	if txtFile != "" {
+		//log.Debugf("Updating %s with files %s, %s, %s, %s\n", txtFile, mp3Files, videoFiles, coverFile, backgroundFile)
 		updateTxtFile(rootDir, txtFile, mp3Files, videoFiles, coverFile, backgroundFile)
 	}
 }
@@ -315,35 +316,134 @@ func updateTxtFile(rootDir, txtFile string, mp3Files []string, videoFiles []stri
 	}
 }
 
-func fixTxtLines(lines, mp3Files, videoFiles []string, rootDir, backgroundFile, coverFile string) []string {
+func fixTxtLines(lines, mp3Files, videoFiles []string, rootDir, coverFile, backgroundFile string) []string {
 	var videoFileInTxt = getTagValue(lines, "#VIDEO")
-	var mp3FileInTxt = getTagValue(lines, "#MP3")
+	var audioFileInTxt = getTagValue(lines, "#MP3")
 	var coverFileInTxt = getTagValue(lines, "#COVER")
 	var backgroundFileInTxt = getTagValue(lines, "#BACKGROUND")
 
+	// check if image dimensions are valid, if not, remove the cover and background files from the txt
+
+	forceUpdateCover := false
+	forceUpdateBackground := false
+	xCover, yCover, err := utils.GetImageDimensions(filepath.Join(rootDir, coverFileInTxt))
+	if err != nil {
+		log.Errorf("getting image dimensions for %s: %v\n", coverFileInTxt, err)
+		coverFileInTxt = ""
+	} else if xCover != yCover {
+		forceUpdateCover = true
+	}
+
+	xBackground, yBackground, err := utils.GetImageDimensions(filepath.Join(rootDir, backgroundFileInTxt))
+	if err != nil {
+		log.Errorf("getting image dimensions for %s: %v\n", backgroundFileInTxt, err)
+		backgroundFileInTxt = ""
+	} else if xBackground == yBackground {
+		forceUpdateBackground = true
+	}
+
+	log.Debugf("forceUpdateCover: %v, forceUpdateBackground: %v\n", forceUpdateCover, forceUpdateBackground)
+
 	// do not change the files if they are already correct in the txt dat, cleanup will take care of it later
 	var updateVideoFile = len(videoFiles) > 0 && !utils.DoesFileExist(rootDir, videoFileInTxt)
-	var updateMp3File = len(mp3Files) > 0 && !utils.DoesFileExist(rootDir, mp3FileInTxt)
-	var updateCoverFile = coverFile != "" && !utils.DoesFileExist(rootDir, coverFileInTxt)
-	var updateBackgroundFile = backgroundFile != "" && !utils.DoesFileExist(rootDir, backgroundFileInTxt)
+	var updateAudioFile = len(mp3Files) > 0 && !utils.DoesFileExist(rootDir, audioFileInTxt)
+	var updateCoverFile = coverFile != "" && (!utils.DoesFileExist(rootDir, coverFileInTxt) || forceUpdateCover)
+	var updateBackgroundFile = backgroundFile != "" && (!utils.DoesFileExist(rootDir, backgroundFileInTxt) || forceUpdateBackground)
 
 	// Update the lines when necessary
 	updatedLines := make([]string, len(lines))
+
+	// if there are less than 3 lines, it's not a valid txt file, so return the original lines
+	if len(lines) < 3 {
+		return lines
+	}
+
+	// Remove duplicate Tags
+	//updatedLines = removeDuplicateTags(updatedLines)
+
+	foundAudioTag := false
+	foundVideoTag := false
+	foundCoverTag := false
+	foundBackgroundTag := false
+
 	for i, line := range lines {
 		switch {
-		case strings.HasPrefix(line, "#VIDEO") && updateVideoFile:
-			updatedLines[i] = "#VIDEO: " + videoFiles[0]
-		case strings.HasPrefix(line, "#MP3") && updateMp3File:
-			updatedLines[i] = "#MP3: " + mp3Files[0]
-		case strings.HasPrefix(line, "#COVER") && updateCoverFile:
-			updatedLines[i] = "#COVER: " + coverFile
-		case strings.HasPrefix(line, "#BACKGROUND") && updateBackgroundFile:
-			updatedLines[i] = "#BACKGROUND: " + backgroundFile
+		case strings.HasPrefix(line, "#VIDEO"):
+			if updateVideoFile {
+				updatedLines[i] = "#VIDEO:" + videoFiles[0] + "\n"
+				log.Debugf("Updated video file to %s", videoFiles[0])
+			}
+			foundVideoTag = true
+
+		case strings.HasPrefix(line, "#MP3"):
+			if updateAudioFile {
+				updatedLines[i] = "#MP3:" + mp3Files[0] + "\n"
+				log.Debugf("Updated mp3 file to %s", mp3Files[0])
+			}
+			foundAudioTag = true
+
+		case strings.HasPrefix(line, "#COVER"):
+			if updateCoverFile {
+				updatedLines[i] = "#COVER:" + coverFile + "\n"
+				log.Debugf("Updated cover file to %s", coverFile)
+			}
+			foundCoverTag = true
+
+		case strings.HasPrefix(line, "#BACKGROUND"):
+			if updateBackgroundFile {
+				updatedLines[i] = "#BACKGROUND:" + backgroundFile + "\n"
+				log.Debugf("Updated background file to %s", backgroundFile)
+			}
+			foundBackgroundTag = true
+
 		default:
 			updatedLines[i] = line
 		}
 	}
+	// Check if any of the required lines are missing, add the missing ones inserting them at line 2
+	if !foundAudioTag && len(mp3Files) > 0 {
+		frontUpdatedLines := updatedLines[:1]
+		lastUpdatedLines := updatedLines[1:]
+		updatedLines = append(frontUpdatedLines, append([]string{"#MP3:" + mp3Files[0] + "\n"}, lastUpdatedLines...)...)
+		log.Debugf("Added missing mp3 tag with file %s", mp3Files[0])
+	}
+	if !foundVideoTag && len(videoFiles) > 0 {
+		frontUpdatedLines := updatedLines[:1]
+		lastUpdatedLines := updatedLines[1:]
+		updatedLines = append(frontUpdatedLines, append([]string{"#VIDEO:" + videoFiles[0] + "\n"}, lastUpdatedLines...)...)
+		log.Debugf("Added missing video tag with file %s", videoFiles[0])
+	}
+	if !foundCoverTag && coverFile != "" {
+		frontUpdatedLines := updatedLines[:1]
+		lastUpdatedLines := updatedLines[1:]
+		updatedLines = append(frontUpdatedLines, append([]string{"#COVER:" + coverFile + "\n"}, lastUpdatedLines...)...)
+		log.Debugf("Added missing cover tag with file %s", coverFile)
+	}
+	if !foundBackgroundTag && backgroundFile != "" {
+		frontUpdatedLines := updatedLines[:1]
+		lastUpdatedLines := updatedLines[1:]
+		updatedLines = append(frontUpdatedLines, append([]string{"#BACKGROUND:" + backgroundFile + "\n"}, lastUpdatedLines...)...)
+		log.Debugf("Added missing background tag with file %s", backgroundFile)
+	}
+	log.Debugf("Linedump of updatedLines: %v\n", updatedLines)
 	return updatedLines
+}
+
+func removeDuplicateTags(lines []string) []string {
+	tags := make(map[string]bool)
+	var result []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "#") {
+			tag := strings.Split(line, ":")[0]
+			if _, exists := tags[tag]; !exists {
+				tags[tag] = true
+				result = append(result, line)
+			}
+		} else {
+			result = append(result, line)
+		}
+	}
+	return result
 }
 
 func getTagValue(lines []string, tag string) string {
