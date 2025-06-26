@@ -134,10 +134,10 @@ func SplitIntoBatches[T any](items []T, batchSize int) [][]T {
 	return batches
 }
 
-func FindCoverImage(rootDir string) (string, error) {
+func FindCoverImage(rootDir string) string {
 	entries, err := os.ReadDir(rootDir)
 	if err != nil {
-		return "", err
+		return ""
 	}
 	for _, entry := range entries {
 		name := filepath.Clean(entry.Name())
@@ -152,23 +152,24 @@ func FindCoverImage(rootDir string) (string, error) {
 			}
 			if x == y {
 				log.Debugf("Found cover image %s", name)
-				return name, nil
+				return name
 			}
 		}
 	}
-	return "", fmt.Errorf("Found no cover image in %s", rootDir)
+	log.Warnf("No cover image found in %s", rootDir)
+	return ""
 }
 
-func FindBackgroundImage(rootDir string) (string, error) {
+func FindBackgroundImage(rootDir string) string {
 	entries, err := os.ReadDir(rootDir)
 	if err != nil {
-		return "", err
+		log.Errorf("Error reading directory %s: %v", rootDir, err)
+		return ""
 	}
 	for _, entry := range entries {
 		name := filepath.Clean(entry.Name())
 		path := filepath.Join(rootDir, name)
 		if IsImageFile(name) {
-			//log.Debugf("Found image file %s", name)
 			// check if image is square
 			x, y, err := GetImageDimensions(path)
 			if err != nil {
@@ -177,11 +178,12 @@ func FindBackgroundImage(rootDir string) (string, error) {
 			}
 			if x != y {
 				log.Debugf("Found background image %s", name)
-				return name, nil
+				return name
 			}
 		}
 	}
-	return "", fmt.Errorf("Found no background image in %s", rootDir)
+	log.Warnf("No background image found in %s", rootDir)
+	return ""
 }
 
 // writeFileAsUTF8 writes the file with UTF-8 encoding
@@ -269,4 +271,42 @@ func detectImageFormat(file *os.File) (string, error) {
 	}
 
 	return "", fmt.Errorf("unknown image format")
+}
+
+func FolderContainsTxtFile(folderPath string) bool {
+	entries, err := os.ReadDir(folderPath)
+	if err != nil {
+		log.Errorf("Error reading folder %s: %v", folderPath, err)
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".txt") {
+			return true
+		}
+	}
+	return false
+}
+
+func GetAllSongFolders(songDir string) ([]os.DirEntry, error) {
+	var songFolders []os.DirEntry
+	entries, err := os.ReadDir(songDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading songDir %q: %w", songDir, err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && FolderContainsTxtFile(filepath.Join(songDir, entry.Name())) {
+			songFolders = append(songFolders, entry)
+		} else if entry.IsDir() {
+			subFolders, err := GetAllSongFolders(filepath.Join(songDir, entry.Name()))
+			if err != nil {
+				return nil, err
+			}
+			songFolders = append(songFolders, subFolders...)
+			// in case of no subfolders, add the current folder, as it might be a broken song folder.
+			if len(subFolders) == 0 {
+				songFolders = append(songFolders, entry)
+			}
+		}
+	}
+	return songFolders, nil
 }

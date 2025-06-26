@@ -23,6 +23,31 @@ var missingFiles []string
 var configOnce sync.Once
 var missingFilesRWM sync.RWMutex
 
+type SongInfo struct {
+	Artist       string
+	Title        string
+	MP3          string
+	Cover        string
+	Background   string
+	Video        string
+	Genre        string
+	Edition      string
+	Year         string
+	Language     string
+	Gap          string
+	BPM          string
+	Count        string
+	DuetsingerP1 string
+}
+
+// Bitmask flags for 4 values, usually audio, video, cover, background
+const (
+	Flag1 = 1 << iota // 1 << 0 which is 1
+	Flag2             // 1 << 1 which is 2
+	Flag3             // 1 << 2 which is 4
+	Flag4             // 1 << 3 which is 8
+)
+
 // Run scans all subfolders in songDir and applies the text sanitization rules:
 //   - If no .txt files → move to ../notxt/
 //   - If exactly one .txt file → do nothing
@@ -41,7 +66,7 @@ func Run(targetDir, logLevel string) error {
 	level, _ := log.ParseLevel(logLevel)
 	log.SetLevel(level)
 
-	entries, err := os.ReadDir(songDir)
+	entries, err := utils.GetAllSongFolders(songDir)
 	if err != nil {
 		return fmt.Errorf("reading songDir %q: %w", songDir, err)
 	}
@@ -113,7 +138,7 @@ func checkFolder(folderPath string) error {
 
 	}
 	// Now we only have one .txt file, call updateFilenamesInTxt on the folder
-	fixFileTags(folderPath)
+	handleDirectory(folderPath)
 	return nil
 }
 
@@ -245,9 +270,9 @@ func tryReadWithEncoding(filePath string) ([]string, error) {
 	return nil, fmt.Errorf("unable to decode file %s with any of the supported encodings", filePath)
 }
 
-// fixFileTags checks Files in a song folder and updates tag filenames in the txt file.
+// handleDirectory checks Files in a song folder and updates tag filenames in the txt file.
 // Additionally, it handles missing files by logging them or remove if required data is missing.
-func fixFileTags(rootDir string) {
+func handleDirectory(rootDir string) {
 	entries, err := os.ReadDir(rootDir)
 	if err != nil {
 		log.Errorf("reading directory %s: %v\n", rootDir, err)
@@ -266,18 +291,10 @@ func fixFileTags(rootDir string) {
 		}
 	}
 	var coverFile, backgroundFile string
-	coverFile, err = utils.FindCoverImage(rootDir)
-	if err != nil {
-		log.Errorf("getting cover file: %v\n", err)
-	}
+	coverFile = utils.FindCoverImage(rootDir)
+	backgroundFile = utils.FindBackgroundImage(rootDir)
 
-	backgroundFile, err = utils.FindBackgroundImage(rootDir)
-	if err != nil {
-		log.Errorf("getting background file: %v\n", err)
-	}
-
-	if txtFile != "" {
-		//log.Debugf("Updating %s with files %s, %s, %s, %s\n", txtFile, mp3Files, videoFiles, coverFile, backgroundFile)
+	if txtFile != "" { //log.Debugf("Updating %s with files %s, %s, %s, %s\n", txtFile, mp3Files, videoFiles, coverFile, backgroundFile)
 		updateTxtFile(rootDir, txtFile, mp3Files, videoFiles, coverFile, backgroundFile)
 	}
 }
@@ -290,7 +307,6 @@ func updateTxtFile(rootDir, txtFile string, mp3Files []string, videoFiles []stri
 	}
 
 	updatedLines := fixTxtLines(lines, mp3Files, videoFiles, rootDir, coverFile, backgroundFile)
-
 	// Write the updated list of lines back to the file using UTF-8 encoding
 	if err := utils.WriteFileAsUTF8(txtFile, updatedLines); err != nil {
 		log.Errorf("writing to %s: %v\n", txtFile, err)
@@ -317,40 +333,21 @@ func updateTxtFile(rootDir, txtFile string, mp3Files []string, videoFiles []stri
 }
 
 func fixTxtLines(lines, mp3Files, videoFiles []string, rootDir, coverFile, backgroundFile string) []string {
-	var videoFileInTxt = getTagValue(lines, "#VIDEO")
-	var audioFileInTxt = getTagValue(lines, "#MP3")
-	var coverFileInTxt = getTagValue(lines, "#COVER")
-	var backgroundFileInTxt = getTagValue(lines, "#BACKGROUND")
 
-	// check if image dimensions are valid, if not, remove the cover and background files from the txt
-
-	forceUpdateCover := false
-	forceUpdateBackground := false
-	xCover, yCover, err := utils.GetImageDimensions(filepath.Join(rootDir, coverFileInTxt))
+	SongInfoTxt, err := getSongInfoFromTxtFile(lines)
 	if err != nil {
-		log.Errorf("getting image dimensions for %s: %v\n", coverFileInTxt, err)
-		coverFileInTxt = ""
-	} else if xCover != yCover {
-		forceUpdateCover = true
+		log.Errorf("getSongInfoFromTxtFile: %v\n", err)
 	}
 
-	xBackground, yBackground, err := utils.GetImageDimensions(filepath.Join(rootDir, backgroundFileInTxt))
-	if err != nil {
-		log.Errorf("getting image dimensions for %s: %v\n", backgroundFileInTxt, err)
-		backgroundFileInTxt = ""
-	} else if xBackground == yBackground {
-		forceUpdateBackground = true
-	}
-
-	log.Debugf("forceUpdateCover: %v, forceUpdateBackground: %v\n", forceUpdateCover, forceUpdateBackground)
+	// check if image dimensions are valid, if not, remove the cover and ba
+	forceUpdateCover, forceUpdateBackground, SongInfoTxt := checkDimensionsOfImagesTagged(rootDir, *SongInfoTxt)
 
 	// do not change the files if they are already correct in the txt dat, cleanup will take care of it later
-	var updateVideoFile = len(videoFiles) > 0 && !utils.DoesFileExist(rootDir, videoFileInTxt)
-	var updateAudioFile = len(mp3Files) > 0 && !utils.DoesFileExist(rootDir, audioFileInTxt)
-	var updateCoverFile = coverFile != "" && (!utils.DoesFileExist(rootDir, coverFileInTxt) || forceUpdateCover)
-	var updateBackgroundFile = backgroundFile != "" && (!utils.DoesFileExist(rootDir, backgroundFileInTxt) || forceUpdateBackground)
+	var updateVideoFile = len(videoFiles) > 0 && !utils.DoesFileExist(rootDir, SongInfoTxt.Video)
+	var updateAudioFile = len(mp3Files) > 0 && !utils.DoesFileExist(rootDir, SongInfoTxt.MP3)
+	var updateCoverFile = coverFile != "" && (!utils.DoesFileExist(rootDir, SongInfoTxt.Cover) || forceUpdateCover)
+	var updateBackgroundFile = backgroundFile != "" && (!utils.DoesFileExist(rootDir, SongInfoTxt.Background) || forceUpdateBackground)
 
-	// Update the lines when necessary
 	updatedLines := make([]string, len(lines))
 
 	// if there are less than 3 lines, it's not a valid txt file, so return the original lines
@@ -358,75 +355,109 @@ func fixTxtLines(lines, mp3Files, videoFiles []string, rootDir, coverFile, backg
 		return lines
 	}
 
-	// Remove duplicate Tags
-	//updatedLines = removeDuplicateTags(updatedLines)
+	lines = removeDuplicateTags(lines)
 
-	foundAudioTag := false
-	foundVideoTag := false
-	foundCoverTag := false
-	foundBackgroundTag := false
+	foundTagFlags := updateTagsInLines(lines, updatedLines, mp3Files, videoFiles, coverFile, backgroundFile, updateAudioFile, updateVideoFile, updateCoverFile, updateBackgroundFile)
 
+	linesToInsert := []string{}
+	// Check if any of the required lines are missing, add the missing ones inserting them at line 2
+	if !isFlagSet(foundTagFlags, Flag1) && len(mp3Files) > 0 {
+		linesToInsert = append(linesToInsert, "#MP3:"+mp3Files[0]+"\n")
+		//log.Debugf("Added missing mp3 tag with file %s", mp3Files[0])
+	}
+	if !isFlagSet(foundTagFlags, Flag2) && len(videoFiles) > 0 {
+		linesToInsert = append(linesToInsert, "#VIDEO:"+videoFiles[0]+"\n")
+		//log.Debugf("Added missing video tag with file %s", videoFiles[0])
+	}
+	if !isFlagSet(foundTagFlags, Flag3) && coverFile != "" {
+		linesToInsert = append(linesToInsert, "#COVER:"+coverFile+"\n")
+		//log.Debugf("Added missing cover tag with file %s", coverFile)
+	}
+	if !isFlagSet(foundTagFlags, Flag4) && backgroundFile != "" {
+		linesToInsert = append(linesToInsert, "#BACKGROUND:"+backgroundFile+"\n")
+		//log.Debugf("Added missing background tag with file %s", backgroundFile)
+	}
+
+	// Create new slices to avoid modifying the original updatedLines
+	frontUpdatedLines := make([]string, len(updatedLines[:1]))
+	copy(frontUpdatedLines, updatedLines[:1])
+
+	lastUpdatedLines := make([]string, len(updatedLines[1:]))
+	copy(lastUpdatedLines, updatedLines[1:])
+
+	if len(linesToInsert) > 0 {
+		log.Debugf("Inserting the following lines: %v", linesToInsert)
+	}
+	updatedLines = append(frontUpdatedLines, append(linesToInsert, lastUpdatedLines...)...)
+
+	return updatedLines
+}
+
+func updateTagsInLines(lines, updatedLines, videoFiles, mp3Files []string, coverFile, backgroundFile string, updateAudioFile, updateVideoFile, updateCoverFile, updateBackgroundFile bool) int {
+	var foundTagFlags int
 	for i, line := range lines {
 		switch {
-		case strings.HasPrefix(line, "#VIDEO"):
-			if updateVideoFile {
-				updatedLines[i] = "#VIDEO:" + videoFiles[0] + "\n"
-				log.Debugf("Updated video file to %s", videoFiles[0])
-			}
-			foundVideoTag = true
-
 		case strings.HasPrefix(line, "#MP3"):
-			if updateAudioFile {
+			if updateAudioFile && len(mp3Files) > 0 {
 				updatedLines[i] = "#MP3:" + mp3Files[0] + "\n"
 				log.Debugf("Updated mp3 file to %s", mp3Files[0])
+			} else {
+				updatedLines[i] = line
 			}
-			foundAudioTag = true
-
+			foundTagFlags = setFlag(foundTagFlags, Flag1)
+		case strings.HasPrefix(line, "#VIDEO"):
+			if updateVideoFile && len(videoFiles) > 0 {
+				updatedLines[i] = "#VIDEO:" + videoFiles[0] + "\n"
+				log.Debugf("Updated video file to %s", videoFiles[0])
+			} else {
+				updatedLines[i] = line
+			}
+			foundTagFlags = setFlag(foundTagFlags, Flag2)
 		case strings.HasPrefix(line, "#COVER"):
 			if updateCoverFile {
 				updatedLines[i] = "#COVER:" + coverFile + "\n"
 				log.Debugf("Updated cover file to %s", coverFile)
+			} else {
+				updatedLines[i] = line
 			}
-			foundCoverTag = true
-
+			foundTagFlags = setFlag(foundTagFlags, Flag3)
 		case strings.HasPrefix(line, "#BACKGROUND"):
 			if updateBackgroundFile {
 				updatedLines[i] = "#BACKGROUND:" + backgroundFile + "\n"
 				log.Debugf("Updated background file to %s", backgroundFile)
+			} else {
+				updatedLines[i] = line
 			}
-			foundBackgroundTag = true
-
+			foundTagFlags = setFlag(foundTagFlags, Flag4)
 		default:
 			updatedLines[i] = line
 		}
 	}
-	// Check if any of the required lines are missing, add the missing ones inserting them at line 2
-	if !foundAudioTag && len(mp3Files) > 0 {
-		frontUpdatedLines := updatedLines[:1]
-		lastUpdatedLines := updatedLines[1:]
-		updatedLines = append(frontUpdatedLines, append([]string{"#MP3:" + mp3Files[0] + "\n"}, lastUpdatedLines...)...)
-		log.Debugf("Added missing mp3 tag with file %s", mp3Files[0])
+	return foundTagFlags
+}
+
+func checkDimensionsOfImagesTagged(rootDir string, SongInfoTxt SongInfo) (bool, bool, *SongInfo) {
+	forceUpdateCover := false
+	forceUpdateBackground := false
+	if SongInfoTxt.Cover != "" {
+		xCover, yCover, err := utils.GetImageDimensions(filepath.Join(rootDir, SongInfoTxt.Cover))
+		if err != nil {
+			log.Errorf("getting image dimensions for %s: %v\n", SongInfoTxt.Cover, err)
+			SongInfoTxt.Cover = ""
+		} else if xCover != yCover {
+			forceUpdateCover = true
+		}
 	}
-	if !foundVideoTag && len(videoFiles) > 0 {
-		frontUpdatedLines := updatedLines[:1]
-		lastUpdatedLines := updatedLines[1:]
-		updatedLines = append(frontUpdatedLines, append([]string{"#VIDEO:" + videoFiles[0] + "\n"}, lastUpdatedLines...)...)
-		log.Debugf("Added missing video tag with file %s", videoFiles[0])
+	if SongInfoTxt.Background != "" {
+		xBackground, yBackground, err := utils.GetImageDimensions(filepath.Join(rootDir, SongInfoTxt.Background))
+		if err != nil {
+			log.Errorf("getting image dimensions for %s: %v\n", SongInfoTxt.Background, err)
+			SongInfoTxt.Background = ""
+		} else if xBackground == yBackground {
+			forceUpdateBackground = true
+		}
 	}
-	if !foundCoverTag && coverFile != "" {
-		frontUpdatedLines := updatedLines[:1]
-		lastUpdatedLines := updatedLines[1:]
-		updatedLines = append(frontUpdatedLines, append([]string{"#COVER:" + coverFile + "\n"}, lastUpdatedLines...)...)
-		log.Debugf("Added missing cover tag with file %s", coverFile)
-	}
-	if !foundBackgroundTag && backgroundFile != "" {
-		frontUpdatedLines := updatedLines[:1]
-		lastUpdatedLines := updatedLines[1:]
-		updatedLines = append(frontUpdatedLines, append([]string{"#BACKGROUND:" + backgroundFile + "\n"}, lastUpdatedLines...)...)
-		log.Debugf("Added missing background tag with file %s", backgroundFile)
-	}
-	log.Debugf("Linedump of updatedLines: %v\n", updatedLines)
-	return updatedLines
+	return forceUpdateCover, forceUpdateBackground, &SongInfoTxt
 }
 
 func removeDuplicateTags(lines []string) []string {
@@ -438,6 +469,8 @@ func removeDuplicateTags(lines []string) []string {
 			if _, exists := tags[tag]; !exists {
 				tags[tag] = true
 				result = append(result, line)
+			} else {
+				log.Debugf("Removing duplicate tag: %s\n", tag)
 			}
 		} else {
 			result = append(result, line)
@@ -463,4 +496,31 @@ func logMissingFiles(missingFilesInPath []string) {
 	missingFilesRWM.Lock()
 	missingFiles = append(missingFiles, missingFilesInPath...)
 	missingFilesRWM.Unlock()
+}
+
+// Function to set a flag
+func setFlag(flags int, flag int) int {
+	return flags | flag
+}
+
+// Function to clear a flag
+func clearFlag(flags int, flag int) int {
+	return flags &^ flag
+}
+
+// Function to check if a flag is set
+func isFlagSet(flags int, flag int) bool {
+	return flags&flag != 0
+}
+
+func getSongInfoFromTxtFile(lines []string) (*SongInfo, error) {
+	songInfo := &SongInfo{
+		Artist:     getTagValue(lines, "#ARTIST"),
+		Title:      getTagValue(lines, "#TITLE"),
+		MP3:        getTagValue(lines, "#MP3"),
+		Cover:      getTagValue(lines, "#COVER"),
+		Video:      getTagValue(lines, "#VIDEO"),
+		Background: getTagValue(lines, "#BACKGROUND"),
+	}
+	return songInfo, nil
 }

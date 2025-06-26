@@ -36,7 +36,7 @@ func Run(songDir, logLevel string) {
 		}
 	}
 
-	entries, err := os.ReadDir(songDir)
+	entries, err := utils.GetAllSongFolders(songDir)
 	if err != nil {
 		log.Fatalf("reading song directory: %v\n", err)
 		return

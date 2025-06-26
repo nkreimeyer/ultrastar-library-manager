@@ -39,7 +39,7 @@ func Run(targetDir, logLevel string) error {
 	level, _ := log.ParseLevel(logLevel)
 	log.SetLevel(level)
 
-	entries, err := os.ReadDir(songDir)
+	entries, err := utils.GetAllSongFolders(songDir)
 	if err != nil {
 		return fmt.Errorf("reading songDir %q: %w", songDir, err)
 	}
