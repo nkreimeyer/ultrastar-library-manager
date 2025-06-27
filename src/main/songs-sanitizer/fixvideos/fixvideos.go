@@ -46,16 +46,6 @@ func Run(targetDir, logLevel string) error {
 
 	// Loop over all directories, build batches of songs and process them concurrently
 	batchSize := 100
-	validEntries := make([]os.DirEntry, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			// We only care about directories. Remove the entry from the list.
-			continue
-		} else {
-			validEntries = append(validEntries, entry)
-		}
-	}
-	entries = validEntries
 
 	batches := utils.SplitIntoBatches(entries, batchSize)
 
@@ -73,23 +63,23 @@ func Run(targetDir, logLevel string) error {
 
 // The `handleBatch` function processes a batch of directory entries, finds video files, and processes
 // them concurrently using a semaphore to control access.
-func handleBatch(batch []os.DirEntry, semaphore chan struct{}, batchWg *sync.WaitGroup) {
+func handleBatch(batch []string, semaphore chan struct{}, batchWg *sync.WaitGroup) {
 	batchWg.Add(1)
-	go func(batch []os.DirEntry) {
+	go func(batch []string) {
 		defer batchWg.Done()
 		semaphore <- struct{}{}        // Acquire semaphore
 		defer func() { <-semaphore }() // Release semaphore
 
 		for _, entry := range batch {
 			// find video files and process them
-			files, err := os.ReadDir(filepath.Join(songDir, entry.Name()))
+			files, err := os.ReadDir(entry)
 			if err != nil {
-				log.Errorf("reading directory %q: %v\n", filepath.Join(songDir, entry.Name()), err)
+				log.Errorf("reading directory %q: %v\n", entry, err)
 				continue
 			}
 			for _, file := range files {
 				if utils.IsVideoFile(file.Name()) {
-					processVideoFile(filepath.Join(songDir, entry.Name(), file.Name()))
+					processVideoFile(filepath.Join(entry, file.Name()))
 				}
 			}
 		}
@@ -143,8 +133,8 @@ func processVideoFile(file string) {
 			"-map", "0:v:0", // Select only the first video stream
 			"-c:v", "libx264",
 			"-crf", fmt.Sprint(crf), // Constant Rate Factor (18-28, lower = higher quality)
-			"-maxrate", "2.75M", // Maximum bitrate cap
-			"-bufsize", "5.5M", // Buffer size (typically 2x maxrate)
+			"-maxrate", "2.5M", // Maximum bitrate cap
+			"-bufsize", "5.0M", // Buffer size (typically 2x maxrate)
 			"-preset", "fast", // Encoding speed vs compression efficiency
 		)
 		outputFile += ".mp4"

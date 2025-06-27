@@ -33,16 +33,6 @@ func Run(targetDir, logLevel string) error {
 
 	// Loop over all directories, build batches of songs and process them concurrently
 	batchSize := 100
-	validEntries := make([]os.DirEntry, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			// We only care about directories. Remove the entry from the list.
-			continue
-		} else {
-			validEntries = append(validEntries, entry)
-		}
-	}
-	entries = validEntries
 
 	batches := utils.SplitIntoBatches(entries, batchSize)
 
@@ -59,24 +49,24 @@ func Run(targetDir, logLevel string) error {
 }
 
 // The `handleBatch` function processes a batch of directory entries, finds audio file, a
-func handleBatch(batch []os.DirEntry, semaphore chan struct{}, batchWg *sync.WaitGroup) {
+func handleBatch(batch []string, semaphore chan struct{}, batchWg *sync.WaitGroup) {
 	batchWg.Add(1)
-	go func(batch []os.DirEntry) {
+	go func(batch []string) {
 		defer batchWg.Done()
 		semaphore <- struct{}{}        // Acquire semaphore
 		defer func() { <-semaphore }() // Release semaphore
 
 		for _, entry := range batch {
 			// find video files and process them
-			files, err := os.ReadDir(filepath.Join(songDir, entry.Name()))
+			files, err := os.ReadDir(entry)
 			if err != nil {
-				log.Errorf("reading directory %q: %v\n", filepath.Join(songDir, entry.Name()), err)
+				log.Errorf("reading directory %q: %v\n", entry, err)
 				continue
 			}
 			for _, file := range files {
 				if utils.IsAudioFile(file.Name()) {
-					convertToStereo(filepath.Join(songDir, entry.Name(), file.Name()))
-					normalizeAudioFile(filepath.Join(songDir, entry.Name(), file.Name()))
+					convertToStereo(filepath.Join(entry, file.Name()))
+					normalizeAudioFile(filepath.Join(entry, file.Name()))
 				}
 			}
 		}
@@ -89,18 +79,20 @@ func convertToStereo(inputFile string) {
 	if channels <= 2 && channels != 0 {
 		log.Debugf("Skipping File: %s, already stereo or mono", inputFile)
 		return
-		cmd := exec.Command("ffmpeg", "-i", inputFile, "-ac", "2", outputFile)
-		err := cmd.Run()
-		if err != nil {
-			log.Errorf("Error converting to stereo: %v", err)
-			return
-		}
-		err = os.Rename(outputFile, inputFile)
-		if err != nil {
-			log.Errorf("Error renaming file: %v", err)
-		}
-		log.Debugf("Converted to stereo: %s", inputFile)
 	}
+	cmd := exec.Command("ffmpeg", "-i", inputFile, "-ac", "2", outputFile)
+	err := cmd.Run()
+	if err != nil {
+		log.Errorf("Error converting to stereo: %v", err)
+		os.Remove(outputFile)
+		return
+	}
+	err = os.Rename(outputFile, inputFile)
+	if err != nil {
+		log.Errorf("Error renaming file: %v", err)
+		os.Remove(outputFile)
+	}
+	log.Debugf("Converted to stereo: %s", inputFile)
 }
 
 func normalizeAudioFile(inputFile string) {
@@ -127,6 +119,7 @@ func normalizeAudioFile(inputFile string) {
 	err = applyGain(inputFile, tempFile, gainNeeded)
 	if err != nil {
 		log.Errorf("Error applying gain: %v", err)
+		os.Remove(tempFile) // Clean up temp file on error
 		return
 	}
 	err = os.Rename(tempFile, inputFile)

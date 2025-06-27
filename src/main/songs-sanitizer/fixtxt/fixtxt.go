@@ -73,28 +73,19 @@ func Run(targetDir, logLevel string) error {
 
 	// Loop over all directories, build batches of songs and process them concurrently
 	batchSize := 100
-	validEntries := make([]os.DirEntry, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			// We only care about directories. Remove the entry from the list.
-			continue
-		} else {
-			validEntries = append(validEntries, entry)
-		}
-	}
-	entries = validEntries
 
 	batches := utils.SplitIntoBatches(entries, batchSize)
 	for _, batch := range batches {
 		var wg sync.WaitGroup
 		for _, entry := range batch {
 			wg.Add(1)
-			go func(entry os.DirEntry) {
+			go func(entry string) {
 				defer wg.Done()
-				err := checkFolder(filepath.Join(songDir, entry.Name()))
+				err := checkFolderForDupTxtFiles(entry)
 				if err != nil {
-					log.Warnf(" Could not check folder %s: %v", entry.Name(), err)
+					log.Warnf("Could not check folder %s: %v", entry, err)
 				}
+				handleDirectory(entry)
 			}(entry)
 		}
 		wg.Wait()
@@ -103,27 +94,27 @@ func Run(targetDir, logLevel string) error {
 	// Print missing files to one level up from targetDir in a file called missing_files.txt
 	missingFilesPath := filepath.Join(filepath.Dir(songDir), "missing_files.txt")
 	if err := os.WriteFile(missingFilesPath, []byte(strings.Join(missingFiles, "\n")), 0644); err != nil {
-		log.Warnf(" Could not write missing files to %s: %v", missingFilesPath, err)
+		log.Warnf("Could not write missing files to %s: %v", missingFilesPath, err)
 	} else {
 		log.Infof("Wrote missing files to %s\n", missingFilesPath)
 	}
 	return nil
 }
 
-func checkFolder(folderPath string) error {
+func checkFolderForDupTxtFiles(folderPath string) error {
 	txtFiles, err := getTxtFiles(folderPath)
 	if err != nil {
-		log.Warnf(" Could not read folder %s: %v", folderPath, err)
+		log.Warnf("Could not read folder %s: %v", folderPath, err)
 		return err
 	}
 
 	switch len(txtFiles) {
 	case 0:
-		// Move entire folder to ../notxt/
-		if err := moveToNoTxt(folderPath); err != nil {
-			log.Warnf(" Could not move folder %s to ../notxt/: %v", folderPath, err)
+		// Move entire folder to ../invalid/
+		if err := moveToInvalid(folderPath); err != nil {
+			log.Warnf("Could not move folder %s to invalid directory: %v", folderPath, err)
 		} else {
-			log.Infof("Moved folder %s -> ../notxt/\n", folderPath)
+			log.Infof("Moved folder %s -> invalid directory", folderPath)
 		}
 		return nil
 	case 1:
@@ -138,7 +129,6 @@ func checkFolder(folderPath string) error {
 
 	}
 	// Now we only have one .txt file, call updateFilenamesInTxt on the folder
-	handleDirectory(folderPath)
 	return nil
 }
 
@@ -157,32 +147,19 @@ func getTxtFiles(folderPath string) ([]string, error) {
 	return txtFiles, err
 }
 
-// moveToNoTxt moves the entire folder to "../notxt/<folderName>" relative to folderPath.
-func moveToNoTxt(folderPath string) error {
-	parentDir := filepath.Dir(folderPath)
-	folderName := filepath.Base(folderPath)
-
-	notxtPath := filepath.Join(parentDir, "..", "notxt")
-	if err := os.MkdirAll(notxtPath, 0755); err != nil {
-		return fmt.Errorf("creating ../notxt/ directory: %w", err)
-	}
-
-	targetPath := filepath.Join(notxtPath, folderName)
-	// Rename will move the directory to the new location.
-	if err := os.Rename(folderPath, targetPath); err != nil {
-		return fmt.Errorf("moving folder: %w", err)
-	}
-	return nil
-}
-
-// moveToNoTxt moves the entire folder to "../notxt/<folderName>" relative to folderPath.
+// moveToInvalid moves the entire folder to "invalid/<folderName>" in the working directory of the executable.
 func moveToInvalid(folderPath string) error {
-	parentDir := filepath.Dir(folderPath)
 	folderName := filepath.Base(folderPath)
 
-	invalidPath := filepath.Join(parentDir, "..", "notxt")
+	// get the working directory of the executable
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("getting executable path: %w", err)
+	}
+	invalidPath := filepath.Join(filepath.Dir(exePath), "invalid")
+
 	if err := os.MkdirAll(invalidPath, 0755); err != nil {
-		return fmt.Errorf("creating ../notxt/ directory: %w", err)
+		return fmt.Errorf("creating invalid/ directory: %w", err)
 	}
 
 	targetPath := filepath.Join(invalidPath, folderName)

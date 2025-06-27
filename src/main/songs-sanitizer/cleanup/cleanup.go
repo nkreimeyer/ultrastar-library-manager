@@ -18,7 +18,12 @@ func Run(songDir, logLevel string) {
 	log.SetLevel(level)
 
 	// Create invalid directory
-	invalidDir := filepath.Join(filepath.Dir(songDir), "invalid")
+	exePath, err := os.Executable()
+	if err != nil {
+		log.Errorf("getting executable path: %v\n", err)
+		return
+	}
+	invalidDir := filepath.Join(exePath, "invalid")
 	if _, err := os.Stat(invalidDir); os.IsNotExist(err) {
 		err := os.Mkdir(invalidDir, 0755)
 		if err != nil {
@@ -26,7 +31,7 @@ func Run(songDir, logLevel string) {
 			return
 		}
 	}
-	extraFilesTargetDir := filepath.Join(filepath.Dir(songDir), "extra-files")
+	extraFilesTargetDir := filepath.Join(exePath, "extra-files")
 	// Create the extra files directory if it doesn't exist
 	if _, err := os.Stat(extraFilesTargetDir); os.IsNotExist(err) {
 		err := os.Mkdir(extraFilesTargetDir, 0755)
@@ -54,21 +59,20 @@ func Run(songDir, logLevel string) {
 	}
 }
 
-func filterEntries(entries []os.DirEntry, songDir, invalidDir string) []os.DirEntry {
-	validEntries := make([]os.DirEntry, 0, len(entries))
+func filterEntries(entries []string, songDir, invalidDir string) []string {
+	validEntries := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
+
 		// get all files in the directory. check if folder is empty or only contains one file, then delete it from list
-		files, err := os.ReadDir(filepath.Join(songDir, entry.Name()))
+		files, err := os.ReadDir(entry)
 		if err != nil {
-			log.Errorf("reading directory %q: %v\n", entry.Name(), err)
+			log.Errorf("reading directory %q: %v\n", entry, err)
 			continue
 		}
 		if len(files) <= 1 {
-			// move the folder to invalid directory
-			err = os.Rename(filepath.Join(songDir, entry.Name()), filepath.Join(invalidDir, entry.Name()))
+			// move the folder to invalid directory when empty or only contains one file
+			fileName := filepath.Base(entry)
+			err = os.Rename(entry, filepath.Join(invalidDir, fileName))
 			if err != nil {
 				log.Errorf("moving broken song: %v\n", err)
 			}
@@ -79,12 +83,12 @@ func filterEntries(entries []os.DirEntry, songDir, invalidDir string) []os.DirEn
 	return validEntries
 }
 
-func handleBatch(batch []os.DirEntry, songDir string, wg *sync.WaitGroup) {
+func handleBatch(batch []string, songDir string, wg *sync.WaitGroup) {
 	for _, entry := range batch {
 		wg.Add(1)
-		go func(entry os.DirEntry) {
+		go func(entry string) {
 			defer wg.Done()
-			cleanupDirectory(filepath.Join(songDir, entry.Name()))
+			cleanupDirectory(entry)
 		}(entry)
 	}
 }

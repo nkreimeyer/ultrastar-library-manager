@@ -287,24 +287,25 @@ func FolderContainsTxtFile(folderPath string) bool {
 	return false
 }
 
-func GetAllSongFolders(songDir string) ([]os.DirEntry, error) {
-	var songFolders []os.DirEntry
+func GetAllSongFolders(songDir string) ([]string, error) {
+	var songFolders []string
 	entries, err := os.ReadDir(songDir)
 	if err != nil {
 		return nil, fmt.Errorf("reading songDir %q: %w", songDir, err)
 	}
 	for _, entry := range entries {
-		if entry.IsDir() && FolderContainsTxtFile(filepath.Join(songDir, entry.Name())) {
-			songFolders = append(songFolders, entry)
+		fullPath := filepath.Join(songDir, entry.Name())
+		if entry.IsDir() && FolderContainsTxtFile(fullPath) {
+			songFolders = append(songFolders, fullPath)
 		} else if entry.IsDir() {
-			subFolders, err := GetAllSongFolders(filepath.Join(songDir, entry.Name()))
+			subFolders, err := GetAllSongFolders(fullPath)
 			if err != nil {
 				return nil, err
 			}
 			songFolders = append(songFolders, subFolders...)
 			// in case of no subfolders, add the current folder, as it might be a broken song folder.
 			if len(subFolders) == 0 {
-				songFolders = append(songFolders, entry)
+				songFolders = append(songFolders, fullPath)
 			}
 		}
 	}
