@@ -26,23 +26,13 @@ func Run(targetDir, logLevel string) error {
 	level, _ := log.ParseLevel(logLevel)
 	log.SetLevel(level)
 
-	entries, err := os.ReadDir(songDir)
+	entries, err := utils.GetAllSongFolders(songDir)
 	if err != nil {
 		return fmt.Errorf("reading songDir %q: %w", songDir, err)
 	}
 
 	// Loop over all directories, build batches of songs and process them concurrently
 	batchSize := 100
-	validEntries := make([]os.DirEntry, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			// We only care about directories. Remove the entry from the list.
-			continue
-		} else {
-			validEntries = append(validEntries, entry)
-		}
-	}
-	entries = validEntries
 
 	batches := utils.SplitIntoBatches(entries, batchSize)
 
@@ -59,27 +49,50 @@ func Run(targetDir, logLevel string) error {
 }
 
 // The `handleBatch` function processes a batch of directory entries, finds audio file, a
-func handleBatch(batch []os.DirEntry, semaphore chan struct{}, batchWg *sync.WaitGroup) {
+func handleBatch(batch []string, semaphore chan struct{}, batchWg *sync.WaitGroup) {
 	batchWg.Add(1)
-	go func(batch []os.DirEntry) {
+	go func(batch []string) {
 		defer batchWg.Done()
 		semaphore <- struct{}{}        // Acquire semaphore
 		defer func() { <-semaphore }() // Release semaphore
 
 		for _, entry := range batch {
 			// find video files and process them
-			files, err := os.ReadDir(filepath.Join(songDir, entry.Name()))
+			files, err := os.ReadDir(entry)
 			if err != nil {
-				log.Errorf("reading directory %q: %v\n", filepath.Join(songDir, entry.Name()), err)
+				log.Errorf("reading directory %q: %v\n", entry, err)
 				continue
 			}
 			for _, file := range files {
 				if utils.IsAudioFile(file.Name()) {
-					normalizeAudioFile(filepath.Join(songDir, entry.Name(), file.Name()))
+					convertToStereo(filepath.Join(entry, file.Name()))
+					normalizeAudioFile(filepath.Join(entry, file.Name()))
 				}
 			}
 		}
 	}(batch)
+}
+
+func convertToStereo(inputFile string) {
+	outputFile := filepath.Base(inputFile) + ".stereo" + filepath.Ext(inputFile)
+	channels := getChannelCount(inputFile)
+	if channels <= 2 && channels != 0 {
+		log.Debugf("Skipping File: %s, already stereo or mono", inputFile)
+		return
+	}
+	cmd := exec.Command("ffmpeg", "-i", inputFile, "-ac", "2", outputFile)
+	err := cmd.Run()
+	if err != nil {
+		log.Errorf("Error converting to stereo: %v", err)
+		os.Remove(outputFile)
+		return
+	}
+	err = os.Rename(outputFile, inputFile)
+	if err != nil {
+		log.Errorf("Error renaming file: %v", err)
+		os.Remove(outputFile)
+	}
+	log.Debugf("Converted to stereo: %s", inputFile)
 }
 
 func normalizeAudioFile(inputFile string) {
@@ -87,7 +100,8 @@ func normalizeAudioFile(inputFile string) {
 
 	maxVolume, err := getMaxVolume(inputFile)
 	if err != nil {
-		log.Fatalf("Error getting max volume: %v", err)
+		log.Errorf("Error getting max volume: %v", err)
+		return
 	}
 
 	// Calculate gain needed to reach -3dB (3dB below 0dB maximum)
@@ -99,13 +113,14 @@ func normalizeAudioFile(inputFile string) {
 		return
 	} else {
 		log.Debugf("File: %s, Max volume: %f dB, Gain needed: %f dB", inputFile, maxVolume, gainNeeded)
-
 	}
 
 	// Apply gain
 	err = applyGain(inputFile, tempFile, gainNeeded)
 	if err != nil {
-		log.Fatalf("Error applying gain: %v", err)
+		log.Errorf("Error applying gain: %v", err)
+		os.Remove(tempFile) // Clean up temp file on error
+		return
 	}
 	err = os.Rename(tempFile, inputFile)
 	if err != nil {
@@ -160,4 +175,25 @@ func applyGain(inputFile, outputFile string, gain float64) error {
 		return fmt.Errorf("ffmpeg gain application failed: %v\nOutput: %s", err, string(output))
 	}
 	return nil
+}
+
+func getChannelCount(inputFile string) int {
+	cmd := exec.Command("ffprobe",
+		"-v", "error",
+		"-select_streams", "a:0",
+		"-show_entries", "stream=channels",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		filepath.Clean(inputFile))
+
+	output, err := cmd.Output()
+	if err != nil {
+		log.Errorf("ffprobe channel count retrieval failed: %v\nOutput: %s", err, string(output))
+		return 0
+	}
+	channels, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		log.Errorf("failed to parse channel count: %v", err)
+		return 0
+	}
+	return channels
 }
