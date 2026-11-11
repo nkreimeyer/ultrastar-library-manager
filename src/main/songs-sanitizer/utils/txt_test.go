@@ -74,7 +74,7 @@ func TestDecodeTxt(t *testing.T) {
 
 func TestHeaderTags(t *testing.T) {
 	tags := HeaderTags("#title: A \n#mp3:a.mp3\n#MP3:b.mp3\n\n#NOCOLON\n: 0 1 2 la\n#AFTER:x\n")
-	if tags["TITLE"] != "A" || tags["MP3"] != "a.mp3" {
+	if tags["TITLE"] != "A" || tags["MP3"] != "b.mp3" { // the last occurrence wins
 		t.Errorf("unexpected tags %v", tags)
 	}
 	if _, ok := tags["AFTER"]; ok {

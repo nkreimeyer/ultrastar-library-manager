@@ -16,11 +16,12 @@ import (
 )
 
 // HeaderTags returns the header tags of a decoded song txt: upper-cased tag name without
-// "#" mapped to its trimmed value. The header ends at the first non-empty line that does
-// not start with "#". The first occurrence of a tag wins.
+// "#" mapped to its trimmed value. Lines end in "\n", "\r\n" or "\r". The header ends at
+// the first non-empty line that does not start with "#" (after leading blanks). A repeated
+// tag resolves like UltraStar does: the last occurrence wins.
 func HeaderTags(text string) map[string]string {
 	tags := map[string]string{}
-	for _, line := range strings.Split(text, "\n") {
+	for _, line := range splitLines(text) {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -32,12 +33,14 @@ func HeaderTags(text string) map[string]string {
 		if !ok {
 			continue
 		}
-		name = strings.ToUpper(strings.TrimSpace(name))
-		if _, seen := tags[name]; !seen {
-			tags[name] = strings.TrimSpace(value)
-		}
+		tags[strings.ToUpper(strings.TrimSpace(name))] = strings.TrimSpace(value)
 	}
 	return tags
+}
+
+// splitLines splits s at "\n" and "\r", leaving out empty lines.
+func splitLines(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool { return r == '\n' || r == '\r' })
 }
 
 // songHeaderTags are header tags of which at least one must be present for a .txt to be
@@ -74,6 +77,7 @@ func IsTxtFile(name string) bool {
 }
 
 // ListTxtFiles returns all .txt files directly inside dir (not recursive), sorted by name.
+// Like discovery, it accepts regular files and symlinks to regular files.
 func ListTxtFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -81,7 +85,7 @@ func ListTxtFiles(dir string) ([]string, error) {
 	}
 	var txtFiles []string
 	for _, entry := range entries {
-		if entry.Type().IsRegular() && IsTxtFile(entry.Name()) {
+		if IsTxtFile(entry.Name()) && IsRegularFile(dir, entry) {
 			txtFiles = append(txtFiles, filepath.Join(dir, entry.Name()))
 		}
 	}
@@ -243,7 +247,8 @@ func ReplaceFileReference(ops *fsops.Ops, dir, oldName, newName string) (replace
 	for i, line := range lines {
 		body := strings.TrimRight(line, "\r\n")
 		ending := line[len(body):]
-		trimmed := strings.TrimPrefix(body, "\ufeff")
+		// Leading blanks are allowed before the "#", as in HeaderTags.
+		trimmed := strings.TrimLeft(strings.TrimPrefix(body, "\ufeff"), " \t")
 		if !strings.HasPrefix(trimmed, "#") {
 			if strings.TrimSpace(trimmed) != "" {
 				break // end of header
@@ -255,7 +260,7 @@ func ReplaceFileReference(ops *fsops.Ops, dir, oldName, newName string) (replace
 			continue
 		}
 		if v := strings.TrimSpace(value); v == oldName || normalizeName(v) == want {
-			prefix := body[:len(body)-len(trimmed)] // keeps a BOM on the first line
+			prefix := body[:len(body)-len(trimmed)] // keeps a BOM on the first line and the indentation
 			lines[i] = prefix + "#" + name + ":" + newName + ending
 			replaced = true
 		}

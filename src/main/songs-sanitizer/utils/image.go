@@ -27,7 +27,8 @@ import (
 // image this package cannot measure apart from a broken one.
 var (
 	// ErrUnsupportedImage: the file is a known image format whose header this package
-	// cannot read (TIFF, AVIF/HEIF, JPEG XL, JPEG 2000, PSD, QOI). The file may be fine.
+	// cannot read (TIFF, AVIF/HEIF, JPEG XL, JPEG 2000, PSD, QOI, and JPEGs that use
+	// features image/jpeg lacks, such as arithmetic coding). The file may be fine.
 	ErrUnsupportedImage = errors.New("unsupported image format")
 	// ErrInvalidImage: the file is empty, truncated, has an unknown signature or an
 	// inconsistent header. It is not a usable image.
@@ -99,7 +100,7 @@ func readImageHeader(r io.Reader) (ImageHeader, error) {
 		return ImageHeader{}, fmt.Errorf("%w: unknown signature % x", ErrInvalidImage, b[:min(n, 8)])
 	}
 	if err != nil {
-		return ImageHeader{}, err
+		return ImageHeader{Format: h.Format}, err // the format is set with ErrUnsupportedImage
 	}
 	if h.Width <= 0 || h.Height <= 0 {
 		return ImageHeader{}, fmt.Errorf("%w: %s with dimensions %dx%d", ErrInvalidImage, h.Format, h.Width, h.Height)
@@ -111,7 +112,14 @@ func readImageHeader(r io.Reader) (ImageHeader, error) {
 // were already read.
 func stdConfig(format string, decode func(io.Reader) (image.Config, error), peeked []byte, rest io.Reader) (ImageHeader, error) {
 	cfg, err := decode(io.MultiReader(bytes.NewReader(peeked), rest))
-	if err != nil {
+	var unsupported jpeg.UnsupportedError
+	switch {
+	case errors.As(err, &unsupported):
+		// A JPEG feature image/jpeg lacks (arithmetic coding, 12-bit precision, unusual
+		// subsampling): the file may well be fine. png.UnsupportedError is not used here,
+		// because it reports headers that no valid PNG has (compression or filter method).
+		return ImageHeader{Format: format}, fmt.Errorf("%w: %s header: %w", ErrUnsupportedImage, format, err)
+	case err != nil:
 		return ImageHeader{}, fmt.Errorf("%w: %s header: %w", ErrInvalidImage, format, err)
 	}
 	return ImageHeader{Width: cfg.Width, Height: cfg.Height, Format: format}, nil
@@ -373,11 +381,12 @@ type imageCandidate struct {
 }
 
 // showableUnsupported lists the formats this package cannot measure but UltraStar Deluxe
-// can show (it loads images with SDL2_image, which reads TIFF). A hinted image in one of
+// can show (it loads images with SDL2_image, which reads TIFF and, through libjpeg-turbo,
+// JPEGs image/jpeg cannot read, such as arithmetic-coded ones). A hinted image in one of
 // these formats still counts for its hint; a hinted image that is corrupt (ErrInvalidImage)
 // never does, because a broken cover is worse than none. Without a hint, an unreadable
 // image is never chosen: its shape is unknown.
-var showableUnsupported = map[string]bool{"tiff": true}
+var showableUnsupported = map[string]bool{"tiff": true, "jpeg": true}
 
 // imageCandidates returns the visible image files of dir, sorted by name, with their
 // name hints and dimensions.

@@ -60,7 +60,9 @@ func collectSongFolders(ops *fsops.Ops, dir string) collected {
 		switch {
 		case name == config.OutputMarker:
 			log.Debugf("Skipping sanitizer output folder %s", dir)
-			return collected{}
+			// Not content of a song, but never a reason to treat the parent as one song
+			// (which would move the output folder along with it).
+			return collected{content: true}
 		case e.IsDir():
 			if !skipFolder(ops, dir, name) {
 				subdirs = append(subdirs, filepath.Join(dir, name))
