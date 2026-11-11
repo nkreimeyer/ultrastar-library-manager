@@ -172,3 +172,58 @@ func TestIsWithin(t *testing.T) {
 		}
 	}
 }
+
+func TestOriginalsDirAndJournalPath(t *testing.T) {
+	cfg := Config{SongDir: "/lib/songs", OutDir: "/lib/out"}
+	if want := filepath.Join("/lib/out", "originals"); cfg.OriginalsDir() != want {
+		t.Errorf("OriginalsDir = %q, want %q", cfg.OriginalsDir(), want)
+	}
+	if want := filepath.Join("/lib/out", "media-journal.txt"); cfg.JournalPath() != want {
+		t.Errorf("JournalPath = %q, want %q", cfg.JournalPath(), want)
+	}
+}
+
+// Processing e.g. <out>/invalid with the same -o would move songs onto themselves.
+func TestNewRejectsSongDirInsideOutputSubdirs(t *testing.T) {
+	root := mkdirs(t,
+		"out/invalid/Cat", "out/extra-files/Cat", "out/originals/Cat",
+		"out/invalid-old/Cat", "out/reports",
+		"lib/invalid", "lib/songs",
+	)
+	tests := []struct {
+		name, songDir, outDir string
+		wantErr               bool
+	}{
+		{"invalid", "out/invalid", "out", true},
+		{"below invalid", "out/invalid/Cat", "out", true},
+		{"extra-files", "out/extra-files", "out", true},
+		{"below extra-files", "out/extra-files/Cat", "out", true},
+		{"originals", "out/originals", "out", true},
+		{"below originals", "out/originals/Cat", "out", true},
+		{"common prefix with invalid", "out/invalid-old/Cat", "out", false},
+		{"other folder of the out dir", "out/reports", "out", false},
+		{"invalid with another -o", "out/invalid", "other-out", false},
+		// -o = parent of -s is fine, unless -s is named like an output subfolder.
+		{"-o is the parent", "lib/songs", "lib", false},
+		{"-o is the parent of a song dir named invalid", "lib/invalid", "lib", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := New(filepath.Join(root, tt.songDir), filepath.Join(root, tt.outDir), false)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("New(%q, %q) err = %v, wantErr %v", tt.songDir, tt.outDir, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestNewRejectsSongDirSymlinkedIntoOutputSubdir(t *testing.T) {
+	root := mkdirs(t, "out/invalid/Cat")
+	link := filepath.Join(root, "songs-link")
+	if err := os.Symlink(filepath.Join(root, "out", "invalid", "Cat"), link); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	if _, err := New(link, filepath.Join(root, "out"), false); err == nil {
+		t.Error("a song dir that resolves into <out>/invalid must be rejected")
+	}
+}

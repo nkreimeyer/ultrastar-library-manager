@@ -27,6 +27,7 @@ type Stats struct {
 	Moved    int64 // files or folders moved
 	Removed  int64 // files removed
 	Replaced int64 // files replaced by a processed version
+	Copied   int64 // files backed up (copied out of the library)
 	Failed   int64 // operations that returned an error
 }
 
@@ -34,7 +35,11 @@ type Stats struct {
 type Ops struct {
 	DryRun bool
 
-	written, moved, removed, replaced, failed atomic.Int64
+	written, moved, removed, replaced, copied, failed atomic.Int64
+
+	// failedKeys deduplicates failures reported with FailOnce.
+	failedMu   sync.Mutex
+	failedKeys map[string]bool
 
 	// reserveMu serializes choosing a free target name, so two goroutines moving
 	// equally named items into the same directory do not pick the same name.
@@ -45,12 +50,13 @@ type Ops struct {
 	// later modules can skip what an earlier module would have moved away.
 	plannedMu    sync.Mutex
 	plannedMoves map[string]bool
+	runTargets   []string // targets of the (real or planned) moves of this run
 }
 
 // New returns an Ops value. In dry-run mode no modification is executed; each planned
 // change is logged with a "[dry-run]" prefix instead.
 func New(dryRun bool) *Ops {
-	return &Ops{DryRun: dryRun, reserved: map[string]bool{}, plannedMoves: map[string]bool{}}
+	return &Ops{DryRun: dryRun, reserved: map[string]bool{}, plannedMoves: map[string]bool{}, failedKeys: map[string]bool{}}
 }
 
 // Stats returns a snapshot of the counters.
@@ -60,6 +66,7 @@ func (o *Ops) Stats() Stats {
 		Moved:    o.moved.Load(),
 		Removed:  o.removed.Load(),
 		Replaced: o.replaced.Load(),
+		Copied:   o.copied.Load(),
 		Failed:   o.failed.Load(),
 	}
 }
@@ -67,6 +74,17 @@ func (o *Ops) Stats() Stats {
 // Fail records a failed operation that happened outside of Ops (e.g. a failed ffmpeg run),
 // so it is reflected in the summary and the exit code.
 func (o *Ops) Fail() { o.failed.Add(1) }
+
+// FailOnce records a failure identified by key only the first time it is reported, e.g.
+// an unreadable folder that every module runs into.
+func (o *Ops) FailOnce(key string) {
+	o.failedMu.Lock()
+	defer o.failedMu.Unlock()
+	if !o.failedKeys[key] {
+		o.failedKeys[key] = true
+		o.failed.Add(1)
+	}
+}
 
 func (o *Ops) fail(err error) error {
 	if err != nil {
@@ -130,13 +148,25 @@ func (o *Ops) WriteFileAtomic(path string, data []byte) (bool, error) {
 	return true, nil
 }
 
-// WriteReport writes a report file (outside the library). Reports are written in dry-run
-// mode too, because they do not modify the library.
+// WriteReport atomically writes a report file (outside the library). Reports are written
+// in dry-run mode too, because they do not modify the library.
 func (o *Ops) WriteReport(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return o.fail(fmt.Errorf("creating report dir for %s: %w", path, err))
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	// Write atomically (temp file + rename): a crash must not truncate a report or the
+	// media journal.
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return o.fail(fmt.Errorf("writing report %s: %w", path, err))
+	}
+	_, werr := tmp.Write(data)
+	if err := errors.Join(werr, tmp.Chmod(0o644), tmp.Sync(), tmp.Close()); err != nil {
+		os.Remove(tmp.Name())
+		return o.fail(fmt.Errorf("writing report %s: %w", path, err))
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
 		return o.fail(fmt.Errorf("writing report %s: %w", path, err))
 	}
 	return nil
@@ -152,6 +182,14 @@ func (o *Ops) MoveInto(src, dstDir, relPath string) (string, error) {
 	if err != nil {
 		return "", o.fail(fmt.Errorf("moving %s: %w", src, err))
 	}
+	// A folder is merged into an existing target folder instead of creating "X (2)" if
+	// this run already moved something into that target (a category whose songs were just
+	// moved there), or if it is empty. A song folder colliding with one from an earlier run
+	// is not merged: it gets its own " (2)" folder.
+	if want := filepath.Join(dstDir, relPath); srcInfo.IsDir() &&
+		(o.movedBelowThisRun(want) || (isEmptyDir(src) && isDir(want))) {
+		return want, o.mergeInto(src, dstDir, relPath)
+	}
 	dst, err := o.reserveTarget(filepath.Join(dstDir, relPath), srcInfo.IsDir())
 	if err != nil {
 		return "", o.fail(err)
@@ -159,9 +197,7 @@ func (o *Ops) MoveInto(src, dstDir, relPath string) (string, error) {
 	defer o.release(dst)
 
 	if o.DryRun {
-		o.plannedMu.Lock()
-		o.plannedMoves[filepath.Clean(src)] = true
-		o.plannedMu.Unlock()
+		o.markPlanned(src, dst)
 		log.Infof("[dry-run] would move %s -> %s", src, dst)
 		o.moved.Add(1)
 		return dst, nil
@@ -173,6 +209,7 @@ func (o *Ops) MoveInto(src, dstDir, relPath string) (string, error) {
 		return "", o.fail(fmt.Errorf("moving %s -> %s: %w", src, dst, err))
 	}
 	log.Infof("Moved %s -> %s", src, dst)
+	o.recordTarget(dst)
 	o.moved.Add(1)
 	return dst, nil
 }
@@ -210,6 +247,119 @@ func (o *Ops) Replace(tmp, dst string) error {
 		return o.fail(fmt.Errorf("replacing %s: %w", dst, err))
 	}
 	o.replaced.Add(1)
+	return nil
+}
+
+// CopyInto copies the regular file src to dstDir/relPath (creating parent folders, adding
+// a " (2)" suffix if the target exists), e.g. to keep a backup of a file before it is
+// replaced. Permissions and mtime are preserved. It returns the final target path.
+func (o *Ops) CopyInto(src, dstDir, relPath string) (string, error) {
+	info, err := os.Stat(src)
+	if err != nil {
+		return "", o.fail(fmt.Errorf("copying %s: %w", src, err))
+	}
+	if !info.Mode().IsRegular() {
+		return "", o.fail(fmt.Errorf("copying %s: not a regular file", src))
+	}
+	dst, err := o.reserveTarget(filepath.Join(dstDir, relPath), false)
+	if err != nil {
+		return "", o.fail(err)
+	}
+	defer o.release(dst)
+	if o.DryRun {
+		log.Infof("[dry-run] would copy %s -> %s", src, dst)
+		o.copied.Add(1)
+		return dst, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", o.fail(fmt.Errorf("creating %s: %w", filepath.Dir(dst), err))
+	}
+	if err := copyFile(src, dst, info); err != nil {
+		os.Remove(dst)
+		return "", o.fail(fmt.Errorf("copying %s -> %s: %w", src, dst, err))
+	}
+	o.copied.Add(1)
+	return dst, nil
+}
+
+// markPlanned records a planned (dry-run) move of src to dst ("" if src just disappears).
+func (o *Ops) markPlanned(src, dst string) {
+	o.plannedMu.Lock()
+	o.plannedMoves[filepath.Clean(src)] = true
+	o.plannedMu.Unlock()
+	if dst != "" {
+		o.recordTarget(dst)
+	}
+}
+
+// recordTarget remembers the target of a (real or planned) move of this run.
+func (o *Ops) recordTarget(dst string) {
+	o.plannedMu.Lock()
+	o.runTargets = append(o.runTargets, filepath.Clean(dst))
+	o.plannedMu.Unlock()
+}
+
+// movedBelowThisRun reports whether this run moved (or, in dry-run mode, planned to move)
+// something into a path below dir.
+func (o *Ops) movedBelowThisRun(dir string) bool {
+	o.plannedMu.Lock()
+	defer o.plannedMu.Unlock()
+	prefix := filepath.Clean(dir) + string(filepath.Separator)
+	for _, t := range o.runTargets {
+		if strings.HasPrefix(t, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func isDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
+func isEmptyDir(dir string) bool {
+	f, err := os.Open(dir)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	_, err = f.Readdirnames(1)
+	return errors.Is(err, io.EOF)
+}
+
+// mergeInto moves every entry of the folder src into dstDir/relPath (recursively merging
+// subfolders that exist there too; files that exist get a " (2)" suffix) and then removes
+// the emptied src.
+func (o *Ops) mergeInto(src, dstDir, relPath string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return o.fail(fmt.Errorf("merging %s: %w", src, err))
+	}
+	var errs []error
+	for _, e := range entries {
+		child := filepath.Join(src, e.Name())
+		if o.WouldBeMoved(child) {
+			continue // dry-run: already planned away by an earlier module
+		}
+		if _, err := o.MoveInto(child, dstDir, filepath.Join(relPath, e.Name())); err != nil {
+			errs = append(errs, err) // already counted
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("merging %s: %w", src, errors.Join(errs...))
+	}
+	if o.DryRun {
+		log.Infof("[dry-run] would merge %s into %s", src, filepath.Join(dstDir, relPath))
+		o.markPlanned(src, "")
+		o.moved.Add(1)
+		return nil
+	}
+	if err := os.Remove(src); err != nil {
+		return o.fail(fmt.Errorf("removing merged folder %s: %w", src, err))
+	}
+	log.Infof("Merged %s into %s", src, filepath.Join(dstDir, relPath))
+	o.moved.Add(1)
 	return nil
 }
 

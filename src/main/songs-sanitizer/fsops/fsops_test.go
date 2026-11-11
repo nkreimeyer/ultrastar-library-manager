@@ -579,3 +579,286 @@ func TestCopyFileRefusesExistingTarget(t *testing.T) {
 		t.Error("existing target modified")
 	}
 }
+
+func TestCopyInto(t *testing.T) {
+	lib, out := t.TempDir(), t.TempDir()
+	src := filepath.Join(lib, "Cat", "Song", "song.mp3")
+	// 0666 is reduced by any usual umask, so copying the mode must be explicit.
+	writeFile(t, src, "audio", 0o666)
+	mt := time.Date(2019, 3, 4, 5, 6, 7, 0, time.UTC)
+	if err := os.Chtimes(src, mt, mt); err != nil {
+		t.Fatal(err)
+	}
+	rel := filepath.Join("Cat", "Song", "song.mp3")
+	before := snapshot(t, lib)
+
+	ops := New(false)
+	dst, err := ops.CopyInto(src, filepath.Join(out, "originals"), rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(out, "originals", rel); dst != want {
+		t.Errorf("target = %q, want %q", dst, want)
+	}
+	st, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readFile(t, dst) != "audio" || st.Mode().Perm() != 0o666 || !st.ModTime().Equal(mt) {
+		t.Errorf("copy: content %q mode %v mtime %v; want %q %v %v", readFile(t, dst), st.Mode().Perm(), st.ModTime(), "audio", os.FileMode(0o666), mt)
+	}
+	if after := snapshot(t, lib); strings.Join(after, "\n") != strings.Join(before, "\n") {
+		t.Errorf("CopyInto changed the source:\nbefore %v\nafter  %v", before, after)
+	}
+
+	// A second backup of the same file must not overwrite the first one.
+	writeFile(t, src, "audio v2", 0o666)
+	dst2, err := ops.CopyInto(src, filepath.Join(out, "originals"), rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(out, "originals", "Cat", "Song", "song (2).mp3"); dst2 != want {
+		t.Errorf("second target = %q, want %q", dst2, want)
+	}
+	if readFile(t, dst) != "audio" || readFile(t, dst2) != "audio v2" {
+		t.Errorf("contents = %q, %q", readFile(t, dst), readFile(t, dst2))
+	}
+	if s := ops.Stats(); s != (Stats{Copied: 2}) {
+		t.Errorf("Stats = %+v, want Copied=2", s)
+	}
+}
+
+func TestCopyIntoDryRun(t *testing.T) {
+	lib, out := t.TempDir(), t.TempDir()
+	src := filepath.Join(lib, "Song", "song.mp3")
+	writeFile(t, src, "audio", 0o644)
+	writeFile(t, filepath.Join(out, "Song", "song.mp3"), "older backup", 0o644)
+	beforeLib, beforeOut := snapshot(t, lib), snapshot(t, out)
+
+	ops := New(true)
+	dst, err := ops.CopyInto(src, out, filepath.Join("Song", "song.mp3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The planned target honours the collision suffix, but nothing is created.
+	if want := filepath.Join(out, "Song", "song (2).mp3"); dst != want {
+		t.Errorf("target = %q, want %q", dst, want)
+	}
+	if after := snapshot(t, lib); strings.Join(after, "\n") != strings.Join(beforeLib, "\n") {
+		t.Errorf("library changed in dry-run: %v", after)
+	}
+	if after := snapshot(t, out); strings.Join(after, "\n") != strings.Join(beforeOut, "\n") {
+		t.Errorf("out dir changed in dry-run: %v", after)
+	}
+	if s := ops.Stats(); s != (Stats{Copied: 1}) {
+		t.Errorf("Stats = %+v, want Copied=1", s)
+	}
+}
+
+func TestCopyIntoRejectsNonRegularSource(t *testing.T) {
+	lib := t.TempDir()
+	folder := filepath.Join(lib, "Song")
+	writeFile(t, filepath.Join(folder, "song.txt"), "x", 0o644)
+	for _, dry := range []bool{false, true} {
+		out := t.TempDir()
+		ops := New(dry)
+		if _, err := ops.CopyInto(folder, out, "Song"); err == nil {
+			t.Errorf("dry=%v: copying a folder succeeded", dry)
+		}
+		if _, err := ops.CopyInto(filepath.Join(lib, "missing.mp3"), out, "missing.mp3"); err == nil {
+			t.Errorf("dry=%v: copying a missing file succeeded", dry)
+		}
+		if s := ops.Stats(); s != (Stats{Failed: 2}) {
+			t.Errorf("dry=%v: Stats = %+v, want Failed=2", dry, s)
+		}
+		if names := dirNames(t, out); len(names) != 0 {
+			t.Errorf("dry=%v: out dir changed: %v", dry, names)
+		}
+	}
+}
+
+func TestFailOnce(t *testing.T) {
+	ops := New(false)
+	ops.FailOnce("unreadable:/a")
+	ops.FailOnce("unreadable:/a")
+	ops.FailOnce("unreadable:/b")
+	ops.Fail() // plain failures are independent of the keys
+	ops.FailOnce("unreadable:/a")
+	if s := ops.Stats(); s.Failed != 3 {
+		t.Errorf("Failed = %d, want 3 (two keys + one Fail)", s.Failed)
+	}
+}
+
+func TestFailOnceConcurrent(t *testing.T) {
+	const keys, callers = 5, 40
+	ops := New(true)
+	var wg sync.WaitGroup
+	for i := range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ops.FailOnce(fmt.Sprint("key", i%keys))
+		}()
+	}
+	wg.Wait()
+	if s := ops.Stats(); s.Failed != keys {
+		t.Errorf("Failed = %d, want %d", s.Failed, keys)
+	}
+}
+
+func TestMoveIntoMergesEmptyFolder(t *testing.T) {
+	lib, out := t.TempDir(), t.TempDir()
+	src := filepath.Join(lib, "Category")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(out, "invalid", "Category")
+	writeFile(t, filepath.Join(want, "Song", "song.txt"), "moved earlier", 0o644)
+
+	ops := New(false)
+	dst, err := ops.MoveInto(src, filepath.Join(out, "invalid"), "Category")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dst != want {
+		t.Errorf("target = %q, want %q", dst, want)
+	}
+	if exists(src) {
+		t.Error("empty source folder still exists")
+	}
+	if names := dirNames(t, filepath.Join(out, "invalid")); strings.Join(names, ",") != "Category" {
+		t.Errorf("invalid/ = %v, want only Category (no \"Category (2)\")", names)
+	}
+	if got := readFile(t, filepath.Join(want, "Song", "song.txt")); got != "moved earlier" {
+		t.Errorf("existing target content changed: %q", got)
+	}
+	if s := ops.Stats(); s != (Stats{Moved: 1}) {
+		t.Errorf("Stats = %+v, want Moved=1", s)
+	}
+	if ops.WouldBeMoved(src) {
+		t.Error("WouldBeMoved must be false outside dry-run mode")
+	}
+}
+
+func TestMoveIntoMergesEmptyFolderDryRun(t *testing.T) {
+	lib, out := t.TempDir(), t.TempDir()
+	src := filepath.Join(lib, "Category")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(out, "Category"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshot(t, lib)
+
+	ops := New(true)
+	dst, err := ops.MoveInto(src, out, "Category")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(out, "Category"); dst != want {
+		t.Errorf("target = %q, want %q", dst, want)
+	}
+	if after := snapshot(t, lib); strings.Join(after, "\n") != strings.Join(before, "\n") {
+		t.Errorf("library changed in dry-run: %v", after)
+	}
+	if !ops.WouldBeMoved(src) || !ops.WouldBeMoved(filepath.Join(src, "child")) {
+		t.Error("the merged folder (and anything below it) must be planned as moved")
+	}
+	if ops.WouldBeMoved(lib) || ops.WouldBeMoved(src+" 2") {
+		t.Error("parents and siblings with a common prefix must not be planned as moved")
+	}
+	if s := ops.Stats(); s != (Stats{Moved: 1}) {
+		t.Errorf("Stats = %+v, want Moved=1", s)
+	}
+}
+
+func TestMoveIntoEmptyFolderWithoutMergeTarget(t *testing.T) {
+	out := t.TempDir()
+	// An empty folder without an existing target is moved normally.
+	src := filepath.Join(t.TempDir(), "Empty")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ops := New(false)
+	dst, err := ops.MoveInto(src, out, "Empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(dst); err != nil || !st.IsDir() || exists(src) || dst != filepath.Join(out, "Empty") {
+		t.Errorf("empty folder not moved to %q (dst %q, err %v)", filepath.Join(out, "Empty"), dst, err)
+	}
+
+	// A file in the way is not a folder to merge into: the suffix is used.
+	src2 := filepath.Join(t.TempDir(), "Blocked")
+	if err := os.MkdirAll(src2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(out, "Blocked"), "file", 0o644)
+	dst2, err := ops.MoveInto(src2, out, "Blocked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(out, "Blocked (2)"); dst2 != want {
+		t.Errorf("target = %q, want %q", dst2, want)
+	}
+}
+
+func TestMoveIntoNonEmptyFolderNotMerged(t *testing.T) {
+	for _, dry := range []bool{false, true} {
+		lib, out := t.TempDir(), t.TempDir()
+		src := filepath.Join(lib, "Song")
+		writeFile(t, filepath.Join(src, "song.txt"), "new", 0o644)
+		writeFile(t, filepath.Join(out, "Song", "song.txt"), "old", 0o644)
+
+		ops := New(dry)
+		dst, err := ops.MoveInto(src, out, "Song")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(out, "Song (2)"); dst != want {
+			t.Errorf("dry=%v: target = %q, want %q", dry, dst, want)
+		}
+		if got := readFile(t, filepath.Join(out, "Song", "song.txt")); got != "old" {
+			t.Errorf("dry=%v: existing target changed: %q", dry, got)
+		}
+		if dry {
+			if !exists(src) || exists(dst) || !ops.WouldBeMoved(src) {
+				t.Errorf("dry-run: source must stay, target must not exist, source must be planned")
+			}
+		} else if exists(src) || readFile(t, filepath.Join(dst, "song.txt")) != "new" {
+			t.Error("folder not moved to the suffixed target")
+		}
+	}
+}
+
+func TestReplaceDryRunLeavesTempFile(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "song.mp3")
+	writeFile(t, dst, "old", 0o644)
+	tmp, err := TempFileNear(dst, ".mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, tmp, "new", 0o644)
+	before := snapshot(t, dir)
+
+	ops := New(true)
+	if err := ops.Replace(tmp, dst); err != nil {
+		t.Fatal(err)
+	}
+	if after := snapshot(t, dir); strings.Join(after, "\n") != strings.Join(before, "\n") {
+		t.Errorf("dry-run Replace changed files:\nbefore %v\nafter  %v", before, after)
+	}
+	if s := ops.Stats(); s != (Stats{Replaced: 1}) {
+		t.Errorf("Stats = %+v, want Replaced=1", s)
+	}
+}
+
+func TestPlanReplace(t *testing.T) {
+	ops := New(true)
+	ops.PlanReplace("/lib/Song/song.mp3", "re-encode")
+	if s := ops.Stats(); s != (Stats{Replaced: 1}) {
+		t.Errorf("Stats = %+v, want Replaced=1", s)
+	}
+}

@@ -52,7 +52,14 @@ func New(songDir, outDir string, dryRun bool) (Config, error) {
 	if IsWithin(absOut, absSong) {
 		return Config{}, fmt.Errorf("output dir %q must not be inside the song dir %q", absOut, absSong)
 	}
-	return Config{SongDir: absSong, OutDir: absOut, DryRun: dryRun}, nil
+	cfg := Config{SongDir: absSong, OutDir: absOut, DryRun: dryRun}
+	// Reprocessing e.g. <out>/invalid with the same output dir would move songs onto themselves.
+	for _, d := range []string{cfg.InvalidDir(), cfg.ExtraFilesDir(), cfg.OriginalsDir()} {
+		if IsWithin(absSong, d) {
+			return Config{}, fmt.Errorf("song dir %q must not be inside %q of the output dir; use a different -o", absSong, d)
+		}
+	}
+	return cfg, nil
 }
 
 // resolveExisting resolves symlinks in the longest existing prefix of the absolute path p
@@ -80,6 +87,12 @@ func (c Config) PrepareOutDir() error {
 	if err := os.MkdirAll(c.OutDir, 0o755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
+	// Remove temp files of reports/journal left behind by an interrupted run.
+	if stale, err := filepath.Glob(filepath.Join(c.OutDir, ".*.tmp")); err == nil {
+		for _, f := range stale {
+			os.Remove(f)
+		}
+	}
 	marker := filepath.Join(c.OutDir, OutputMarker)
 	if err := os.WriteFile(marker, []byte("Output folder of songs-sanitizer. Song folder discovery skips folders containing this file.\n"), 0o644); err != nil {
 		return fmt.Errorf("creating %s: %w", marker, err)
@@ -92,6 +105,12 @@ func (c Config) InvalidDir() string { return filepath.Join(c.OutDir, "invalid") 
 
 // ExtraFilesDir is where files removed from song folders are moved to.
 func (c Config) ExtraFilesDir() string { return filepath.Join(c.OutDir, "extra-files") }
+
+// OriginalsDir is where the originals of re-encoded audio files are kept.
+func (c Config) OriginalsDir() string { return filepath.Join(c.OutDir, "originals") }
+
+// JournalPath is the media journal (see package journal).
+func (c Config) JournalPath() string { return filepath.Join(c.OutDir, "media-journal.txt") }
 
 // ReportPath returns the path of a report file in the output directory.
 func (c Config) ReportPath(name string) string { return filepath.Join(c.OutDir, name) }
