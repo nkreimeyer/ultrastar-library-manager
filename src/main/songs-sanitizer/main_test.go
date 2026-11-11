@@ -251,19 +251,27 @@ func TestRunOrganizeFlags(t *testing.T) {
 	}
 	tests := []struct {
 		name               string
+		sameTier           bool // hq and low in one -s
 		flags              []string
 		abbaHasVersion     bool
 		beatles            string
 		priority, ignoreTh bool
 		deepNote           bool
 	}{
-		{"defaults", nil, true, "T", false, false, false},
-		{"all flags", []string{"-priority", "-ignore-the", "-deep"}, false, "B", true, true, true},
+		{"defaults", false, nil, true, "T", false, false, false},
+		{"all flags", false, []string{"-priority", "-ignore-the", "-deep"}, false, "B", true, true, true},
+		// One -s is one tier: -priority does not separate its folders, so #VERSION decides.
+		{"one tier with -priority", true, []string{"-priority"}, true, "T", true, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			hq, low, lib, out := setup(t)
-			args := append([]string{"organize", "-s", hq, "-s", low, "-l", lib, "-o", out}, tt.flags...)
+			sources := []string{"-s", hq, "-s", low}
+			if tt.sameTier {
+				sources = []string{"-s", hq + string(filepath.ListSeparator) + low}
+			}
+			args := append(append([]string{"organize"}, sources...), "-l", lib, "-o", out)
+			args = append(args, tt.flags...)
 			if got := runWithArgs(t, args...); got != exitOK {
 				t.Fatalf("run(%q) = %d", args, got)
 			}
