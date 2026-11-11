@@ -526,8 +526,10 @@ func TestLossyNormalizationIsIdempotent(t *testing.T) {
 			if got := ops.Stats().Replaced; got != 1 {
 				t.Fatalf("first run replaced %d files, want 1", got)
 			}
-			if !probe(t, audio).Normalized {
-				t.Errorf("normalized file must carry the %s tag", normalizedTag)
+			// MP4 cannot carry the tag without losing its iTunes atoms (see
+			// noMetadataExts); the media journal stops the re-encodes instead.
+			if tagged := probe(t, audio).Normalized; tagged == noMetadataExts[ext] {
+				t.Errorf("tagged = %v, want %v (%s tag)", tagged, !noMetadataExts[ext], normalizedTag)
 			}
 			for i := 2; i <= 3; i++ {
 				again := fsops.New(false)

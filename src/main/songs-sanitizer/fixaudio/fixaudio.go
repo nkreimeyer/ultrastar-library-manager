@@ -64,8 +64,11 @@ const (
 
 // noMetadataExts cannot carry the custom normalizedTag. Files of these formats are
 // recorded in the media journal instead (see processor.journal), which matters most for
-// lossy raw ADTS AAC, whose peak drifts with every re-encode.
-var noMetadataExts = map[string]bool{".wav": true, ".aac": true}
+// lossy raw ADTS AAC, whose peak drifts with every re-encode. MP4 (.m4a) could carry it
+// only with "-movflags +use_metadata_tags", which writes all metadata as QuickTime mdta
+// keys instead of iTunes ilst atoms: the cover ("covr") is dropped and players reading
+// iTunes tags (TagLib, mutagen, iTunes) lose title and artist.
+var noMetadataExts = map[string]bool{".wav": true, ".aac": true, ".m4a": true}
 
 // workers is the number of song folders processed at the same time. It is a variable so
 // tests can force folders to be processed concurrently on machines with a single CPU.
@@ -167,6 +170,7 @@ func (p *processor) processFolder(folder string) {
 
 // stemFiles returns the on-disk names of the files referenced by the #VOCALS and
 // #INSTRUMENTAL tags of the song txt in folder, read through ops (see utils.ReadSongTags).
+// A repeated tag resolves like UltraStar does: the last occurrence names the stem.
 // A folder without a song txt has no stems.
 func stemFiles(ops *fsops.Ops, folder string) (map[string]bool, error) {
 	tags, err := utils.ReadSongTags(ops, folder)
@@ -201,10 +205,8 @@ func (p *processor) processFile(folder, name string) {
 		ops.Fail()
 		return
 	}
-	if _, _, known := encoderFor(info.Codec); !known {
-		// ffmpeg would pick its default encoder for the extension (Vorbis at a low default
-		// quality for .mka): a silent loss of quality, fixed in place by the marker tag.
-		log.Warnf("Skipping %s: no encoder known to keep its %q audio, it is left unchanged", path, info.Codec)
+	if why := cannotKeep(info); why != "" {
+		log.Warnf("Skipping %s: %s, it is left unchanged", path, why)
 		return
 	}
 
@@ -275,9 +277,13 @@ func (p *processor) processFile(folder, name string) {
 		log.Errorf("Failed to %s to %s: %v", action, path, err)
 		return
 	}
-	if err := p.journal.AddAndSave(journalKind, path, p.ops); err != nil {
+	// A failing Save is counted by ops (WriteReport); a failing Add (fingerprinting the
+	// new file) is not.
+	if err := p.journal.Add(journalKind, path); err != nil {
 		log.Errorf("Recording %s in the media journal: %v", path, err)
 		ops.Fail()
+	} else if err := p.journal.Save(ops); err != nil {
+		log.Errorf("Saving the media journal after %s: %v", path, err) // counted by ops
 	}
 	log.Infof("Processed %s: %s", path, action)
 }
@@ -291,9 +297,28 @@ func baseFilters(downmix bool) []string {
 	return nil
 }
 
+// heAACProfiles are AAC profiles with SBR (and PS). ffmpeg's native aac encoder only
+// produces AAC-LC, which at the low bitrates HE-AAC is used with sounds much worse.
+var heAACProfiles = map[string]bool{"HE-AAC": true, "HE-AACv2": true}
+
+// cannotKeep returns why the audio described by info cannot be re-encoded as itself, or
+// "" if it can.
+func cannotKeep(info audioInfo) string {
+	if _, _, known := encoderFor(info.Codec); !known {
+		// ffmpeg would pick its default encoder for the extension (Vorbis at a low default
+		// quality for .mka): a silent loss of quality, fixed in place by the marker tag.
+		return fmt.Sprintf("no encoder known to keep its %q audio", info.Codec)
+	}
+	if info.Codec == "aac" && heAACProfiles[info.Profile] {
+		return fmt.Sprintf("its %s audio would become AAC-LC (ffmpeg's aac encoder has no SBR)", info.Profile)
+	}
+	return ""
+}
+
 // audioInfo describes the first audio stream of a file.
 type audioInfo struct {
 	Codec     string
+	Profile   string // codec profile as ffprobe names it, e.g. "LC" or "HE-AAC"
 	Channels  int
 	SampleFmt string
 	Bitrate   int // bits per second, 0 if unknown
@@ -309,7 +334,7 @@ func probeAudio(path string) (audioInfo, error) {
 	out, err := exec.Command("ffprobe",
 		"-v", "error",
 		"-select_streams", "a:0",
-		"-show_entries", "stream=codec_name,channels,sample_fmt,bit_rate:stream_tags:format=bit_rate:format_tags",
+		"-show_entries", "stream=codec_name,profile,channels,sample_fmt,bit_rate:stream_tags:format=bit_rate:format_tags",
 		"-of", "json",
 		path).Output()
 	if err != nil {
@@ -336,6 +361,7 @@ func parseProbe(data []byte) (audioInfo, error) {
 	var probe struct {
 		Streams []struct {
 			CodecName string            `json:"codec_name"`
+			Profile   string            `json:"profile"`
 			Channels  int               `json:"channels"`
 			SampleFmt string            `json:"sample_fmt"`
 			BitRate   string            `json:"bit_rate"`
@@ -356,7 +382,7 @@ func parseProbe(data []byte) (audioInfo, error) {
 	if s.Channels <= 0 {
 		return audioInfo{}, errors.New("unknown channel count")
 	}
-	info := audioInfo{Codec: s.CodecName, Channels: s.Channels, SampleFmt: s.SampleFmt,
+	info := audioInfo{Codec: s.CodecName, Profile: s.Profile, Channels: s.Channels, SampleFmt: s.SampleFmt,
 		Normalized: hasTag(s.Tags, normalizedTag) || hasTag(probe.Format.Tags, normalizedTag)}
 	for _, br := range []string{s.BitRate, probe.Format.BitRate} {
 		if n, err := strconv.Atoi(br); err == nil && n > 0 {
@@ -433,9 +459,6 @@ func encodeArgs(in, out string, info audioInfo, filters []string) []string {
 	args = append(args, "-map_metadata", "0")
 	if !noMetadataExts[ext] {
 		args = append(args, "-metadata", fmt.Sprintf("%s=%.1fdB", normalizedTag, targetPeakDB))
-		if ext == ".m4a" {
-			args = append(args, "-movflags", "+use_metadata_tags") // needed for custom tags in MP4
-		}
 	}
 	if len(filters) > 0 {
 		args = append(args, "-af", strings.Join(filters, ","))
