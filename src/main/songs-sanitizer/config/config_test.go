@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -225,5 +226,106 @@ func TestNewRejectsSongDirSymlinkedIntoOutputSubdir(t *testing.T) {
 	}
 	if _, err := New(link, filepath.Join(root, "out"), false); err == nil {
 		t.Error("a song dir that resolves into <out>/invalid must be rejected")
+	}
+}
+
+// The not yet existing tail of the out dir is appended in order, also below a symlink.
+func TestNewOutDirSeveralMissingComponents(t *testing.T) {
+	root, err := filepath.EvalSymlinks(mkdirs(t, "songs", "target"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	songs := filepath.Join(root, "songs")
+	cfg, err := New(songs, filepath.Join(root, "new1", "new2", "out"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, "new1", "new2", "out"); cfg.OutDir != want {
+		t.Errorf("OutDir = %q, want %q", cfg.OutDir, want)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(filepath.Join(root, "target"), link); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	cfg, err = New(songs, filepath.Join(link, "a", "b"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, "target", "a", "b"); cfg.OutDir != want {
+		t.Errorf("OutDir via symlink = %q, want %q", cfg.OutDir, want)
+	}
+}
+
+func TestNewRejectsDanglingSymlinkOutDir(t *testing.T) {
+	root := mkdirs(t, "songs")
+	link := filepath.Join(root, "dangling")
+	if err := os.Symlink(filepath.Join(root, "missing"), link); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	for _, out := range []string{link, filepath.Join(link, "sub")} {
+		if cfg, err := New(filepath.Join(root, "songs"), out, false); err == nil || !strings.Contains(err.Error(), "resolving output dir") {
+			t.Errorf("New(-o %q) = %+v, %v; want a resolving error", out, cfg, err)
+		}
+	}
+}
+
+// PrepareOutDir removes only stale temp files of reports/the journal, directly in the out dir.
+func TestPrepareOutDirRemovesOnlyStaleTempFiles(t *testing.T) {
+	root := mkdirs(t, "songs", "out/sub")
+	cfg, err := New(filepath.Join(root, "songs"), filepath.Join(root, "out"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(cfg.OutDir, ".report.txt.123.tmp")
+	keep := []string{
+		filepath.Join(cfg.OutDir, "report.txt"),
+		filepath.Join(cfg.OutDir, "media-journal.txt"),
+		filepath.Join(cfg.OutDir, "notes.tmp"), // not hidden: not one of ours
+		filepath.Join(cfg.OutDir, "sub", ".x.tmp"),
+	}
+	for _, f := range append([]string{stale}, keep...) {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cfg.PrepareOutDir(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale temp file not removed: %v", err)
+	}
+	for _, f := range keep {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("%s removed: %v", f, err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(cfg.OutDir, OutputMarker))
+	if err != nil || len(data) == 0 {
+		t.Errorf("marker = %q, %v", data, err)
+	}
+}
+
+func TestPrepareOutDirErrors(t *testing.T) {
+	root := mkdirs(t, "songs", "ro")
+	file := filepath.Join(root, "file")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The out dir cannot be created below a file.
+	if err := (Config{OutDir: filepath.Join(file, "out")}).PrepareOutDir(); err == nil || !strings.Contains(err.Error(), "creating output dir") {
+		t.Errorf("PrepareOutDir below a file: %v", err)
+	}
+	// The marker cannot be written into a read-only out dir.
+	ro := filepath.Join(root, "ro")
+	if err := os.Chmod(ro, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(ro, 0o755) })
+	if f, err := os.Create(filepath.Join(ro, "probe")); err == nil {
+		f.Close()
+		t.Skip("running as root: read-only dirs are writable")
+	}
+	if err := (Config{OutDir: ro}).PrepareOutDir(); err == nil || !strings.Contains(err.Error(), OutputMarker) {
+		t.Errorf("PrepareOutDir into a read-only dir: %v", err)
 	}
 }

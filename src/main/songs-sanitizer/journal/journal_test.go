@@ -374,3 +374,143 @@ func TestFingerprintFormat(t *testing.T) {
 		}
 	}
 }
+
+// Open ignores the header comment, blank lines and surrounding whitespace (CRLF), so a
+// reloaded and re-saved journal keeps exactly one header.
+func TestOpenIgnoresHeaderBlankLinesAndCRLF(t *testing.T) {
+	dir := t.TempDir()
+	jpath := filepath.Join(dir, "media-journal.txt")
+	a, b := filepath.Join(dir, "a.aac"), filepath.Join(dir, "b.aac")
+	writeFile(t, a, []byte("a"))
+	writeFile(t, b, []byte("b"))
+	fpA, err := Fingerprint(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, jpath, []byte("# songs-sanitizer media journal: header\r\n\r\n  \n  k\t"+fpA+"\r\n"))
+
+	j := open(t, jpath)
+	if !j.Has("k", a) {
+		t.Error("CRLF/indented entry not found")
+	}
+	if len(j.entries) != 1 {
+		t.Errorf("entries = %v, want only the one entry", j.entries)
+	}
+	if err := j.Add("k", b); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Save(fsops.New(false)); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(jpath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fpB, _ := Fingerprint(b)
+	want := []string{"k\t" + fpA, "k\t" + fpB}
+	sort.Strings(want)
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "# ") || lines[1] != want[0] || lines[2] != want[1] {
+		t.Errorf("saved journal:\n%s", data)
+	}
+	if n := strings.Count(string(data), "#"); n != 1 {
+		t.Errorf("%d header lines, want 1:\n%s", n, data)
+	}
+}
+
+func TestOpenLineTooLong(t *testing.T) {
+	jpath := filepath.Join(t.TempDir(), "journal.txt")
+	writeFile(t, jpath, append(bytes.Repeat([]byte("x"), 70<<10), '\n'))
+	if _, err := Open(jpath); err == nil {
+		t.Error("Open of a journal with a 70 KiB line succeeded")
+	}
+}
+
+// AddAndSave persists right away: a reopened journal has the entry without a Save call.
+func TestAddAndSavePersistsImmediately(t *testing.T) {
+	dir := t.TempDir()
+	jpath := filepath.Join(dir, "out", "media-journal.txt")
+	media := filepath.Join(dir, "a.aac")
+	writeFile(t, media, []byte("a"))
+	ops := fsops.New(false)
+
+	j := open(t, jpath)
+	if err := j.AddAndSave("k", media, ops); err != nil {
+		t.Fatal(err)
+	}
+	if !open(t, jpath).Has("k", media) {
+		t.Error("entry not persisted by AddAndSave")
+	}
+	if j.dirty {
+		t.Error("journal still dirty after AddAndSave")
+	}
+
+	// A missing file is an error and writes nothing.
+	jpath2 := filepath.Join(dir, "out", "other-journal.txt")
+	j2 := open(t, jpath2)
+	if err := j2.AddAndSave("k", filepath.Join(dir, "missing.aac"), ops); err == nil {
+		t.Error("AddAndSave of a missing file succeeded")
+	}
+	if _, err := os.Stat(jpath2); !os.IsNotExist(err) {
+		t.Errorf("AddAndSave of a missing file wrote the journal (err %v)", err)
+	}
+	if s := ops.Stats(); s.Failed != 0 {
+		t.Errorf("Stats = %+v", s)
+	}
+}
+
+func TestConcurrentAddAndSave(t *testing.T) {
+	const n = 30
+	dir := t.TempDir()
+	jpath := filepath.Join(dir, "journal.txt")
+	files := make([]string, n)
+	for i := range files {
+		files[i] = filepath.Join(dir, fmt.Sprintf("f%d.aac", i))
+		writeFile(t, files[i], []byte(fmt.Sprint("content ", i)))
+	}
+	j := open(t, jpath)
+	ops := fsops.New(false)
+	var wg sync.WaitGroup
+	for _, f := range files {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := j.AddAndSave("k", f, ops); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	j2 := open(t, jpath)
+	for _, f := range files {
+		if !j2.Has("k", f) {
+			t.Errorf("entry for %s lost", f)
+		}
+	}
+	if len(j2.entries) != n {
+		t.Errorf("reloaded journal has %d entries, want %d", len(j2.entries), n)
+	}
+}
+
+// Only the first and last chunk are hashed: a same-size change in the middle of a larger
+// file is deliberately not detected (this keeps fingerprints of large videos fast).
+func TestFingerprintIgnoresMiddleOfLargeFile(t *testing.T) {
+	data := bytes.Repeat([]byte("0123456789abcdef"), 3*chunk/16)
+	path := filepath.Join(t.TempDir(), "video.avi")
+	writeFile(t, path, data)
+	fp1, err := Fingerprint(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data[len(data)/2] ^= 0xff
+	writeFile(t, path, data)
+	if fp2, err := Fingerprint(path); err != nil || fp2 != fp1 {
+		t.Errorf("Fingerprint after a change in the middle = %q, %v; want unchanged %q", fp2, err, fp1)
+	}
+}
+
+func TestFingerprintDirectory(t *testing.T) {
+	if fp, err := Fingerprint(t.TempDir()); err == nil {
+		t.Errorf("Fingerprint of a directory = %q, want an error", fp)
+	}
+}

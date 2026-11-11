@@ -180,3 +180,35 @@ func TestOrganizePrepareOutDir(t *testing.T) {
 		t.Errorf("PrepareOutDir created the library: %v", err)
 	}
 }
+
+func TestNewOrganizeRejectsDanglingSymlinks(t *testing.T) {
+	root := realRoot(t, "src")
+	link := filepath.Join(root, "dangling")
+	if err := os.Symlink(filepath.Join(root, "missing"), link); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	src := [][]string{{filepath.Join(root, "src")}}
+	if _, err := NewOrganize(src, link, filepath.Join(root, "out"), false); err == nil || !strings.Contains(err.Error(), "resolving library dir") {
+		t.Errorf("dangling -l: %v", err)
+	}
+	if _, err := NewOrganize(src, filepath.Join(root, "lib"), filepath.Join(link, "out"), false); err == nil || !strings.Contains(err.Error(), "resolving output dir") {
+		t.Errorf("dangling -o: %v", err)
+	}
+	if _, err := NewOrganize([][]string{{link}}, filepath.Join(root, "lib"), filepath.Join(root, "out"), false); err == nil || !strings.Contains(err.Error(), "existing directory") {
+		t.Errorf("dangling -s: %v", err)
+	}
+}
+
+// Labels become folder names below <out>/invalid and <out>/duplicates. Names that differ
+// only in Unicode normalization are the same folder on macOS, so they must not share a label.
+func TestNewOrganizeLabelsNormalizationInsensitive(t *testing.T) {
+	nfc, nfd := "Mädchen", "Mädchen"
+	root := realRoot(t, "a/"+nfc, "b/"+nfd)
+	cfg, err := NewOrganize([][]string{{filepath.Join(root, "a", nfc)}, {filepath.Join(root, "b", nfd)}}, filepath.Join(root, "lib"), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{cfg.Sources[0].Label, cfg.Sources[1].Label}; !reflect.DeepEqual(got, []string{nfc, nfd + " (2)"}) {
+		t.Errorf("labels = %q, want %q", got, []string{nfc, nfd + " (2)"})
+	}
+}

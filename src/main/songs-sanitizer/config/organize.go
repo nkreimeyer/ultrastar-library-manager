@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // DefaultOrganizeOutDirName is the name of the default output folder of the organize
@@ -18,7 +20,7 @@ type Source struct {
 	Path string
 	// Label names the source in reports and below <out>/invalid and <out>/duplicates:
 	// the base name of Path, with " (2)", " (3)", ... appended to names that are already
-	// taken (compared case-insensitively) by an earlier source.
+	// taken (compared case- and normalization-insensitively) by an earlier source.
 	Label string
 	// Tier is the index of the -s flag the source was given with (0 = highest priority).
 	Tier int
@@ -154,14 +156,15 @@ func resolveSource(p string) (string, error) {
 }
 
 // uniqueLabel returns name, or name with the first free " (n)" suffix, and marks it as
-// taken. Labels are compared case-insensitively, since they become folder names on
-// possibly case-insensitive file systems.
+// taken. Labels are compared case- and normalization-insensitively (NFC), since they become
+// folder names on possibly case- or normalization-insensitive file systems (macOS).
 func uniqueLabel(name string, taken map[string]bool) string {
+	key := func(s string) string { return strings.ToLower(norm.NFC.String(s)) }
 	label := name
-	for i := 2; taken[strings.ToLower(label)]; i++ {
+	for i := 2; taken[key(label)]; i++ {
 		label = fmt.Sprintf("%s (%d)", name, i)
 	}
-	taken[strings.ToLower(label)] = true
+	taken[key(label)] = true
 	return label
 }
 
