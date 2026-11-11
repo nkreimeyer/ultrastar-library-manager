@@ -3,7 +3,11 @@
 //
 // Files are re-encoded with the source codec and (for lossy codecs) the source bitrate,
 // keeping metadata and, where the container supports it, embedded cover art. The encoder
-// writes to a temporary file next to the input, which then atomically replaces it.
+// writes to a temporary file next to the input. A copy of the original is kept in
+// cfg.OriginalsDir() before the temporary file atomically replaces it.
+//
+// Stems referenced by #VOCALS or #INSTRUMENTAL are never touched: normalizing them
+// independently would change their mix balance.
 package fixaudio
 
 import (
@@ -15,12 +19,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/config"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fsops"
+	"github.com/nkreimeyer/ultrastar-songs-sanitizer/journal"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/utils"
 	log "github.com/sirupsen/logrus"
 )
@@ -34,28 +40,36 @@ const (
 	// (container bitrate) includes overhead such as cover art, and a downmixed 5.1 source
 	// does not need its full multichannel bitrate in stereo.
 	maxLossyBitrate = 320000
-	// maxParallelBatches limits how many batches are processed at the same time.
-	maxParallelBatches = 16
+	// maxWorkers caps the number of song folders processed at the same time.
+	maxWorkers = 16
 	// stereoFilter downmixes to stereo inside the filter graph, so the peak can be measured
 	// on exactly the signal that is encoded later (an output "-ac 2" would only be applied
-	// after volumedetect). rematrix_maxval=1 pins the downmix matrix: by default
-	// swresample normalizes it only for integer sample formats, so the measuring graph
-	// (s16) and the encoding graph (float, because of the volume filter) would produce
-	// differently scaled downmixes. It also guarantees the downmix cannot clip.
+	// after the measurement). rematrix_maxval=1 pins the downmix matrix: by default
+	// swresample normalizes it only for integer sample formats, so graphs negotiating
+	// different sample formats would produce differently scaled downmixes. It also
+	// guarantees the downmix cannot clip.
 	stereoFilter = "aresample=ochl=stereo:rematrix_maxval=1"
+	// peakFilter measures the true sample peak. It runs on float samples: lossy decoders
+	// output float and their peaks can exceed 0 dBFS, which an integer measurement (such
+	// as volumedetect, which works on s16) would clamp to 0 dB. The volume filter of the
+	// encode works on float as well.
+	peakFilter = "aformat=sample_fmts=flt,astats=measure_perchannel=none:measure_overall=Peak_level"
+	// journalKind is the media journal entry for files normalized by this module.
+	journalKind = "audio-normalized"
 	// normalizedTag is a metadata tag written into normalized files. Peak normalization of
 	// a lossy file does not converge (the peak moves slightly with every lossy encode), so
 	// files carrying the tag are not normalized again on later runs.
 	normalizedTag = "SANITIZER_NORMALIZED"
 )
 
-// noMetadataExts cannot carry the custom normalizedTag. Both are fine without it: WAV is
-// lossless (a re-measured peak stays within the tolerance), raw ADTS AAC is rare.
+// noMetadataExts cannot carry the custom normalizedTag. Files of these formats are
+// recorded in the media journal instead (see processor.journal), which matters most for
+// lossy raw ADTS AAC, whose peak drifts with every re-encode.
 var noMetadataExts = map[string]bool{".wav": true, ".aac": true}
 
-// batchSize is the number of song folders handled sequentially by one goroutine. It is a
-// variable so tests can force folders to be processed concurrently.
-var batchSize = 100
+// workers is the number of song folders processed at the same time. It is a variable so
+// tests can force folders to be processed concurrently on machines with a single CPU.
+var workers = min(maxWorkers, runtime.NumCPU())
 
 // coverExts are the containers verified to carry embedded cover art via "-c:v copy".
 // Other formats (ogg/opus store pictures as metadata, wav/wma/aac cannot) map audio only.
@@ -76,32 +90,64 @@ func Run(cfg config.Config, ops *fsops.Ops) error {
 	if err != nil {
 		return fmt.Errorf("reading song dir %q: %w", cfg.SongDir, err)
 	}
-
-	semaphore := make(chan struct{}, maxParallelBatches)
-	var wg sync.WaitGroup
-	for _, batch := range utils.SplitIntoBatches(folders, batchSize) {
-		wg.Add(1)
-		go func(batch []string) {
-			defer wg.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
-			for _, folder := range batch {
-				processFolder(ops, folder)
-			}
-		}(batch)
+	// Without the journal, files without a marker tag would be re-encoded on every run.
+	j, err := journal.Open(cfg.JournalPath())
+	if err != nil {
+		return fmt.Errorf("opening media journal: %w", err)
 	}
-	wg.Wait()
 
+	p := &processor{cfg: cfg, ops: ops, journal: j}
+	forEachParallel(folders, workers, p.processFolder)
+
+	if err := j.Save(ops); err != nil {
+		log.Errorf("Saving media journal: %v", err) // counted by ops
+	}
 	log.Infof("All audio files have been processed.")
 	return nil
 }
 
+// forEachParallel calls fn for every item, using up to n goroutines.
+func forEachParallel[T any](items []T, n int, fn func(T)) {
+	n = max(1, min(n, len(items)))
+	queue := make(chan T)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for range n {
+		go func() {
+			defer wg.Done()
+			for item := range queue {
+				fn(item)
+			}
+		}()
+	}
+	for _, item := range items {
+		queue <- item
+	}
+	close(queue)
+	wg.Wait()
+}
+
+// processor holds the state of one run. It is safe for concurrent use.
+type processor struct {
+	cfg config.Config
+	ops *fsops.Ops
+	// journal records normalized files, for formats that cannot carry normalizedTag.
+	journal *journal.Journal
+}
+
 // processFolder processes every audio file directly inside folder.
-func processFolder(ops *fsops.Ops, folder string) {
+func (p *processor) processFolder(folder string) {
 	entries, err := os.ReadDir(folder)
 	if err != nil {
 		log.Errorf("reading directory %q: %v", folder, err)
-		ops.Fail()
+		p.ops.FailOnce("unreadable:" + folder) // same key as the folder discovery
+		return
+	}
+	stems, err := stemFiles(folder)
+	if err != nil {
+		// Without the txt it is unknown which files are stems; leave the folder alone.
+		log.Errorf("Skipping %s: reading the song txt: %v", folder, err)
+		p.ops.Fail()
 		return
 	}
 	for _, entry := range entries {
@@ -111,12 +157,43 @@ func processFolder(ops *fsops.Ops, folder string) {
 		if utils.IsHidden(name) || !utils.IsAudioFile(name) || !utils.IsRegularFile(folder, entry) {
 			continue
 		}
-		processFile(ops, filepath.Join(folder, name))
+		if stems[name] {
+			log.Infof("Skipping %s: it is a #VOCALS/#INSTRUMENTAL stem, normalizing it would change the mix balance", filepath.Join(folder, name))
+			continue
+		}
+		p.processFile(folder, name)
 	}
 }
 
-// processFile downmixes and/or normalizes one audio file in a single encode.
-func processFile(ops *fsops.Ops, path string) {
+// stemFiles returns the on-disk names of the files referenced by the #VOCALS and
+// #INSTRUMENTAL tags of the song txt in folder. A folder without a song txt has no stems.
+func stemFiles(folder string) (map[string]bool, error) {
+	tags, err := utils.ReadSongTags(folder)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	stems := map[string]bool{}
+	for _, tag := range []string{"VOCALS", "INSTRUMENTAL"} {
+		if name, _, found := utils.ResolveFileName(folder, tags[tag]); found {
+			stems[name] = true
+		}
+	}
+	return stems, nil
+}
+
+// processFile downmixes and/or normalizes the audio file name in folder in a single
+// encode, keeping a copy of the original.
+func (p *processor) processFile(folder, name string) {
+	ops := p.ops
+	path := filepath.Join(folder, name)
+	if ops.WouldBeMoved(path) {
+		log.Debugf("Skipping %s: an earlier module would have moved it", path)
+		return
+	}
+
 	info, err := probeAudio(path)
 	if err != nil {
 		log.Errorf("Skipping %s: probing audio failed: %v", path, err)
@@ -125,30 +202,31 @@ func processFile(ops *fsops.Ops, path string) {
 	}
 
 	downmix := info.Channels > 2
-	maxVolume, err := getMaxVolume(path, downmix)
+	peak, err := measurePeak(path, downmix)
 	if err != nil {
-		log.Errorf("Skipping %s: measuring volume failed: %v", path, err)
+		log.Errorf("Skipping %s: measuring the peak failed: %v", path, err)
 		ops.Fail()
 		return
 	}
-	if math.IsInf(maxVolume, -1) {
+	if math.IsInf(peak, -1) {
 		log.Warnf("Skipping %s: audio is silent", path)
 		return
 	}
 
-	gain := targetPeakDB - maxVolume
-	needGain := math.Abs(gain) > peakToleranceDB && !info.Normalized
-	if info.Normalized && math.Abs(gain) > peakToleranceDB {
-		log.Debugf("Not normalizing %s again: it carries the %s tag (max volume %.1f dB)", path, normalizedTag, maxVolume)
+	gain := targetPeakDB - peak
+	needGain := math.Abs(gain) > peakToleranceDB
+	if needGain && (info.Normalized || p.journal.Has(journalKind, path)) {
+		log.Debugf("Not normalizing %s again: it was normalized by an earlier run (peak %.1f dB)", path, peak)
+		needGain = false
 	}
 	if !downmix && !needGain {
-		log.Debugf("Skipping %s: %d channel(s), max volume %.1f dB, gain needed %.2f dB", path, info.Channels, maxVolume, gain)
+		log.Debugf("Skipping %s: %d channel(s), peak %.1f dB, gain needed %.2f dB", path, info.Channels, peak, gain)
 		return
 	}
 
-	var filters, actions []string
+	filters := baseFilters(downmix)
+	var actions []string
 	if downmix {
-		filters = append(filters, stereoFilter)
 		actions = append(actions, fmt.Sprintf("downmix %d channels to stereo", info.Channels))
 	}
 	if needGain {
@@ -156,9 +234,15 @@ func processFile(ops *fsops.Ops, path string) {
 		actions = append(actions, fmt.Sprintf("apply %+.2f dB gain", gain))
 	}
 	action := strings.Join(actions, " and ")
+	backupRel := filepath.Join(p.cfg.RelPath(folder), name)
 
 	if ops.DryRun {
-		ops.PlanReplace(path, fmt.Sprintf("%s (max volume %.1f dB) to", action, maxVolume))
+		// Both calls only log and count in dry-run mode.
+		if _, err := ops.CopyInto(path, p.cfg.OriginalsDir(), backupRel); err != nil {
+			log.Errorf("Would not %s to %s: %v", action, path, err)
+			return
+		}
+		ops.PlanReplace(path, fmt.Sprintf("%s (peak %.1f dB) to", action, peak))
 		return
 	}
 
@@ -174,11 +258,30 @@ func processFile(ops *fsops.Ops, path string) {
 		ops.Fail()
 		return
 	}
+	// The original is only replaced once a copy of it is safe.
+	if _, err := ops.CopyInto(path, p.cfg.OriginalsDir(), backupRel); err != nil {
+		os.Remove(tmp)
+		log.Errorf("Not replacing %s: keeping a copy of the original failed: %v", path, err)
+		return
+	}
 	if err := ops.Replace(tmp, path); err != nil {
 		log.Errorf("Failed to %s to %s: %v", action, path, err)
 		return
 	}
+	if err := p.journal.AddAndSave(journalKind, path, p.ops); err != nil {
+		log.Errorf("Recording %s in the media journal: %v", path, err)
+		ops.Fail()
+	}
 	log.Infof("Processed %s: %s", path, action)
+}
+
+// baseFilters returns the filters that precede the gain in the encode. The peak is
+// measured after exactly these filters, so the gain is computed on the encoded signal.
+func baseFilters(downmix bool) []string {
+	if downmix {
+		return []string{stereoFilter}
+	}
+	return nil
 }
 
 // audioInfo describes the first audio stream of a file.
@@ -257,42 +360,43 @@ func parseProbe(data []byte) (audioInfo, error) {
 	return info, nil
 }
 
-// maxVolumeRe matches volumedetect's result line, e.g. "max_volume: -12.3 dB" or "-inf dB".
-var maxVolumeRe = regexp.MustCompile(`max_volume:\s*(\S+) dB`)
+// peakLevelRe matches astats' result line, e.g. "Peak level dB: -12.345678" or "-inf".
+var peakLevelRe = regexp.MustCompile(`Peak level dB:\s*(\S+)`)
 
-// getMaxVolume returns the peak level in dBFS (-Inf for silence). If downmix is set, the
-// peak of the stereo downmix is measured, because that is what will be encoded.
-func getMaxVolume(path string, downmix bool) (float64, error) {
-	filter := "volumedetect"
-	if downmix {
-		filter = stereoFilter + "," + filter
-	}
+// measurePeak returns the sample peak in dBFS (-Inf for silence), measured on float
+// samples so that peaks above 0 dBFS are not clamped. If downmix is set, the peak of the
+// stereo downmix is measured, because that is what will be encoded.
+func measurePeak(path string, downmix bool) (float64, error) {
+	filter := strings.Join(append(baseFilters(downmix), peakFilter), ",")
 	out, err := exec.Command("ffmpeg",
-		"-nostdin", "-hide_banner",
+		"-nostdin", "-hide_banner", "-v", "info",
 		"-i", path,
 		"-map", "0:a:0",
 		"-af", filter,
 		"-f", "null", "-").CombinedOutput()
-	vol, perr := parseMaxVolume(string(out))
+	peak, perr := parsePeakLevel(string(out))
 	if perr != nil {
 		if err != nil {
-			return 0, fmt.Errorf("ffmpeg volumedetect: %v: %s", err, lastLines(string(out), 3))
+			return 0, fmt.Errorf("ffmpeg astats: %v: %s", err, lastLines(string(out), 3))
 		}
 		return 0, perr
 	}
-	return vol, nil
+	return peak, nil
 }
 
-func parseMaxVolume(output string) (float64, error) {
-	m := maxVolumeRe.FindStringSubmatch(output)
+// parsePeakLevel returns the last peak level in astats output, i.e. the overall one if
+// per-channel values were printed as well.
+func parsePeakLevel(output string) (float64, error) {
+	m := peakLevelRe.FindAllStringSubmatch(output, -1)
 	if m == nil {
-		return 0, errors.New("max_volume not found in ffmpeg output")
+		return 0, errors.New("peak level not found in ffmpeg output")
 	}
-	vol, err := strconv.ParseFloat(m[1], 64) // also accepts "-inf"
+	value := m[len(m)-1][1]
+	peak, err := strconv.ParseFloat(value, 64) // also accepts "-inf"
 	if err != nil {
-		return 0, fmt.Errorf("parsing max volume %q: %w", m[1], err)
+		return 0, fmt.Errorf("parsing peak level %q: %w", value, err)
 	}
-	return vol, nil
+	return peak, nil
 }
 
 // encode runs ffmpeg to write the processed version of in to out (an existing temp file).

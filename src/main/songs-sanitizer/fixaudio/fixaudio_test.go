@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/config"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fsops"
@@ -19,21 +21,22 @@ import (
 
 // --- pure unit tests (no ffmpeg needed) ---
 
-func TestParseMaxVolume(t *testing.T) {
+func TestParsePeakLevel(t *testing.T) {
 	tests := []struct {
 		name    string
 		output  string
 		want    float64
 		wantErr bool
 	}{
-		{"negative", "[Parsed_volumedetect_0 @ 0x1] mean_volume: -20.1 dB\n[Parsed_volumedetect_0 @ 0x1] max_volume: -12.3 dB\n", -12.3, false},
-		{"zero", "max_volume: 0.0 dB", 0, false},
-		{"silence", "max_volume: -inf dB", math.Inf(-1), false},
+		{"overall", "[Parsed_astats_1 @ 0x1] Overall\n[Parsed_astats_1 @ 0x1] Peak level dB: -12.345678\n", -12.345678, false},
+		{"above full scale", "Peak level dB: 2.739996", 2.739996, false},
+		{"per channel then overall", "Channel: 1\nPeak level dB: -1.0\nChannel: 2\nPeak level dB: -2.0\nOverall\nPeak level dB: -0.5\n", -0.5, false},
+		{"silence", "Peak level dB: -inf", math.Inf(-1), false},
 		{"missing", "Invalid data found when processing input", 0, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseMaxVolume(tt.output)
+			got, err := parsePeakLevel(tt.output)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -42,6 +45,50 @@ func TestParseMaxVolume(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Small libraries must be processed in parallel too (the old code put up to 100 folders
+// into one sequential batch).
+func TestForEachParallelRunsConcurrently(t *testing.T) {
+	var started sync.WaitGroup
+	started.Add(2)
+	allStarted := make(chan struct{})
+	go func() { started.Wait(); close(allStarted) }()
+
+	var mu sync.Mutex
+	var concurrent []string
+	forEachParallel([]string{"a", "b"}, 2, func(item string) {
+		started.Done()
+		select {
+		case <-allStarted: // the other item is being processed at the same time
+			mu.Lock()
+			concurrent = append(concurrent, item)
+			mu.Unlock()
+		case <-time.After(5 * time.Second):
+		}
+	})
+	if len(concurrent) != 2 {
+		t.Errorf("items processed concurrently: %v, want both", concurrent)
+	}
+}
+
+func TestForEachParallelProcessesEveryItemOnce(t *testing.T) {
+	for _, n := range []int{0, 1, 3, 100} {
+		var mu sync.Mutex
+		seen := map[int]int{}
+		items := []int{1, 2, 3, 4, 5, 6, 7}
+		forEachParallel(items, n, func(i int) {
+			mu.Lock()
+			seen[i]++
+			mu.Unlock()
+		})
+		for _, i := range items {
+			if seen[i] != 1 {
+				t.Errorf("n=%d: item %d processed %d times", n, i, seen[i])
+			}
+		}
+	}
+	forEachParallel(nil, 4, func(int) { t.Error("called for an empty list") })
 }
 
 func TestParseProbe(t *testing.T) {
@@ -149,14 +196,19 @@ func newLibrary(t *testing.T, dryRun bool) (config.Config, *fsops.Ops) {
 	return cfg, fsops.New(dryRun)
 }
 
-// addSong creates a song folder with a minimal txt and returns its path.
-func addSong(t *testing.T, cfg config.Config, rel, audio string) string {
+// addSong creates a song folder with a minimal txt and returns its path. extraTags are
+// additional header lines such as "#VOCALS:vocals.mp3".
+func addSong(t *testing.T, cfg config.Config, rel, audio string, extraTags ...string) string {
 	t.Helper()
 	dir := filepath.Join(cfg.SongDir, rel)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	txt := "#TITLE:Test\n#ARTIST:Tester\n#MP3:" + audio + "\n#BPM:120\n#GAP:0\n: 0 4 0 la\nE\n"
+	header := "#TITLE:Test\n#ARTIST:Tester\n#MP3:" + audio + "\n"
+	for _, tag := range extraTags {
+		header += tag + "\n"
+	}
+	txt := header + "#BPM:120\n#GAP:0\n: 0 4 0 la\nE\n"
 	if err := os.WriteFile(filepath.Join(dir, "song.txt"), []byte(txt), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -198,12 +250,12 @@ func ffprobeValue(t *testing.T, path string, args ...string) string {
 
 func assertPeakNear(t *testing.T, path string, want float64) {
 	t.Helper()
-	got, err := getMaxVolume(path, false)
+	got, err := measurePeak(path, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if math.Abs(got-want) > 1.0 {
-		t.Errorf("%s: max volume %.1f dB, want %.1f ± 1 dB", path, got, want)
+		t.Errorf("%s: peak %.1f dB, want %.1f ± 1 dB", path, got, want)
 	}
 }
 
@@ -321,9 +373,9 @@ func TestMP3CoverAndTagsKept(t *testing.T) {
 
 func TestSameFileNamesProcessedConcurrently(t *testing.T) {
 	requireFFmpeg(t)
-	old := batchSize
-	batchSize = 1 // one goroutine per song folder
-	t.Cleanup(func() { batchSize = old })
+	old := workers
+	workers = 2 // both folders at the same time, even on a single-CPU machine
+	t.Cleanup(func() { workers = old })
 
 	cfg, ops := newLibrary(t, false)
 	durations := map[string]string{"A - One": "1", "B - Two": "3"}
@@ -385,8 +437,8 @@ func TestDryRunLeavesTreeIdentical(t *testing.T) {
 	if !maps.Equal(before, after) {
 		t.Errorf("dry-run modified the library:\nbefore %v\nafter  %v", before, after)
 	}
-	if got := ops.Stats().Replaced; got != 2 {
-		t.Errorf("planned replacements = %d, want 2", got)
+	if st := ops.Stats(); st.Replaced != 2 || st.Copied != 2 {
+		t.Errorf("planned replacements/backups = %d/%d, want 2/2", st.Replaced, st.Copied)
 	}
 	assertDirEntries(t, cfg.OutDir)
 }
@@ -448,5 +500,178 @@ func TestLossyNormalizationIsIdempotent(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// readFile returns the content of path.
+func readFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestOriginalIsKeptBeforeReplacing(t *testing.T) {
+	requireFFmpeg(t)
+	cfg, ops := newLibrary(t, false)
+	dir := addSong(t, cfg, "Cat/Artist - Quiet", "song.mp3")
+	audio := filepath.Join(dir, "song.mp3")
+	quietMP3(t, audio, "1")
+	original := readFile(t, audio)
+
+	run(t, cfg, ops)
+
+	if st := ops.Stats(); st.Replaced != 1 || st.Copied != 1 {
+		t.Errorf("replaced/copied = %d/%d, want 1/1", st.Replaced, st.Copied)
+	}
+	backup := filepath.Join(cfg.OriginalsDir(), "Cat", "Artist - Quiet", "song.mp3")
+	if !slices.Equal(readFile(t, backup), original) {
+		t.Errorf("%s is not a copy of the original", backup)
+	}
+	if slices.Equal(readFile(t, audio), original) {
+		t.Error("the library file was not processed")
+	}
+	assertDirEntries(t, dir, "song.txt", "song.mp3")
+
+	// Nothing is processed again, so no second backup is made.
+	ops2 := fsops.New(false)
+	run(t, cfg, ops2)
+	if st := ops2.Stats(); st.Replaced != 0 || st.Copied != 0 {
+		t.Errorf("second run replaced/copied = %d/%d, want 0/0", st.Replaced, st.Copied)
+	}
+	assertDirEntries(t, filepath.Dir(backup), "song.mp3")
+}
+
+func TestFailedBackupLeavesOriginalUntouched(t *testing.T) {
+	requireFFmpeg(t)
+	cfg, ops := newLibrary(t, false)
+	dir := addSong(t, cfg, "Artist - Quiet", "song.mp3")
+	audio := filepath.Join(dir, "song.mp3")
+	quietMP3(t, audio, "1")
+	original := readFile(t, audio)
+	// A file in place of the originals folder makes every backup fail.
+	if err := os.WriteFile(cfg.OriginalsDir(), []byte("in the way"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Run(cfg, ops); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if st := ops.Stats(); st.Failed != 1 || st.Replaced != 0 || st.Copied != 0 {
+		t.Errorf("stats = %+v, want 1 failure, nothing replaced or copied", st)
+	}
+	if !slices.Equal(readFile(t, audio), original) {
+		t.Error("the original was replaced although its backup failed")
+	}
+	assertDirEntries(t, dir, "song.txt", "song.mp3") // temp file removed
+}
+
+// loudFloatSource is a stereo sine whose sample peak is +3 dBFS. Float sources (and lossy
+// files decoded to float) can exceed full scale.
+const loudFloatSource = "aevalsrc=1.4125*sin(2*PI*440*t)|1.4125*sin(2*PI*440*t):s=44100:d=1"
+
+// volumedetect measures on s16 and clamps such peaks to 0 dB, so the old code applied
+// -3 dB, left the file at about 0 dBFS and tagged it as normalized.
+func TestPeakAboveFullScaleIsNormalized(t *testing.T) {
+	requireFFmpeg(t)
+	for _, tc := range []struct{ ext, codec string }{
+		{".wav", "pcm_f32le"},
+		{".mp3", "libmp3lame"},
+		{".m4a", "aac"},
+	} {
+		t.Run(tc.ext, func(t *testing.T) {
+			cfg, ops := newLibrary(t, false)
+			dir := addSong(t, cfg, "Artist - Loud", "song"+tc.ext)
+			audio := filepath.Join(dir, "song"+tc.ext)
+			ffmpeg(t, "-f", "lavfi", "-i", loudFloatSource, "-c:a", tc.codec, audio)
+			if peak, err := measurePeak(audio, false); err != nil || peak < 2 {
+				t.Fatalf("fixture peak = %.2f dB (%v), want about +3 dB", peak, err)
+			}
+
+			run(t, cfg, ops)
+
+			// Within 1 dB: lossy encoders overshoot the peak a little.
+			assertPeakNear(t, audio, targetPeakDB)
+			if peak, err := measurePeak(audio, false); err == nil {
+				t.Logf("peak after normalization: %.2f dB", peak)
+			}
+		})
+	}
+}
+
+// Raw ADTS AAC cannot carry the marker tag; the media journal must stop the peak, which
+// drifts with every lossy encode, from being "fixed" again on every run.
+func TestAACNormalizationIsIdempotentViaJournal(t *testing.T) {
+	requireFFmpeg(t)
+	cfg, ops := newLibrary(t, false)
+	dir := addSong(t, cfg, "Artist - Loud", "song.aac")
+	audio := filepath.Join(dir, "song.aac")
+	// Clipped pink noise at a low bitrate: the encoder overshoots the peak by more than the
+	// tolerance, so without the journal every run would apply another gain.
+	ffmpeg(t, "-f", "lavfi", "-i", "anoisesrc=d=3:c=pink:a=0.9:seed=7", "-af", "volume=12dB", "-ac", "2", "-c:a", "aac", "-b:a", "64k", audio)
+
+	run(t, cfg, ops)
+	if got := ops.Stats().Replaced; got != 1 {
+		t.Fatalf("first run replaced %d files, want 1", got)
+	}
+	if peak, err := measurePeak(audio, false); err != nil || math.Abs(peak-targetPeakDB) <= peakToleranceDB {
+		t.Fatalf("fixture peak after the first run = %.2f dB (%v); it must miss the target to test the journal", peak, err)
+	}
+	if _, err := os.Stat(cfg.JournalPath()); err != nil {
+		t.Errorf("media journal not written: %v", err)
+	}
+	for i := 2; i <= 3; i++ {
+		again := fsops.New(false)
+		run(t, cfg, again)
+		if got := again.Stats().Replaced; got != 0 {
+			t.Errorf("run %d replaced %d files, want 0", i, got)
+		}
+	}
+}
+
+func TestStemsAreNotNormalized(t *testing.T) {
+	requireFFmpeg(t)
+	cfg, ops := newLibrary(t, false)
+	// The references differ in case from the files on disk.
+	dir := addSong(t, cfg, "Artist - Stems", "song.mp3", "#VOCALS:Vocals.mp3", "#instrumental:inst.MP3")
+	for _, name := range []string{"song.mp3", "vocals.mp3", "inst.mp3"} {
+		quietMP3(t, filepath.Join(dir, name), "1")
+	}
+	vocals := readFile(t, filepath.Join(dir, "vocals.mp3"))
+	inst := readFile(t, filepath.Join(dir, "inst.mp3"))
+
+	run(t, cfg, ops)
+
+	if got := ops.Stats().Replaced; got != 1 {
+		t.Errorf("replaced = %d, want 1 (only the main audio)", got)
+	}
+	assertPeakNear(t, filepath.Join(dir, "song.mp3"), targetPeakDB)
+	if !slices.Equal(readFile(t, filepath.Join(dir, "vocals.mp3")), vocals) {
+		t.Error("#VOCALS stem was modified")
+	}
+	if !slices.Equal(readFile(t, filepath.Join(dir, "inst.mp3")), inst) {
+		t.Error("#INSTRUMENTAL stem was modified")
+	}
+}
+
+// In dry-run mode the cleanup module only plans its moves; fixaudio must not plan to
+// process files that would no longer be in the library.
+func TestDryRunSkipsFilesPlannedToBeMoved(t *testing.T) {
+	requireFFmpeg(t)
+	cfg, ops := newLibrary(t, true)
+	dir := addSong(t, cfg, "Artist - Extra", "song.mp3")
+	quietMP3(t, filepath.Join(dir, "song.mp3"), "1")
+	extra := filepath.Join(dir, "unreferenced.mp3")
+	quietMP3(t, extra, "1")
+	if _, err := ops.MoveInto(extra, cfg.ExtraFilesDir(), cfg.RelPath(extra)); err != nil {
+		t.Fatal(err)
+	}
+
+	run(t, cfg, ops)
+
+	if st := ops.Stats(); st.Replaced != 1 || st.Copied != 1 {
+		t.Errorf("planned replacements/backups = %d/%d, want 1/1 (only song.mp3)", st.Replaced, st.Copied)
 	}
 }

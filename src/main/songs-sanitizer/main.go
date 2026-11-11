@@ -109,8 +109,8 @@ func run() int {
 	if cfg.DryRun {
 		verb = " (planned)"
 	}
-	log.Infof("Done%s: %d written, %d moved, %d replaced, %d removed, %d failed operations, %d failed modules",
-		verb, st.Written, st.Moved, st.Replaced, st.Removed, st.Failed, moduleErrors)
+	log.Infof("Done%s: %d written, %d moved, %d replaced, %d backed up, %d removed, %d failed operations, %d failed modules",
+		verb, st.Written, st.Moved, st.Replaced, st.Copied, st.Removed, st.Failed, moduleErrors)
 
 	if st.Failed > 0 || moduleErrors > 0 {
 		return exitFailures
