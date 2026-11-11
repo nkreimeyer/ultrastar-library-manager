@@ -5,6 +5,7 @@
 package fixtxt
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -259,18 +260,34 @@ func handleFolder(cfg config.Config, ops *fsops.Ops, col *collector, folder stri
 	files.txtName = filepath.Base(txtFile)
 	files.cover = utils.FindCoverImage(ops, folder)
 	files.background = utils.FindBackgroundImage(ops, folder)
-	updateTxtFile(cfg, ops, col, folder, txtFile, files)
+	// The notes follow the tags the txt has after this run. If that is unknown (the txt
+	// could not be read or decoded), they follow what was detected on disk.
+	hasCover, hasBackground := files.cover != "", files.background != ""
+	if final := updateTxtFile(cfg, ops, col, folder, txtFile, files); final != nil {
+		header := final[:headerLen(final)]
+		hasCover = tagNamesImage(folder, header, "#COVER")
+		hasBackground = tagNamesImage(folder, header, "#BACKGROUND")
+	}
 
-	var missing []string
-	if files.cover == "" {
-		missing = append(missing, "Missing cover file in "+folder)
+	if !hasCover {
+		col.addMissing("Missing cover file in " + folder)
 	}
-	if len(files.video) == 0 && files.background == "" {
-		missing = append(missing, "No video or background file in "+folder)
+	if len(files.video) == 0 && !hasBackground {
+		col.addMissing("No video or background file in " + folder)
 	}
-	if len(missing) > 0 {
-		col.addMissing(missing...)
+}
+
+// tagNamesImage reports whether the (last) header line of tag names a readable image in
+// dir: the exact on-disk name (what a player opens on a case-sensitive file system, as
+// fileExists checks), an image extension and a header utils.ReadImageHeader accepts. A
+// corrupt image or a non-image does not count as a cover or background.
+func tagNamesImage(dir string, header []string, tag string) bool {
+	onDisk, exact, found := utils.ResolveFileName(dir, getTagValue(header, tag))
+	if !found || !exact || !utils.IsImageFile(onDisk) {
+		return false
 	}
+	_, err := utils.ReadImageHeader(filepath.Join(dir, onDisk))
+	return err == nil
 }
 
 // keepNewestSongTxt makes sure folder keeps only one of its song txts: the most recently
@@ -310,20 +327,24 @@ func moveToInvalid(cfg config.Config, ops *fsops.Ops, folder string) {
 }
 
 // updateTxtFile rewrites txtFile as UTF-8 with fixed file tags (only if that changes the
-// file). Txts that cannot be decoded unambiguously are left untouched and reported.
-func updateTxtFile(cfg config.Config, ops *fsops.Ops, col *collector, rootDir, txtFile string, files songFiles) {
+// file). Txts that cannot be decoded unambiguously are left untouched and reported. A txt
+// that is a symlink is never rewritten (that would replace the link by a regular file, and
+// its target may lie outside the library); it is noted in missing_files.txt if it needs a
+// change. It returns the lines the txt has after this run (in a dry run: the planned
+// ones), or nil if the txt could not be read or decoded.
+func updateTxtFile(cfg config.Config, ops *fsops.Ops, col *collector, rootDir, txtFile string, files songFiles) []string {
 	raw, err := ops.ReadFile(txtFile)
 	if err != nil {
 		log.Errorf("Could not read %s: %v", txtFile, err)
 		ops.Fail()
-		return
+		return nil
 	}
 	decoded := utils.DecodeTxt(raw)
 	if decoded.Problem != "" {
 		log.Warnf("Not changing %s: %s", txtFile, decoded.Problem)
 		col.addEncodingIssue(txtFile, decoded.Problem)
 		col.leftUnchanged()
-		return
+		return nil
 	}
 	if decoded.Damaged {
 		// Still safe to fix tags; the U+FFFD characters need a manual or assisted repair.
@@ -333,16 +354,23 @@ func updateTxtFile(cfg config.Config, ops *fsops.Ops, col *collector, rootDir, t
 		log.Debugf("Decoded %s as %s", txtFile, decoded.Encoding)
 	}
 
-	updatedLines, notes, filled := fixTxtLines(splitLines(decoded.Text), rootDir, files)
-	if len(notes) > 0 {
-		col.addMissing(notes...)
+	lines := splitLines(decoded.Text)
+	updatedLines, notes, filled := fixTxtLines(lines, rootDir, files)
+	col.addMissing(notes...)
+	content := []byte(strings.Join(updatedLines, ""))
+	if st, err := os.Lstat(txtFile); err == nil && st.Mode()&os.ModeSymlink != 0 {
+		if !bytes.Equal(content, raw) {
+			log.Warnf("Not changing %s: it is a symlink, replace it by the file it points to", txtFile)
+			col.addMissing("Song txt is a symlink and needs changes, replace it by the file it points to: " + txtFile)
+		}
+		return lines
 	}
-	changed, err := ops.WriteFileAtomic(txtFile, []byte(strings.Join(updatedLines, "")))
-	switch {
-	case err != nil:
+	changed, err := ops.WriteFileAtomic(txtFile, content)
+	if err != nil {
 		log.Errorf("Could not write %s: %v", txtFile, err)
-		return
-	case changed && !cfg.DryRun: // in dry-run mode ops already logged the planned write
+		return lines
+	}
+	if changed && !cfg.DryRun { // in dry-run mode ops already logged the planned write
 		log.Infof("Rewrote %s (read as %s)", txtFile, decoded.Encoding)
 	}
 	verb, suffix := "Filled", filledSuffix
@@ -353,6 +381,7 @@ func updateTxtFile(cfg config.Config, ops *fsops.Ops, col *collector, rootDir, t
 		log.Infof("%s %s in %s from the folder name", verb, f, txtFile)
 		col.addFilled(txtFile + ": " + f + suffix)
 	}
+	return updatedLines
 }
 
 // splitLines splits text into lines that each keep their trailing "\n". A missing final
@@ -373,20 +402,24 @@ func splitLines(text string) []string {
 // fixTxtLines removes duplicate tags and a stale #ENCODING tag, fills a missing #ARTIST or
 // #TITLE from the folder name (see fillNameTags), and updates or inserts the #MP3/#AUDIO,
 // #VIDEO, #COVER and #BACKGROUND tags. Tags that already point to an existing file of the
-// right kind are left alone (cleanup takes care of unreferenced files later). It also
-// returns notes for missing_files.txt (an audio file that cannot be chosen, a name tag that
-// cannot be filled) and the filled tags ("#ARTIST:value").
+// right kind are left alone (cleanup takes care of unreferenced files later). Only the
+// header is changed (see headerLen): "#" lines after it are ignored by players and copied
+// unchanged, like the notes. It also returns notes for missing_files.txt (an audio file
+// that cannot be chosen, a name tag that cannot be filled) and the filled tags
+// ("#ARTIST:value"). The lines passed in are not modified.
 func fixTxtLines(lines []string, rootDir string, files songFiles) ([]string, []string, []string) {
 	// With fewer than 3 lines it's not a valid song txt, so return the lines unchanged.
 	if len(lines) < 3 {
 		return lines, nil, nil
 	}
 
-	lines = dropEncodingTag(removeDuplicateTags(lines))
+	n := headerLen(lines)
+	body := lines[n:]
+	lines = dropEncodingTag(removeDuplicateTags(lines[:n]))
 
 	info := getSongInfoFromTxtFile(lines)
 	nameLines, filled, notes := fillNameTags(lines, rootDir, &info)
-	audio := chooseAudio(rootDir, lines, files, info)
+	audio := preferTaggedAudio(rootDir, lines, chooseAudio(rootDir, lines, files, info))
 	video := fileChoice{candidates: len(files.video)}
 	if len(files.video) > 0 {
 		video.name = files.video[0]
@@ -434,14 +467,16 @@ func fixTxtLines(lines []string, rootDir string, files songFiles) ([]string, []s
 	// A filled #TITLE/#ARTIST goes to the top of the header, as players write it, but
 	// after a leading #VERSION: format 1.x wants it as the first line.
 	if len(nameLines)+len(linesToInsert) > 0 {
-		log.Debugf("Inserting the following lines: %q", append(slices.Clone(nameLines), linesToInsert...))
+		log.Debugf("Inserting into %s: %q", rootDir, append(slices.Clone(nameLines), linesToInsert...))
 	}
-	updatedLines = slices.Insert(updatedLines, 1, linesToInsert...)
+	// A header-less txt (only possible for an odd file) gets the lines at the top.
+	updatedLines = slices.Insert(updatedLines, min(1, len(updatedLines)), linesToInsert...)
 	at := 0
-	if hasTag(updatedLines[0], "#VERSION") {
+	if len(updatedLines) > 0 && hasTag(updatedLines[0], "#VERSION") {
 		at = 1
 	}
-	return slices.Insert(updatedLines, at, nameLines...), notes, filled
+	updatedLines = slices.Insert(updatedLines, at, nameLines...)
+	return append(updatedLines, body...), notes, filled
 }
 
 // fillNameTags fills a missing or empty #TITLE and #ARTIST from the folder name of the
@@ -547,6 +582,21 @@ func chooseAudio(rootDir string, lines []string, files songFiles, info SongInfo)
 	return choice
 }
 
+// preferTaggedAudio resolves an ambiguous audio choice with the txt itself: if an #MP3 or
+// #AUDIO line already names one of the candidates, that file is the obvious value for a
+// stale sibling tag (format 1.1 txts carry both, and players use #AUDIO).
+func preferTaggedAudio(rootDir string, header []string, audio fileChoice) fileChoice {
+	for _, line := range header {
+		if !hasTag(line, "#MP3") && !hasTag(line, "#AUDIO") {
+			continue
+		}
+		if onDisk, _, found := utils.ResolveFileName(rootDir, tagValue(line)); found && slices.Contains(audio.ambiguous, onDisk) {
+			return fileChoice{name: onDisk, candidates: audio.candidates}
+		}
+	}
+	return audio
+}
+
 // stem returns name without its extension.
 func stem(name string) string {
 	return strings.TrimSuffix(name, filepath.Ext(name))
@@ -613,7 +663,7 @@ func updateTagsInLines(rootDir string, lines, updatedLines []string, files songF
 			audioUnresolved = audioUnresolved || unresolved
 		case hasTag(line, "#VIDEO"):
 			found = setFlag(found, flagVideo)
-			if v, ok, _ := resolveFileTag(rootDir, tagValue(line, "#VIDEO"), video, utils.IsVideoFile); ok {
+			if v, ok, _ := resolveFileTag(rootDir, tagValue(line), video, utils.IsVideoFile); ok {
 				rewrite(i, "#VIDEO", v)
 			}
 		case hasTag(line, "#VOCALS"), hasTag(line, "#INSTRUMENTAL"):
@@ -637,22 +687,76 @@ func updateTagsInLines(rootDir string, lines, updatedLines []string, files songF
 	return found, audioUnresolved
 }
 
+// parseTagLine splits a header line the way players and the songtxt parser read it:
+// leading blanks and blanks around the key are ignored ("  #Mp3 :x"). It returns the key
+// without "#" and the trimmed value; ok is false if line is not a tag line.
+func parseTagLine(line string) (key, value string, ok bool) {
+	body, ok := strings.CutPrefix(strings.TrimLeft(line, " \t"), "#")
+	if !ok {
+		return "", "", false
+	}
+	key, value, ok = strings.Cut(body, ":")
+	key = strings.TrimSpace(key)
+	if !ok || key == "" {
+		return "", "", false
+	}
+	return key, strings.TrimSpace(value), true
+}
+
 // hasTag reports whether line is a header line of tag (e.g. "#VIDEO"). The tag is matched
-// case-insensitively together with its colon, so "#VIDEO" does not match "#VIDEOGAP:".
+// case-insensitively as a whole key, so "#VIDEO" does not match "#VIDEOGAP:".
 func hasTag(line, tag string) bool {
-	n := len(tag) + 1
-	return len(line) >= n && strings.EqualFold(line[:n], tag+":")
+	key, _, ok := parseTagLine(line)
+	return ok && strings.EqualFold(key, tag[1:])
 }
 
 // splitTag splits a header line into the upper-cased tag (with "#") and its trimmed value.
 func splitTag(line string) (string, string) {
-	name, value, _ := strings.Cut(line, ":")
-	return strings.ToUpper(name), strings.TrimSpace(value)
+	key, value, _ := parseTagLine(line)
+	return "#" + strings.ToUpper(key), value
 }
 
-// tagValue returns the trimmed value of a header line of tag.
-func tagValue(line, tag string) string {
-	return strings.TrimSpace(line[len(tag)+1:])
+// tagValue returns the trimmed value of a header line.
+func tagValue(line string) string {
+	_, value, _ := parseTagLine(line)
+	return value
+}
+
+// headerLen returns the number of header lines. The header ends at the first body line,
+// the same lines at which songtxt.Parse switches to the body (see isBodyLine); "#" lines
+// after it are ignored by players and never treated as tags. Other lines (blank lines,
+// junk such as "Created with editor") do not end the header and are copied unchanged.
+func headerLen(lines []string) int {
+	for i, line := range lines {
+		if isBodyLine(line) {
+			return i
+		}
+	}
+	return len(lines)
+}
+
+// isBodyLine reports whether line (leading blanks and the line ending ignored) is a note
+// (":", "*" or "F"/"R"/"G" followed by a blank or nothing), a line break ("-"), a BPM
+// change ("B" followed by a blank or nothing), a player marker ("P" plus digits) or the
+// end mark ("E" followed by a blank or nothing): exactly the lines that end the header in
+// songtxt.Parse.
+func isBodyLine(line string) bool {
+	line = strings.TrimLeft(strings.TrimRight(line, "\r\n"), " \t")
+	if line == "" {
+		return false
+	}
+	c, rest := line[0], line[1:]
+	endsWord := rest == "" || rest[0] == ' ' || rest[0] == '\t'
+	switch c {
+	case ':', '*', '-':
+		return true
+	case 'F', 'R', 'G', 'B', 'E':
+		return endsWord
+	case 'P':
+		digits := strings.TrimSpace(rest)
+		return digits != "" && strings.Trim(digits, "0123456789") == ""
+	}
+	return false
 }
 
 // sameFileName reports whether a tag value names the on-disk file name (case-insensitive,
@@ -692,14 +796,12 @@ func checkDimensionsOfImagesTagged(rootDir string, info SongInfo) (bool, bool, S
 // removeDuplicateTags drops every repetition of a header tag, keeping its LAST line:
 // UltraStar Deluxe and Performous read the header top to bottom and let a later tag
 // overwrite an earlier one, so the last value is the one that plays. Tag names are
-// compared case-insensitively ("#mp3:" duplicates "#MP3:").
+// compared case-insensitively and without surrounding blanks ("#mp3 :" duplicates
+// "#MP3:"). lines must be the header only (see headerLen).
 func removeDuplicateTags(lines []string) []string {
 	tagKey := func(line string) (string, bool) {
-		name, _, isTag := strings.Cut(line, ":")
-		if !strings.HasPrefix(line, "#") || !isTag {
-			return "", false
-		}
-		return strings.ToUpper(name), true
+		key, _, ok := parseTagLine(line)
+		return strings.ToUpper(key), ok
 	}
 	last := make(map[string]int)
 	for i, line := range lines {
@@ -726,7 +828,7 @@ func dropEncodingTag(lines []string) []string {
 		if !hasTag(line, "#ENCODING") {
 			return false
 		}
-		switch strings.ToUpper(tagValue(line, "#ENCODING")) {
+		switch strings.ToUpper(tagValue(line)) {
 		case "UTF8", "UTF-8":
 			return false
 		}
@@ -735,15 +837,16 @@ func dropEncodingTag(lines []string) []string {
 	})
 }
 
-// getTagValue returns the trimmed value of the first header line of tag (e.g. "#COVER"),
-// or "" if there is none.
+// getTagValue returns the trimmed value of the last header line of tag (e.g. "#COVER"),
+// the one players use, or "" if there is none.
 func getTagValue(lines []string, tag string) string {
+	value := ""
 	for _, line := range lines {
 		if hasTag(line, tag) {
-			return tagValue(line, tag)
+			value = tagValue(line)
 		}
 	}
-	return ""
+	return value
 }
 
 func setFlag(flags, flag int) int { return flags | flag }
@@ -757,13 +860,8 @@ func isFlagSet(flags, flag int) bool { return flags&flag != 0 }
 func nameTagLine(lines []string, tag string) (int, string) {
 	idx, value := -1, ""
 	for i, line := range lines {
-		body, ok := strings.CutPrefix(strings.TrimLeft(line, " \t"), "#")
-		if !ok {
-			continue
-		}
-		key, v, ok := strings.Cut(body, ":")
-		if ok && strings.EqualFold(strings.TrimSpace(key), tag[1:]) {
-			idx, value = i, strings.TrimSpace(v)
+		if hasTag(line, tag) {
+			idx, value = i, tagValue(line)
 		}
 	}
 	return idx, value
