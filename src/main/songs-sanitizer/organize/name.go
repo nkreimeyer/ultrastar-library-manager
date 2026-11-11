@@ -39,7 +39,7 @@ var letterFolds = map[rune]rune{
 	'Ŧ': 'T', 'ŧ': 'T',
 	'Ŋ': 'N', 'ŋ': 'N',
 	'ĸ': 'K',
-	'Ŀ': 'L', 'ŀ': 'L',
+	// 'Ŀ' and 'ŀ' decompose to "L·"/"l·": no entry needed.
 	'Ɨ': 'I', 'ɨ': 'I',
 	'Ƶ': 'Z', 'ƶ': 'Z',
 	'Ɓ': 'B', 'ɓ': 'B',

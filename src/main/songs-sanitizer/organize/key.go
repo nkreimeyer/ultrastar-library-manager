@@ -17,8 +17,8 @@ import (
 //     make different letters and are kept (Cyrillic "й" != "и", kana "ゲ" != "ケ");
 //   - invisible format and control characters (soft hyphen, zero-width space/joiner, BOM)
 //     are dropped, as FolderName drops them ("Wonder\u00adwall" == "Wonderwall");
-//   - apostrophes (' ’ ‘ ` ´ ʼ) and dots are removed inside words ("Don’t" == "Dont",
-//     "R.E.M." == "REM");
+//   - apostrophes (' ’ ‘ ` ´ ʼ) and dots (also the middle dot '·') are removed inside
+//     words ("Don’t" == "Dont", "R.E.M." == "REM", "Ŀa" == "La");
 //   - "&" and "+" are the word "and" ("Simon & Garfunkel" == "Simon and Garfunkel");
 //   - every other punctuation or symbol separates words ("AC/DC" == "AC-DC" == "AC DC",
 //     "Jay-Z" == "Jay Z"), whitespace is collapsed.
@@ -32,7 +32,8 @@ const keySep = "|"
 // Case folding runs first, so only lower-case letters are listed.
 var keyLetterFolds = map[rune]string{
 	'ø': "o", 'æ': "ae", 'œ': "oe", 'ł': "l", 'đ': "d", 'ð': "d", 'þ': "th",
-	'ı': "i", 'ħ': "h", 'ŧ': "t", 'ŋ': "n", 'ĸ': "k", 'ŀ': "l", 'ɨ': "i", 'ƶ': "z",
+	'ı': "i", 'ħ': "h", 'ŧ': "t", 'ŋ': "n", 'ĸ': "k", 'ɨ': "i", 'ƶ': "z",
+	// 'ŀ' decomposes to "l" + middle dot, which normWords removes like a dot.
 }
 
 // isApostrophe reports whether r is an apostrophe-like character that is removed from
@@ -71,7 +72,7 @@ func normWords(s string) []string {
 		}
 		foldMarks = !unicode.IsLetter(r) || unicode.In(r, unicode.Latin, unicode.Greek)
 		switch {
-		case r == '.' || isApostrophe(r):
+		case r == '.' || r == '·' || isApostrophe(r): // '·': also the one of NFKD("ŀ")
 		case unicode.IsSpace(r):
 			b.WriteByte(' ')
 			inWord = false
@@ -123,11 +124,17 @@ func hasVersionWord(words []string) bool {
 
 // cutFeat drops a "feat. X" part from normalized words. The feat word must follow at least
 // one word and be followed by at least one, so "Little Feat" and a title "Feat" stay.
+// afterWords: words come after earlier words of the same name (the text after a bracket
+// group, "Song (Live) feat. X"), so the feat word may also be the first one.
 // allowFt: "ft" counts as a feat word too. Titles pass false for the strict key: in a
 // title it is often an abbreviation ("Welcome to Ft. Lauderdale"). guard: if a version
 // word follows (see versionWords), only the feat word itself is dropped.
-func cutFeat(words []string, allowFt, guard bool) []string {
-	for i := 1; i < len(words)-1; i++ {
+func cutFeat(words []string, afterWords, allowFt, guard bool) []string {
+	start := 1
+	if afterWords {
+		start = 0
+	}
+	for i := start; i < len(words)-1; i++ {
 		if !isFeatWord(words[i]) || (!allowFt && words[i] == "ft") {
 			continue
 		}
@@ -337,7 +344,8 @@ func titleWords(title string, loose bool) (words []string, duet bool) {
 				if isFeatWord(w[0]) {
 					w = w[1:] // "(feat. X Live)"
 				}
-				words = append(words, w...)
+				// "(Live feat. X)", "- Live feat. X": the feat part goes as elsewhere.
+				words = append(words, cutFeat(w, false, loose, true)...) // "ft." only loose: "(Live at Ft. Worth)"
 			}
 		}
 	}
@@ -349,7 +357,7 @@ func titleWords(title string, loose bool) (words []string, duet bool) {
 		for k, piece := range splitDashes(p.text) {
 			w := normWords(piece)
 			if k == 0 {
-				words = append(words, cutFeat(w, loose, !loose)...)
+				words = append(words, cutFeat(w, len(words) > 0, loose, !loose)...)
 				continue
 			}
 			qualifier(w, false)
@@ -369,7 +377,7 @@ func artistWords(artist string) []string {
 			continue
 		}
 		if !p.bracket {
-			w = cutFeat(w, true, true)
+			w = cutFeat(w, len(words) > 0, true, true) // "Artist (DE) feat. X" too
 		}
 		words = append(words, w...)
 	}

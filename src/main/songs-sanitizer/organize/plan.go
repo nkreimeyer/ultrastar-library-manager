@@ -68,6 +68,7 @@ const (
 	reasonTargetExists   = "target exists in the library; add the library as a source (-s) to deduplicate against it"
 	reasonTargetOccupied = "target is occupied by %s, which stays in place"
 	reasonBucketOccupied = "bucket folder %s is the song folder %s, which stays in place"
+	reasonKeeperLeft     = "the better version %s cannot be moved into the library, so this copy stays"
 )
 
 // PlanOptions configure Plan.
@@ -130,7 +131,9 @@ type group struct {
 //     numbered in SongKey order.
 //   - A keeper already at its target is in place. A target taken by something that is
 //     not a candidate, or by a candidate that stays where it is, leaves the keeper in
-//     place: nothing is ever overwritten or merged.
+//     place: nothing is ever overwritten or merged. If such a keeper comes from another
+//     source, the library's own copies of the song stay too (instead of going to
+//     duplicates/), so the library never loses the song.
 func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 	p := Plan{Decisions: make([]Decision, len(cands))}
 	for i := range p.Decisions {
@@ -151,7 +154,7 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 	groups := map[string]*group{}
 	var groupKeys []string
 	var broken []int
-	for _, i := range order {
+	for pos, i := range order {
 		c := &cands[i]
 		switch {
 		case c.Unreadable:
@@ -163,8 +166,10 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 		default:
 			key := SongKey(c.Artist, c.Title, c.Duet)
 			if key == "" {
-				// Nothing to compare by: never merge it with anything.
-				key = "\x00" + strconv.Itoa(i)
+				// Nothing to compare by: never merge it with anything. The key is the
+				// (source, rel) position, zero-padded, so the numbering of such songs
+				// follows that order and not the order of cands.
+				key = fmt.Sprintf("\x00%09d", pos)
 			}
 			g := groups[key]
 			if g == nil {
@@ -213,7 +218,11 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 			p.Decisions[g.keeper] = Decision{Action: ActMove, Target: g.target, Other: -1}
 		}
 	}
-	resolveOccupied(cands, p.Decisions, opts.Occupied)
+	// A keeper left outside the library must not cost the library its own copies: they
+	// stay, which may in turn block other targets.
+	for resolveOccupied(cands, p.Decisions, opts.Occupied); keepLibraryLosers(cands, p.Decisions, groups, groupKeys); {
+		resolveOccupied(cands, p.Decisions, opts.Occupied)
+	}
 	p.PossibleDuplicates = possibleDuplicates(cands, groups, groupKeys)
 	return p
 }
@@ -365,6 +374,27 @@ func resolveOccupied(cands []Candidate, ds []Decision, occupied func(string) (st
 			}
 		}
 	}
+}
+
+// keepLibraryLosers leaves the library members of a group in place when the group's
+// keeper comes from another source and is left there (its target cannot be used): moving
+// them to duplicates/ would leave the library without the song. It reports whether it
+// changed a decision.
+func keepLibraryLosers(cands []Candidate, ds []Decision, groups map[string]*group, keys []string) bool {
+	changed := false
+	for _, k := range keys {
+		g := groups[k]
+		if ds[g.keeper].Action != ActLeft || cands[g.keeper].InLibrary {
+			continue
+		}
+		for _, m := range g.members {
+			if m != g.keeper && cands[m].InLibrary && ds[m].Action == ActDuplicate {
+				ds[m] = Decision{Action: ActLeft, Reason: fmt.Sprintf(reasonKeeperLeft, cands[g.keeper].Ref()), Other: -1}
+				changed = true
+			}
+		}
+	}
+	return changed
 }
 
 // possibleDuplicates lists the keepers of different songs whose LooseKey is equal.

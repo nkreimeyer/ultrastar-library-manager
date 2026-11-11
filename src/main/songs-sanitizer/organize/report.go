@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -117,8 +118,15 @@ type reportInput struct {
 	emptyLeft int
 }
 
-// outDest is where a duplicate or invalid song goes, relative to the output dir.
-func outDest(kind string, c *Candidate) string {
+// outDest is where a duplicate or invalid song goes, relative to the output dir: the
+// target its move actually used (MoveInto adds " (2)" if the planned one is taken, also in
+// a dry run), or the planned one before the move.
+func outDest(cfg config.OrganizeConfig, kind string, c *Candidate, o moveOutcome) string {
+	if o.Dst != "" {
+		if rel, err := filepath.Rel(cfg.OutDir, o.Dst); err == nil {
+			return filepath.ToSlash(rel)
+		}
+	}
 	return kind + "/" + c.Label + "/" + c.Rel
 }
 
@@ -154,10 +162,10 @@ func buildReport(in reportInput) planReport {
 			r.AlreadyInPlace = append(r.AlreadyInPlace, libraryEntry{Target: d.Target, Song: c.Ref(), Name: c.Song()})
 		case ActDuplicate:
 			r.Duplicates = append(r.Duplicates, duplicateEntry{Song: c.Ref(), Name: c.Song(), Keeper: ref(d.Other),
-				Reason: d.Reason, Dest: outDest("duplicates", c), Outcome: outcome(i)})
+				Reason: d.Reason, Dest: outDest(in.cfg, "duplicates", c, in.outcomes[i]), Outcome: outcome(i)})
 		case ActInvalid:
 			r.Invalid = append(r.Invalid, invalidEntry{Song: c.Ref(), Name: c.Song(), Errors: append([]string{}, c.Errors...),
-				Replacement: ref(d.Other), Dest: outDest("invalid", c), Outcome: outcome(i)})
+				Replacement: ref(d.Other), Dest: outDest(in.cfg, "invalid", c, in.outcomes[i]), Outcome: outcome(i)})
 		case ActLeft:
 			r.LeftInPlace = append(r.LeftInPlace, leftEntry{Song: c.Ref(), Name: c.Song(), Reason: d.Reason})
 		}
