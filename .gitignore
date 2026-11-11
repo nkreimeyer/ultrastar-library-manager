@@ -1,5 +1,6 @@
 .vscode/settings.json
 .sonarlint/
+.continue/
 test-assets/songs/
 test-assets/extra-files
 test-assets/notxt
