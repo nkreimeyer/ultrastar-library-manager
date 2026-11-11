@@ -181,11 +181,13 @@ func reportUnreadable(ops *fsops.Ops, path string, err error) {
 }
 
 // isUntaggedMedia reports whether name is an audio file of a song whose txt has no
-// #MP3/#AUDIO tag yet, a video file of a song without #VIDEO tag, or the image fixtxt
-// would use as cover (background) of a song without #COVER (#BACKGROUND) tag. fixtxt
-// inserts that tag, unless it cannot choose between several files or does not run (-t=false);
-// either way the file is the song's media, not clutter. The txt is read through ops, so in
-// a dry run the tags fixtxt would insert count.
+// #MP3/#AUDIO tag naming an existing file, a video file of a song without such a #VIDEO
+// tag, or the image fixtxt would use as cover (background) of a song without such a
+// #COVER (#BACKGROUND) tag. fixtxt inserts or fixes that tag, unless it cannot choose
+// between several files or does not run (-t=false); either way the file is the song's
+// media, not clutter. A tag naming a missing file (a typo, an old name) counts as absent:
+// it references none of the files, so treating it as set would move all of them away.
+// The txt is read through ops, so in a dry run the tags fixtxt would write count.
 func isUntaggedMedia(ops *fsops.Ops, songFolder, name string) bool {
 	isAudio, isVideo, isImage := utils.IsAudioFile(name), utils.IsVideoFile(name), utils.IsImageFile(name)
 	if !isAudio && !isVideo && !isImage {
@@ -195,12 +197,16 @@ func isUntaggedMedia(ops *fsops.Ops, songFolder, name string) bool {
 	if err != nil {
 		return true // no readable song txt: never move media
 	}
-	if isImage {
-		return (tags["COVER"] == "" && utils.FindCoverImage(ops, songFolder) == name) ||
-			(tags["BACKGROUND"] == "" && utils.FindBackgroundImage(ops, songFolder) == name)
+	untagged := func(tag string) bool {
+		_, _, found := utils.ResolveFileName(songFolder, tags[tag])
+		return !found
 	}
-	if isAudio && tags["MP3"] == "" && tags["AUDIO"] == "" {
+	if isImage {
+		return (untagged("COVER") && utils.FindCoverImage(ops, songFolder) == name) ||
+			(untagged("BACKGROUND") && utils.FindBackgroundImage(ops, songFolder) == name)
+	}
+	if isAudio && untagged("MP3") && untagged("AUDIO") {
 		return true
 	}
-	return isVideo && tags["VIDEO"] == ""
+	return isVideo && untagged("VIDEO")
 }
