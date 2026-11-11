@@ -297,7 +297,7 @@ func (p *processor) plan(dir, file string) (pl encodePlan, ok bool) {
 		pl.reEncode = getNeedsReEncode(file, codec)
 	}
 
-	pl.removeAudio = needsRemoveAudio(dir, file)
+	pl.removeAudio = needsRemoveAudio(p.ops, dir, file)
 
 	width, height, err := getVideoResolution(file)
 	if err != nil {
@@ -338,7 +338,7 @@ func (p *processor) processVideoFile(dir, file string) {
 		return
 	}
 
-	if pl.renames(file) && !isVideoReferenced(dir, file) {
+	if pl.renames(file) && !isVideoReferenced(p.ops, dir, file) {
 		// Converting changes the file name, which only works if the txt references it.
 		log.Warnf("Not converting %s to %s: the song txt's #VIDEO tag does not reference it", file, pl.outputExt(file))
 		return
@@ -530,9 +530,9 @@ func (p *processor) tagByRemux(file string) error {
 }
 
 // isVideoReferenced reports whether the #VIDEO tag of the song txt in dir names file
-// (case- and NFC-insensitively).
-func isVideoReferenced(dir, file string) bool {
-	tags, err := utils.ReadSongTags(dir)
+// (case- and NFC-insensitively). The txt is read through ops (see utils.ReadSongTags).
+func isVideoReferenced(ops *fsops.Ops, dir, file string) bool {
+	tags, err := utils.ReadSongTags(ops, dir)
 	if err != nil {
 		return false
 	}
@@ -544,9 +544,10 @@ func isVideoReferenced(dir, file string) bool {
 // if the video has an audio stream and the song's #AUDIO/#MP3 tag names a separate,
 // existing, visible audio file. A song whose #MP3 points to the video itself, to a hidden
 // file (e.g. "._v.mp3" left by old versions) or to nothing keeps the video's audio,
-// because it may be the only audio track of the song.
-func needsRemoveAudio(dir, file string) bool {
-	tags, err := utils.ReadSongTags(dir)
+// because it may be the only audio track of the song. The txt is read through ops, so in
+// a dry run the #MP3 fixtxt would write counts.
+func needsRemoveAudio(ops *fsops.Ops, dir, file string) bool {
+	tags, err := utils.ReadSongTags(ops, dir)
 	if err != nil {
 		return false
 	}

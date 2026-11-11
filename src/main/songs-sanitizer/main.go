@@ -103,13 +103,13 @@ func run() int {
 
 	if cfg.DryRun {
 		log.Infof("Dry run: the library will not be modified (reports are written to the output dir)")
-		log.Infof("Note: later modules see the library as it is now, without the changes earlier modules would make, so their plan can differ slightly from a real run")
+		log.Infof("Note: later modules see the txt changes and moves earlier modules would make, but not their planned media re-encodes, so their plan can differ slightly from a real run")
 	}
 	log.Infof("Song dir: %s", cfg.SongDir)
 	log.Infof("Output dir: %s", cfg.OutDir)
 
 	modules := moduleList(*runFixTxt, *runCleanup, *runCheck, *runFixVideos, *runFixAudio,
-		check.Options{Deep: *deepCheck, MoveBroken: *moveBroken, FixTxt: *runFixTxt})
+		check.Options{Deep: *deepCheck, MoveBroken: *moveBroken})
 
 	moduleErrors := 0
 	for _, m := range modules {

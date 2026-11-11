@@ -64,9 +64,16 @@ operations: they do not change the exit code.
 > name (e.g. `.avi` → `.mp4`): the original is deleted once the song `.txt` points to the
 > new file.
 
-In dry-run mode every module looks at the library as it is, so a later module does not
-see the changes an earlier one would make (e.g. cleanup does not know about a `#MP3` tag
-that fixtxt would fix). Folders an earlier module would move away are skipped, though.
+In dry-run mode every module sees the song `.txt` files as the earlier modules would
+have left them: a txt that fixtxt would rewrite is read with its planned content (e.g.
+cleanup keeps the audio file a fixed `#MP3` tag references, and check does not report a
+swapped `#MP3`/`#VIDEO` or a missing `#ARTIST` that fixtxt would fix), and files and
+folders an earlier module would move away (a duplicate song txt, a broken song) are
+skipped. So the plan matches what a real run does. Not simulated: media changes planned
+by the video and audio modules are only listed and counted, not applied in the dry run.
+This includes the `#VIDEO` update of a conversion that changes the file name
+(`.avi` → `.mp4`). No later module depends on them today: the audio module, the only one
+after the video module, handles audio files and the `#VOCALS`/`#INSTRUMENTAL` tags only.
 
 ### What the modules do
 
@@ -112,9 +119,8 @@ that fixtxt would fix). Folders an earlier module would move away are skipped, t
     (decimal comma allowed), malformed note lines, no notes (fewer than 10 is a warning),
     no `E`, beats going backwards (error) or overlapping notes (warning), inconsistent duet
     sections, repeated tags (the last one counts, as in UltraStar). A missing
-    `#ARTIST`/`#TITLE` that fixtxt can fill from the folder name says so in the message;
-    in a dry run with fixtxt enabled it is only a warning, so `-n -k -move-broken` does
-    not plan to move a song the real run would keep
+    `#ARTIST`/`#TITLE` that fixtxt can fill from the folder name says so in the message
+    (with fixtxt enabled, check already sees the filled tag, in a dry run too)
   - referenced files: missing or zero-length files (an error for the audio source, a
     warning for video, cover, background and stems), unreadable media, an audio source
     without an audio stream, unreadable cover/background images

@@ -14,9 +14,9 @@ duplicate-folder detection exists today.
 src/main/songs-sanitizer/     Go module github.com/nkreimeyer/ultrastar-songs-sanitizer (go 1.24)
   main.go                     flags, validation, runs the modules in fixed order, summary + exit code
   main_test.go                flag validation (-deep/-move-broken need -k), module order
-  pipeline_test.go            fixtxt → cleanup (→ check) integration tests (real run, dry-run, idempotence)
+  pipeline_test.go            fixtxt → cleanup (→ check) integration tests (real run, dry-run = real-run plan, idempotence)
   config/                     Config{SongDir, OutDir, DryRun}: path validation, output layout, marker file
-  fsops/                      the ONLY place that modifies files: dry-run, atomic writes, moves, stats
+  fsops/                      the ONLY place that modifies files: dry-run (planned writes/moves visible via ReadFile), atomic writes, moves, stats
   utils/decode.go             txt decoding (DecodeTxt): UTF-16/UTF-8/#ENCODING/CP1250/CP1252, "when in doubt, Problem"
   utils/txt.go                header tags, song-txt lookup, file references
   utils/folders.go            song folder discovery (GetAllSongFolders)
@@ -66,6 +66,12 @@ flags are turned off with `-t=false`; leftover arguments (`-t false`) are reject
   conversion with `ops.Remove`, and only after the txt references the new file.
 - **Dry-run** must leave `cfg.SongDir` byte-identical. Probes (ffprobe, volumedetect) are
   fine. Planned media changes are recorded with `ops.PlanReplace`.
+- **Read txts through `ops.ReadFile`** (and the ops-aware `utils.IsSongTxt`, `SongTxtFiles`,
+  `FindSongTxt`, `ReadSongTags`, `IsFileReferenced`, `ReplaceFileReference`,
+  `FindCoverImage`/`FindBackgroundImage`; `nil` ops = plain disk reads). In a dry run
+  `ops.ReadFile` returns the content of a planned `WriteFileAtomic` and reports a file that
+  is planned to be moved away as not existing, and the lookups skip such txts, so later
+  modules plan what a real run does. Never base a decision on `os.ReadFile` of a library txt.
 - **No `log.Fatal`/panic in modules.** Log with context and continue with the next song. Use
   `ops.Fail()` for failures outside `ops`. `Run` only returns an error if the module cannot run.
 - **Txt handling**: decode with `utils.DecodeTxt`. Never rewrite a file whose `Problem` is set.
@@ -151,10 +157,16 @@ Still open (roadmap items):
 - **No signal handling.** Ctrl-C during `-m`/`-a` leaves a hidden `.*.sanitizer-*` temp file.
   It is ignored as media and moved to `extra-files/` by the next cleanup run, and the
   original is untouched.
-- **Dry-run is per module.** Later modules don't see txt changes that earlier modules would
-  make, so the plan can differ from a real run. Planned moves *are* respected
-  (`ops.WouldBeMoved`, planned merge targets), and cleanup keeps media of songs that have no
-  `#MP3`/`#VIDEO` tag yet.
+- **Dry-run simulates txts and moves, not media.** Later modules see planned txt writes
+  (`ops.ReadFile`) and planned moves away (`ops.WouldBeMoved`, planned merge targets), so
+  the fixtxt → cleanup → check plan matches a real run (`TestPipelineDryRunMatchesRealRun`).
+  Not simulated: media changes planned by fixvideos/fixaudio (`PlanReplace` only logs and
+  counts them, and the `#VIDEO` rewrite of an extension-changing conversion is not recorded
+  as a planned txt write); no later module depends on them today (fixaudio, the only module
+  after fixvideos, reads only audio files and `#VOCALS`/`#INSTRUMENTAL`). Also not
+  simulated: moves or renames *into* a path, and new files from planned writes in directory
+  listings (`os.ReadDir` and `utils.ResolveFileName` list the disk). A future module that
+  reads `#VIDEO` after fixvideos would need `PlanReplace` to record the txt change.
 - Peak normalization of heavily clipped material at low bitrates can miss -3 dBFS by about
   1–2 dB on the first pass (encoder overshoot). The marker prevents repeated passes;
   `loudnorm` would be the better fix.
@@ -167,8 +179,8 @@ Still open (roadmap items):
   with check; fills are merged into `filled_tags.txt`, which keeps the written fills of all
   runs and replaces a dry run's planned lines). fixtxt finds the tag lines the way songtxt
   does (`nameTagLine`: leading blanks and blanks around the key ignored, last occurrence),
-  so `#ARTIST :x` counts as present. check names the fill in its message and, in a dry run
-  with fixtxt enabled (`Options.FixTxt`), downgrades it to a warning. Songs whose folder
+  so `#ARTIST :x` counts as present. check names the fill in its message (seen only with
+  `-t=false`: otherwise check reads the filled txt, in a dry run the planned one). Songs whose folder
   name is not obvious (no or several ` - `, reversed naming, a prefix before the artist,
   a track-number artist) still need a manual fix.
 - check: without `-xerror`, ffmpeg exits 0 on truncated/damaged files, so `-deep` reports
@@ -335,8 +347,9 @@ Next slices:
   for ffmpeg, and removing the temp file on cancel.
 - Parse each song's txt **once** into a `Song` struct (tags with their original case and
   order, note lines, the chosen txt file) that all modules share. This replaces substring
-  reference checks and lets dry-run apply earlier modules' planned txt changes. The parser
-  exists (`songtxt`, used by check); fixtxt, cleanup and the media modules don't use it yet.
+  reference checks. (Dry-run already applies earlier modules' planned txt changes through
+  `ops.ReadFile`; a shared `Song` would read that planned content too.) The parser exists
+  (`songtxt`, used by check); fixtxt, cleanup and the media modules don't use it yet.
 - CLI: subcommands (`fixtxt`, `cleanup`, `video`, `audio`, `dedupe`, `check`, `organize`) or
   at least opt-in destructive modules, progress output (n/total, ETA), and an undo journal
   for moves and txt edits (not for re-encoded media, see "Design decision").

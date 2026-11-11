@@ -18,6 +18,8 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fsops"
 )
 
 // Image header errors. Every error returned for the content of a file (as opposed to an
@@ -379,12 +381,12 @@ var showableUnsupported = map[string]bool{"tiff": true}
 
 // imageCandidates returns the visible image files of dir, sorted by name, with their
 // name hints and dimensions.
-func imageCandidates(dir string) []imageCandidate {
+func imageCandidates(ops *fsops.Ops, dir string) []imageCandidate {
 	names := mediaEntries(dir, IsImageFile)
 	if len(names) == 0 {
 		return nil
 	}
-	strip := songNames(dir)
+	strip := songNames(ops, dir)
 	cands := make([]imageCandidate, 0, len(names))
 	for _, name := range names {
 		c := imageCandidate{name: name}
@@ -405,10 +407,11 @@ func imageCandidates(dir string) []imageCandidate {
 }
 
 // songNames returns the folder name, #ARTIST, #TITLE and "#ARTIST #TITLE" of the song
-// in dir. Their words are no file name hints (see nameHint).
-func songNames(dir string) []string {
+// in dir, read through ops (see ReadSongTags). Their words are no file name hints (see
+// nameHint).
+func songNames(ops *fsops.Ops, dir string) []string {
 	names := []string{filepath.Base(dir)}
-	if tags, err := ReadSongTags(dir); err == nil {
+	if tags, err := ReadSongTags(ops, dir); err == nil {
 		artist, title := strings.TrimSpace(tags["ARTIST"]), strings.TrimSpace(tags["TITLE"])
 		names = append(names, artist, title, artist+" "+title)
 	}
@@ -443,9 +446,10 @@ func pickImage(cands []imageCandidate, kind imageKind, shapes ...func(w, h int) 
 // one with a weak hint (the word "cover"), then the first square image (IsSquareImage)
 // without any hint. Images hinted as background are never the cover. See nameHint for the
 // hints and showableUnsupported for hinted images whose dimensions cannot be read.
-// FindCoverImage and FindBackgroundImage never return the same image.
-func FindCoverImage(rootDir string) string {
-	name := pickImage(imageCandidates(rootDir), kindCover, IsSquareImage)
+// FindCoverImage and FindBackgroundImage never return the same image. The song txt (whose
+// #ARTIST/#TITLE words are no hints) is read through ops, which may be nil.
+func FindCoverImage(ops *fsops.Ops, rootDir string) string {
+	name := pickImage(imageCandidates(ops, rootDir), kindCover, IsSquareImage)
 	logPick(rootDir, "cover", name)
 	return name
 }
@@ -454,9 +458,10 @@ func FindCoverImage(rootDir string) string {
 // none. Images are considered in name order: first one with a strong background hint
 // ("[BG]"), then one with a weak hint (the words "background" or "bg"), then the first
 // non-square landscape image without any hint, then the first non-square portrait image
-// without any hint. Images hinted as cover are never the background.
-func FindBackgroundImage(rootDir string) string {
-	name := pickImage(imageCandidates(rootDir), kindBackground,
+// without any hint. Images hinted as cover are never the background. See FindCoverImage
+// for ops.
+func FindBackgroundImage(ops *fsops.Ops, rootDir string) string {
+	name := pickImage(imageCandidates(ops, rootDir), kindBackground,
 		func(w, h int) bool { return !IsSquareImage(w, h) && w > h },
 		func(w, h int) bool { return !IsSquareImage(w, h) })
 	logPick(rootDir, "background", name)

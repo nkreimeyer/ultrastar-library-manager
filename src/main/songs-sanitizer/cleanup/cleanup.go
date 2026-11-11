@@ -97,7 +97,7 @@ func countEntries(ops *fsops.Ops, dir string, files []os.DirEntry) int {
 // without the txt, nothing can be known to be unreferenced.
 func cleanupDirectory(cfg config.Config, ops *fsops.Ops, songFolder string) {
 	songFolder = filepath.Clean(songFolder)
-	txt, err := utils.FindSongTxt(songFolder)
+	txt, err := utils.FindSongTxt(ops, songFolder)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			log.Debugf("Song folder %q has no song txt, leaving its files alone", songFolder)
@@ -109,7 +109,7 @@ func cleanupDirectory(cfg config.Config, ops *fsops.Ops, songFolder string) {
 	// fixtxt leaves txts it cannot decode unambiguously untouched (and reports them); their
 	// references may be stale or byte-encoded differently, so cleanup leaves the song alone
 	// too until the txt is fixed.
-	if raw, err := os.ReadFile(txt); err != nil {
+	if raw, err := ops.ReadFile(txt); err != nil {
 		reportUnreadable(ops, txt, err)
 		return
 	} else if d := utils.DecodeTxt(raw); d.Problem != "" {
@@ -140,7 +140,7 @@ func handleFileCleanup(cfg config.Config, ops *fsops.Ops, songFolder string, fil
 		log.Warnf("Not moving %q: its name is not valid UTF-8, rename it first", src)
 		return
 	}
-	if utils.IsFileReferenced(songFolder, name) || isUntaggedMedia(songFolder, name) {
+	if utils.IsFileReferenced(ops, songFolder, name) || isUntaggedMedia(ops, songFolder, name) {
 		return
 	}
 	rel := filepath.Join(cfg.RelPath(songFolder), name)
@@ -182,22 +182,22 @@ func reportUnreadable(ops *fsops.Ops, path string, err error) {
 
 // isUntaggedMedia reports whether name is an audio file of a song whose txt has no
 // #MP3/#AUDIO tag yet, a video file of a song without #VIDEO tag, or the image fixtxt
-// would use as cover (background) of a song without #COVER (#BACKGROUND) tag. fixtxt inserts that tag, unless it cannot choose between
-// several files; either way the file is the song's media, not clutter. (In dry-run mode
-// fixtxt's insertion is not on disk yet, so without this the plan would show the song's
-// main audio being moved away.)
-func isUntaggedMedia(songFolder, name string) bool {
+// would use as cover (background) of a song without #COVER (#BACKGROUND) tag. fixtxt
+// inserts that tag, unless it cannot choose between several files or does not run (-t=false);
+// either way the file is the song's media, not clutter. The txt is read through ops, so in
+// a dry run the tags fixtxt would insert count.
+func isUntaggedMedia(ops *fsops.Ops, songFolder, name string) bool {
 	isAudio, isVideo, isImage := utils.IsAudioFile(name), utils.IsVideoFile(name), utils.IsImageFile(name)
 	if !isAudio && !isVideo && !isImage {
 		return false
 	}
-	tags, err := utils.ReadSongTags(songFolder)
+	tags, err := utils.ReadSongTags(ops, songFolder)
 	if err != nil {
 		return true // no readable song txt: never move media
 	}
 	if isImage {
-		return (tags["COVER"] == "" && utils.FindCoverImage(songFolder) == name) ||
-			(tags["BACKGROUND"] == "" && utils.FindBackgroundImage(songFolder) == name)
+		return (tags["COVER"] == "" && utils.FindCoverImage(ops, songFolder) == name) ||
+			(tags["BACKGROUND"] == "" && utils.FindBackgroundImage(ops, songFolder) == name)
 	}
 	if isAudio && tags["MP3"] == "" && tags["AUDIO"] == "" {
 		return true

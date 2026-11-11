@@ -20,8 +20,9 @@ import (
 //     subfolders (e.g. an empty "covers/" folder).
 //
 // Hidden folders, Synology "@eaDir" folders and sanitizer output folders (containing
-// config.OutputMarker) are skipped. In dry-run mode, folders that an earlier module would
-// have moved away are skipped too. Unreadable folders and song txts are logged, counted
+// config.OutputMarker) are skipped. In dry-run mode, folders and txts that an earlier
+// module would have moved away are skipped too, and txts are read as an earlier module
+// would have written them (ops.ReadFile). Unreadable folders and song txts are logged, counted
 // once per run in ops (which may be nil) and skipped; only an unreadable songDir is an error.
 func GetAllSongFolders(ops *fsops.Ops, songDir string) ([]string, error) {
 	entries, err := os.ReadDir(songDir)
@@ -65,8 +66,12 @@ func collectSongFolders(ops *fsops.Ops, dir string) collected {
 				subdirs = append(subdirs, filepath.Join(dir, name))
 			}
 		case IsTxtFile(name) && IsRegularFile(dir, e):
+			// A txt an earlier module would have moved away (dry run) is not there.
+			if ops.WouldBeMoved(filepath.Join(dir, name)) {
+				continue
+			}
 			hasTxt = true
-			isSong, err := isSongTxt(filepath.Join(dir, name))
+			isSong, err := isSongTxt(ops, filepath.Join(dir, name))
 			if err != nil {
 				skipUnreadable(ops, filepath.Join(dir, name), err)
 				return collected{content: true}
@@ -108,5 +113,5 @@ func skipFolder(ops *fsops.Ops, parent, name string) bool {
 	if IsHidden(name) || name == "@eaDir" {
 		return true
 	}
-	return ops != nil && ops.WouldBeMoved(filepath.Join(parent, name))
+	return ops.WouldBeMoved(filepath.Join(parent, name))
 }

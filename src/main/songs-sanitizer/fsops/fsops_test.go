@@ -2,8 +2,10 @@ package fsops
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -200,7 +202,8 @@ func TestDryRunChangesNothing(t *testing.T) {
 	if err != nil || !changed {
 		t.Errorf("WriteFileAtomic = %v, %v; want true, nil", changed, err)
 	}
-	if changed, err := ops.WriteFileAtomic(filepath.Join(song, "song.txt"), []byte("#TITLE:Song\n")); err != nil || changed {
+	// Compared with the planned content, as a real run compares with the first write.
+	if changed, err := ops.WriteFileAtomic(filepath.Join(song, "song.txt"), []byte("#TITLE:Other\n")); err != nil || changed {
 		t.Errorf("unchanged WriteFileAtomic = %v, %v; want false, nil", changed, err)
 	}
 	dst, err := ops.MoveInto(filepath.Join(song, "extra.jpg"), filepath.Join(out, "extra-files"), filepath.Join("Artist - Song", "extra.jpg"))
@@ -861,4 +864,133 @@ func TestPlanReplace(t *testing.T) {
 	if s := ops.Stats(); s != (Stats{Replaced: 1}) {
 		t.Errorf("Stats = %+v, want Replaced=1", s)
 	}
+}
+
+// TestReadFileSeesPlannedWrites: in dry-run mode, ReadFile returns the content of a
+// planned write (and of the latest one, if a file is planned twice), while the disk stays
+// unchanged. A write that would not change the file is not recorded.
+func TestReadFileSeesPlannedWrites(t *testing.T) {
+	dir := t.TempDir()
+	changed, same, other := filepath.Join(dir, "a.txt"), filepath.Join(dir, "b.txt"), filepath.Join(dir, "c.txt")
+	for _, p := range []string{changed, same, other} {
+		writeFile(t, p, "old", 0o644)
+	}
+	before := snapshot(t, dir)
+	o := New(true)
+
+	if ok, err := o.WriteFileAtomic(changed, []byte("new")); err != nil || !ok {
+		t.Fatalf("WriteFileAtomic = %v, %v", ok, err)
+	}
+	if ok, err := o.WriteFileAtomic(same, []byte("old")); err != nil || ok {
+		t.Fatalf("unchanged WriteFileAtomic = %v, %v", ok, err)
+	}
+	for path, want := range map[string]string{changed: "new", same: "old", other: "old"} {
+		if got, err := o.ReadFile(path); err != nil || string(got) != want {
+			t.Errorf("ReadFile(%s) = %q, %v; want %q", filepath.Base(path), got, err, want)
+		}
+	}
+	if _, ok := o.plannedWrites[filepath.Clean(same)]; ok {
+		t.Error("a write that changes nothing was recorded")
+	}
+
+	// A second planned write is compared with the first one, not with the disk.
+	if ok, err := o.WriteFileAtomic(changed, []byte("new")); err != nil || ok {
+		t.Errorf("repeating the planned write = %v, %v; want unchanged", ok, err)
+	}
+	if ok, err := o.WriteFileAtomic(changed, []byte("newer")); err != nil || !ok {
+		t.Errorf("second planned write = %v, %v", ok, err)
+	}
+	if got, _ := o.ReadFile(changed); string(got) != "newer" {
+		t.Errorf("ReadFile after the second write = %q, want %q", got, "newer")
+	}
+	// The returned data is a copy: changing it does not change the plan.
+	got, _ := o.ReadFile(changed)
+	got[0] = 'X'
+	if again, _ := o.ReadFile(changed); string(again) != "newer" {
+		t.Errorf("plan changed through the returned slice: %q", again)
+	}
+	if after := snapshot(t, dir); strings.Join(after, "\n") != strings.Join(before, "\n") {
+		t.Error("dry run modified the files")
+	}
+	if st := o.Stats(); st.Written != 2 {
+		t.Errorf("planned writes = %d, want 2", st.Written)
+	}
+}
+
+// TestReadFileMovedAway: in dry-run mode a file that a planned move takes away (itself or
+// with its folder) reads as not existing, even if a write was planned before.
+func TestReadFileMovedAway(t *testing.T) {
+	dir := t.TempDir()
+	song := filepath.Join(dir, "lib", "Song")
+	txt, other := filepath.Join(song, "song.txt"), filepath.Join(dir, "lib", "Other", "song.txt")
+	writeFile(t, txt, "old", 0o644)
+	writeFile(t, other, "other", 0o644)
+	o := New(true)
+	if _, err := o.WriteFileAtomic(txt, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := o.MoveInto(song, filepath.Join(dir, "out"), "Song"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := o.ReadFile(txt); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ReadFile of a file in a moved folder: err = %v, want fs.ErrNotExist", err)
+	}
+	if got, err := o.ReadFile(other); err != nil || string(got) != "other" {
+		t.Errorf("ReadFile(other) = %q, %v", got, err)
+	}
+	if !exists(txt) {
+		t.Error("dry run moved the file")
+	}
+}
+
+// TestReadFileRealRun: outside dry-run mode (and for a nil *Ops) ReadFile reads the disk.
+func TestReadFileRealRun(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.txt")
+	writeFile(t, path, "old", 0o644)
+	o := New(false)
+	if _, err := o.WriteFileAtomic(path, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if len(o.plannedWrites) != 0 {
+		t.Error("a real write was recorded as planned")
+	}
+	writeFile(t, path, "changed on disk", 0o644)
+	for name, ops := range map[string]*Ops{"real": o, "nil": nil} {
+		if got, err := ops.ReadFile(path); err != nil || string(got) != "changed on disk" {
+			t.Errorf("%s: ReadFile = %q, %v", name, got, err)
+		}
+		if _, err := ops.ReadFile(filepath.Join(dir, "missing")); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s: ReadFile(missing) err = %v", name, err)
+		}
+		if ops.WouldBeMoved(path) {
+			t.Errorf("%s: WouldBeMoved = true", name)
+		}
+	}
+}
+
+// TestReadFileConcurrent plans writes and reads them back from many goroutines (run with
+// -race).
+func TestReadFileConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	o := New(true)
+	var wg sync.WaitGroup
+	for i := range 50 {
+		path := filepath.Join(dir, fmt.Sprintf("%d.txt", i))
+		writeFile(t, path, "old", 0o644)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			want := fmt.Sprintf("new %d", i)
+			if _, err := o.WriteFileAtomic(path, []byte(want)); err != nil {
+				t.Error(err)
+				return
+			}
+			if got, err := o.ReadFile(path); err != nil || string(got) != want {
+				t.Errorf("ReadFile = %q, %v; want %q", got, err, want)
+			}
+			_ = o.WouldBeMoved(path)
+		}()
+	}
+	wg.Wait()
 }

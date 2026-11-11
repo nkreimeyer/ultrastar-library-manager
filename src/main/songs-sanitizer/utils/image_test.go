@@ -449,7 +449,7 @@ func TestFindCoverAndBackgroundImage(t *testing.T) {
 			if tt.txt != "" {
 				writeFile(t, filepath.Join(dir, "song.txt"), tt.txt)
 			}
-			cover, bg := FindCoverImage(dir), FindBackgroundImage(dir)
+			cover, bg := FindCoverImage(nil, dir), FindBackgroundImage(nil, dir)
 			if cover != tt.cover || bg != tt.bg {
 				t.Errorf("cover, background = %q, %q, want %q, %q", cover, bg, tt.cover, tt.bg)
 			}
@@ -458,7 +458,7 @@ func TestFindCoverAndBackgroundImage(t *testing.T) {
 			}
 		})
 	}
-	if got := FindCoverImage(filepath.Join(t.TempDir(), "missing")); got != "" {
+	if got := FindCoverImage(nil, filepath.Join(t.TempDir(), "missing")); got != "" {
 		t.Errorf("FindCoverImage on a missing dir = %q", got)
 	}
 }

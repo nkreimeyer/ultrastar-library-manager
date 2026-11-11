@@ -444,35 +444,32 @@ func TestFindingsDedupe(t *testing.T) {
 func TestAnalyzeMissingNameTagsFillableFromFolder(t *testing.T) {
 	const body = "#MP3:a.mp3\n#BPM:300\n"
 	tests := []struct {
-		name      string
-		txt       string
-		folder    string
-		fillWarns bool
-		want      []string // "severity:message"
+		name   string
+		txt    string
+		folder string
+		want   []string // "severity:message"
 	}{
-		{"not fillable", "#TITLE:T\n" + body + notes(10), "No separator", false,
+		{"not fillable", "#TITLE:T\n" + body + notes(10), "No separator",
 			[]string{"error:#ARTIST is missing or empty"}},
-		{"fixtxt leaves the txt alone", "#TITLE:Hypa Hypa\n" + body + notes(10), "", false,
+		{"fixtxt leaves the txt alone", "#TITLE:Hypa Hypa\n" + body + notes(10), "",
 			[]string{"error:#ARTIST is missing or empty"}},
-		{"fillable: still an error", "#TITLE:Hypa Hypa\n" + body + notes(10), "Electric Callboy - Hypa Hypa", false,
+		{"fillable: still an error", "#TITLE:Hypa Hypa\n" + body + notes(10), "Electric Callboy - Hypa Hypa",
 			[]string{"error:#ARTIST is missing or empty; fixtxt fills it from the folder name: Electric Callboy"}},
-		{"fillable in a dry run with fixtxt: warning", "#TITLE:Hypa Hypa\n" + body + notes(10), "Electric Callboy - Hypa Hypa", true,
-			[]string{"warning:#ARTIST is missing or empty; fixtxt fills it from the folder name: Electric Callboy"}},
-		{"both fillable", "#TITLE:\n" + body + notes(10), "Electric Callboy - Hypa Hypa", true, []string{
-			"warning:#ARTIST is missing or empty; fixtxt fills it from the folder name: Electric Callboy",
-			"warning:#TITLE is missing or empty; fixtxt fills it from the folder name: Hypa Hypa",
+		{"both fillable", "#TITLE:\n" + body + notes(10), "Electric Callboy - Hypa Hypa", []string{
+			"error:#ARTIST is missing or empty; fixtxt fills it from the folder name: Electric Callboy",
+			"error:#TITLE is missing or empty; fixtxt fills it from the folder name: Hypa Hypa",
 		}},
-		{"reversed folder name is not fillable", "#TITLE:Hypa Hypa\n" + body + notes(10), "Hypa Hypa - Electric Callboy", true,
+		{"reversed folder name is not fillable", "#TITLE:Hypa Hypa\n" + body + notes(10), "Hypa Hypa - Electric Callboy",
 			[]string{"error:#ARTIST is missing or empty"}},
-		{"title from the artist", "#ARTIST:Wham!\n" + body + notes(10), "Wham! - Last Christmas - Live", false,
+		{"title from the artist", "#ARTIST:Wham!\n" + body + notes(10), "Wham! - Last Christmas - Live",
 			[]string{"error:#TITLE is missing or empty; fixtxt fills it from the folder name: Last Christmas - Live"}},
-		{"last of a repeated title is used", "#TITLE:Hypa Hypa\n#TITLE:Other\n" + body + notes(10), "Electric Callboy - Hypa Hypa", true,
+		{"last of a repeated title is used", "#TITLE:Hypa Hypa\n#TITLE:Other\n" + body + notes(10), "Electric Callboy - Hypa Hypa",
 			[]string{"error:#ARTIST is missing or empty"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			in := input(tt.txt, healthyFiles())
-			in.FolderName, in.FillWarns = tt.folder, tt.fillWarns
+			in.FolderName = tt.folder
 			var got []string
 			for _, f := range analyze(in) {
 				if f.Code == codeMissingTag {

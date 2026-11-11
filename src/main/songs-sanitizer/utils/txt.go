@@ -46,15 +46,16 @@ var songHeaderTags = []string{"TITLE", "ARTIST", "MP3", "AUDIO", "BPM"}
 
 // IsSongTxt reports whether the file looks like an UltraStar song txt: its header contains
 // one of the known tags (case-insensitive, any supported encoding). Unreadable files are
-// not song files.
-func IsSongTxt(path string) bool {
-	ok, _ := isSongTxt(path)
+// not song files. The file is read with ops.ReadFile (ops may be nil), so in a dry run it
+// is judged as earlier modules would have left it.
+func IsSongTxt(ops *fsops.Ops, path string) bool {
+	ok, _ := isSongTxt(ops, path)
 	return ok
 }
 
 // isSongTxt is IsSongTxt that also reports read errors.
-func isSongTxt(path string) (bool, error) {
-	data, err := os.ReadFile(path)
+func isSongTxt(ops *fsops.Ops, path string) (bool, error) {
+	data, err := ops.ReadFile(path)
 	if err != nil {
 		return false, err
 	}
@@ -88,15 +89,21 @@ func ListTxtFiles(dir string) ([]string, error) {
 }
 
 // SongTxtFiles returns the .txt files directly inside dir that look like song files. A txt
-// that cannot be read is an error: the folder must not be mistaken for a broken song.
-func SongTxtFiles(dir string) ([]string, error) {
+// that cannot be read is an error: the folder must not be mistaken for a broken song. The
+// txts are read with ops.ReadFile (ops may be nil); in a dry run, txts an earlier module
+// would have moved away (ops.WouldBeMoved, e.g. a duplicate song txt fixtxt moves to
+// extra-files/) are left out.
+func SongTxtFiles(ops *fsops.Ops, dir string) ([]string, error) {
 	txtFiles, err := ListTxtFiles(dir)
 	if err != nil {
 		return nil, err
 	}
 	var songFiles []string
 	for _, f := range txtFiles {
-		ok, err := isSongTxt(f)
+		if ops.WouldBeMoved(f) {
+			continue
+		}
+		ok, err := isSongTxt(ops, f)
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", f, err)
 		}
@@ -109,9 +116,9 @@ func SongTxtFiles(dir string) ([]string, error) {
 
 // FindSongTxt returns the song txt of a song folder. If there are several, the most
 // recently modified one is returned (the same one fixtxt keeps). It returns
-// os.ErrNotExist if the folder contains no song txt.
-func FindSongTxt(dir string) (string, error) {
-	songFiles, err := SongTxtFiles(dir)
+// os.ErrNotExist if the folder contains no song txt. See SongTxtFiles for ops.
+func FindSongTxt(ops *fsops.Ops, dir string) (string, error) {
+	songFiles, err := SongTxtFiles(ops, dir)
 	if err != nil {
 		return "", err
 	}
@@ -119,12 +126,13 @@ func FindSongTxt(dir string) (string, error) {
 }
 
 // ReadSongTags finds the song txt of dir and returns its header tags (see HeaderTags).
-func ReadSongTags(dir string) (map[string]string, error) {
-	txt, err := FindSongTxt(dir)
+// The txt is found and read through ops (which may be nil), see FindSongTxt.
+func ReadSongTags(ops *fsops.Ops, dir string) (map[string]string, error) {
+	txt, err := FindSongTxt(ops, dir)
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(txt)
+	data, err := ops.ReadFile(txt)
 	if err != nil {
 		return nil, err
 	}
@@ -155,13 +163,13 @@ func NewestFile(files []string) (string, error) {
 // comparison is case-insensitive and Unicode-normalized (NFC) on the decoded txt; a raw
 // byte match also counts, so file names that are not valid UTF-8 are found too. If there
 // is no readable song txt, every file counts as referenced so that nothing is moved by
-// mistake.
-func IsFileReferenced(dirpath, checkFilename string) bool {
-	filename, err := FindSongTxt(dirpath)
+// mistake. The txt is found and read through ops (which may be nil), see FindSongTxt.
+func IsFileReferenced(ops *fsops.Ops, dirpath, checkFilename string) bool {
+	filename, err := FindSongTxt(ops, dirpath)
 	if err != nil {
 		return true
 	}
-	data, err := os.ReadFile(filename)
+	data, err := ops.ReadFile(filename)
 	if err != nil {
 		return true
 	}
@@ -215,13 +223,14 @@ var ErrTxtNotUTF8 = errors.New("song txt is not UTF-8 (run the fixtxt module fir
 // ReplaceFileReference changes every file tag (#MP3, #AUDIO, #VIDEO, #COVER, ...) of the
 // song txt in dir whose value is oldName (also matching case- and NFC-insensitively) to
 // newName. Other lines are never touched. The file is written atomically, and only if a
-// reference was replaced, which is reported as replaced.
+// reference was replaced, which is reported as replaced. The txt is found and read through
+// ops, so in a dry run the replacement applies to the content earlier modules planned.
 func ReplaceFileReference(ops *fsops.Ops, dir, oldName, newName string) (replaced bool, err error) {
-	txt, err := FindSongTxt(dir)
+	txt, err := FindSongTxt(ops, dir)
 	if err != nil {
 		return false, err
 	}
-	raw, err := os.ReadFile(txt)
+	raw, err := ops.ReadFile(txt)
 	if err != nil {
 		return false, err
 	}

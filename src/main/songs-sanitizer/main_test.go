@@ -64,10 +64,9 @@ func TestModuleOrder(t *testing.T) {
 	}
 }
 
-// TestRunFillsNameTagsBeforeCheck: main tells check whether fixtxt runs. In a dry run with
-// fixtxt, a missing #ARTIST that fixtxt would fill from the folder name is only a warning,
-// so -move-broken plans no move; the real run fills the tag and check finds nothing to
-// move either.
+// TestRunFillsNameTagsBeforeCheck: fixtxt fills a missing #ARTIST from the folder name
+// before check runs. In a dry run check reads the txt fixtxt would write, so it finds no
+// missing tag and -move-broken plans no move, exactly like the real run.
 func TestRunFillsNameTagsBeforeCheck(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // no ffmpeg: check skips the media checks
 	lib := t.TempDir()
@@ -117,8 +116,8 @@ func TestRunFillsNameTagsBeforeCheck(t *testing.T) {
 	if got := runWithArgs(t, "-s", lib, "-o", dryOut, "-n", "-k", "-move-broken"); got != exitOK {
 		t.Fatalf("dry run exit code %d", got)
 	}
-	if got := missingTag(t, dryOut); got != "warning" {
-		t.Errorf("dry run: missing #ARTIST severity %q, want warning", got)
+	if got := missingTag(t, dryOut); got != "" {
+		t.Errorf("dry run: missing-tag finding %q, want none (fixtxt would fill the tag)", got)
 	}
 
 	out := t.TempDir()

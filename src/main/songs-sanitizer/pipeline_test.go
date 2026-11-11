@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/check"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/cleanup"
@@ -143,11 +146,15 @@ func TestPipelineDryRun(t *testing.T) {
 	if after := snapshot(t, dry.SongDir); after != before {
 		t.Errorf("dry-run modified the library")
 	}
-	// Planned moves: "B - NoTxt" and "C - NoMedia" to invalid/ (fixtxt); junk.nfo and
-	// song.mp3 (cleanup, because the txt fix is not applied in dry-run mode, see README).
-	// cleanup must skip "C - NoMedia", otherwise it would also plan to move its junk.jpg.
-	if got := ops.Stats().Moved; got != 4 {
-		t.Errorf("planned moves = %d, want 4", got)
+	// Planned moves: "B - NoTxt" and "C - NoMedia" to invalid/ (fixtxt) and junk.nfo
+	// (cleanup). cleanup reads the txt fixtxt would write, whose #MP3 references song.mp3,
+	// so it keeps song.mp3 like the real run. It must skip "C - NoMedia", otherwise it would
+	// also plan to move its junk.jpg.
+	if got := ops.Stats().Moved; got != 3 {
+		t.Errorf("planned moves = %d, want 3", got)
+	}
+	if ops.WouldBeMoved(filepath.Join(dry.SongDir, "Cat", "A - Song", "song.mp3")) {
+		t.Error("dry run plans to move song.mp3, which the fixed txt references")
 	}
 	if _, err := os.Stat(dry.InvalidDir()); !os.IsNotExist(err) {
 		t.Errorf("dry-run created %s", dry.InvalidDir())
@@ -232,4 +239,194 @@ func TestPipelineWithCheck(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(cfg.SongDir, "Cat", "A - Song", "song.txt")); err != nil {
 		t.Errorf("song moved: %v", err)
 	}
+}
+
+// dryRunLibrary has txts that fixtxt changes in ways the later modules depend on: swapped
+// #MP3/#VIDEO tags, a stale #MP3, a missing #ARTIST that the folder name provides, and a
+// duplicate song txt that fixtxt moves to extra-files/. "E - NoBPM" stays broken, so check
+// moves it in both runs.
+func dryRunLibrary(audio, video string) map[string]string {
+	var notes strings.Builder
+	for i := range 10 {
+		fmt.Fprintf(&notes, ": %d 2 0 la\n", i*4)
+	}
+	body := "#BPM:300\n" + notes.String() + "E\n"
+	return map[string]string{
+		"Cat/A - Swapped/song.txt":              "#TITLE:Swapped\n#ARTIST:A\n#MP3:video.mp4\n#VIDEO:song.mp3\n" + body,
+		"Cat/A - Swapped/song.mp3":              audio,
+		"Cat/A - Swapped/video.mp4":             video,
+		"Cat/B - Stale/song.txt":                "#TITLE:Stale\n#ARTIST:B\n#MP3:old name.mp3\n" + body,
+		"Cat/B - Stale/song.mp3":                audio,
+		"Cat/B - Stale/junk.nfo":                "junk",
+		"Electric Callboy - Hypa Hypa/song.txt": "#TITLE:Hypa Hypa\n#MP3:song.mp3\n" + body,
+		"Electric Callboy - Hypa Hypa/song.mp3": audio,
+		// copy.txt is newer (see TestPipelineDryRunMatchesRealRun): fixtxt keeps it and
+		// moves song.txt to extra-files/.
+		"D - Dup/song.txt":   "#TITLE:Dup\n#ARTIST:D\n#MP3:song.mp3\n" + body,
+		"D - Dup/copy.txt":   "#TITLE:Dup\n#ARTIST:D\n#MP3:missing.mp3\n" + body,
+		"D - Dup/song.mp3":   audio,
+		"E - NoBPM/song.txt": "#TITLE:NoBPM\n#ARTIST:E\n#MP3:song.mp3\n" + notes.String() + "E\n",
+		"E - NoBPM/song.mp3": audio,
+	}
+}
+
+// TestPipelineDryRunMatchesRealRun: the dry run of fixtxt -> cleanup -> check with
+// MoveBroken plans exactly the moves the real run then performs, and check reports the
+// same findings, because every module reads the txts as the earlier modules would have
+// written them (fsops.Ops.ReadFile). The dry run leaves the library byte-identical. With
+// ffmpeg, real media make check probe the swapped #MP3 (a video without an audio stream).
+func TestPipelineDryRunMatchesRealRun(t *testing.T) {
+	for _, withMedia := range []bool{false, true} {
+		t.Run(map[bool]string{false: "placeholders", true: "media"}[withMedia], func(t *testing.T) {
+			files := dryRunLibrary("audio", "video")
+			if withMedia {
+				audio, video := generateMedia(t)
+				files = dryRunLibrary(audio, video)
+			} else {
+				t.Setenv("PATH", t.TempDir()) // no ffprobe: check skips the media checks
+			}
+			songs := filepath.Join(t.TempDir(), "songs")
+			for rel, content := range files {
+				p := filepath.Join(songs, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			old := time.Now().Add(-time.Hour)
+			if err := os.Chtimes(filepath.Join(songs, "D - Dup", "song.txt"), old, old); err != nil {
+				t.Fatal(err)
+			}
+			paths := libraryPaths(t, songs)
+
+			run := func(cfg config.Config) (*fsops.Ops, string) {
+				t.Helper()
+				ops := runPipeline(t, cfg)
+				if err := check.Run(cfg, ops, check.Options{MoveBroken: true}); err != nil {
+					t.Fatal(err)
+				}
+				return ops, checkSongs(t, cfg)
+			}
+
+			dry := mustConfig(t, songs, true)
+			before := snapshot(t, songs)
+			dryOps, dryReport := run(dry)
+			if after := snapshot(t, songs); after != before {
+				t.Fatal("dry run modified the library")
+			}
+			var planned []string
+			for _, p := range paths {
+				if dryOps.WouldBeMoved(p) && !dryOps.WouldBeMoved(filepath.Dir(p)) {
+					planned = append(planned, p)
+				}
+			}
+
+			// The real run uses a fresh output dir, so its targets match the plan's.
+			if err := os.RemoveAll(dry.OutDir); err != nil {
+				t.Fatal(err)
+			}
+			realOps, realReport := run(mustConfig(t, songs, false))
+			var moved []string
+			for _, p := range paths {
+				if !pathExists(p) && pathExists(filepath.Dir(p)) {
+					moved = append(moved, p)
+				}
+			}
+
+			if !slices.Equal(planned, moved) {
+				t.Errorf("dry run planned to move\n  %q\nthe real run moved\n  %q", planned, moved)
+			}
+			if d, r := dryOps.Stats(), realOps.Stats(); d.Moved != r.Moved || d.Written != r.Written {
+				t.Errorf("dry run planned %+v, the real run did %+v", d, r)
+			}
+			if dryReport != realReport {
+				t.Errorf("check findings differ:\ndry run:  %s\nreal run: %s", dryReport, realReport)
+			}
+
+			// The moves are the expected ones: song.txt of "D - Dup" (fixtxt), junk.nfo
+			// (cleanup) and "E - NoBPM" (check). No song with a txt fixtxt repairs is moved.
+			want := []string{
+				filepath.Join(songs, "Cat", "B - Stale", "junk.nfo"),
+				filepath.Join(songs, "D - Dup", "song.txt"),
+				filepath.Join(songs, "E - NoBPM"),
+			}
+			if !slices.Equal(moved, want) {
+				t.Errorf("moved %q, want %q", moved, want)
+			}
+		})
+	}
+}
+
+// generateMedia returns a 3 s mp3 and a 3 s mp4 without an audio stream, or skips the test
+// if ffmpeg cannot make them.
+func generateMedia(t *testing.T) (audio, video string) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, gen := range []struct {
+		name string
+		args []string
+	}{
+		{"a.mp3", []string{"-f", "lavfi", "-i", "sine=d=3"}},
+		{"v.mp4", []string{"-f", "lavfi", "-i", "testsrc=d=3:s=64x64:r=10", "-c:v", "libx264", "-pix_fmt", "yuv420p"}},
+	} {
+		args := append(append([]string{"-v", "error", "-y"}, gen.args...), filepath.Join(dir, gen.name))
+		if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
+			t.Skipf("cannot generate test media with ffmpeg: %v\n%s", err, out)
+		}
+	}
+	a, err := os.ReadFile(filepath.Join(dir, "a.mp3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := os.ReadFile(filepath.Join(dir, "v.mp4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(a), string(v)
+}
+
+// libraryPaths returns every file and folder below root, sorted.
+func libraryPaths(t *testing.T, root string) []string {
+	t.Helper()
+	var paths []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path != root {
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return paths
+}
+
+func pathExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+// checkSongs returns the counts and songs of check_report.json (everything but the
+// dry-run flag), as JSON.
+func checkSongs(t *testing.T, cfg config.Config) string {
+	t.Helper()
+	data, err := os.ReadFile(cfg.ReportPath("check_report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rep map[string]any
+	if err := json.Unmarshal(data, &rep); err != nil {
+		t.Fatal(err)
+	}
+	delete(rep, "dryRun")
+	out, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
 }

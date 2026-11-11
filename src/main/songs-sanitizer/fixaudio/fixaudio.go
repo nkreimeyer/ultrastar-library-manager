@@ -143,7 +143,7 @@ func (p *processor) processFolder(folder string) {
 		p.ops.FailOnce("unreadable:" + folder) // same key as the folder discovery
 		return
 	}
-	stems, err := stemFiles(folder)
+	stems, err := stemFiles(p.ops, folder)
 	if err != nil {
 		// Without the txt it is unknown which files are stems; leave the folder alone.
 		log.Errorf("Skipping %s: reading the song txt: %v", folder, err)
@@ -166,9 +166,10 @@ func (p *processor) processFolder(folder string) {
 }
 
 // stemFiles returns the on-disk names of the files referenced by the #VOCALS and
-// #INSTRUMENTAL tags of the song txt in folder. A folder without a song txt has no stems.
-func stemFiles(folder string) (map[string]bool, error) {
-	tags, err := utils.ReadSongTags(folder)
+// #INSTRUMENTAL tags of the song txt in folder, read through ops (see utils.ReadSongTags).
+// A folder without a song txt has no stems.
+func stemFiles(ops *fsops.Ops, folder string) (map[string]bool, error) {
+	tags, err := utils.ReadSongTags(ops, folder)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

@@ -231,7 +231,7 @@ func handleFolder(cfg config.Config, ops *fsops.Ops, col *collector, folder stri
 		return
 	}
 	// An unreadable txt might be the song txt: never mistake the folder for a broken song.
-	songTxts, err := utils.SongTxtFiles(folder)
+	songTxts, err := utils.SongTxtFiles(ops, folder)
 	if err != nil {
 		failUnreadable(ops, folder, err)
 		return
@@ -257,8 +257,8 @@ func handleFolder(cfg config.Config, ops *fsops.Ops, col *collector, folder stri
 		return
 	}
 	files.txtName = filepath.Base(txtFile)
-	files.cover = utils.FindCoverImage(folder)
-	files.background = utils.FindBackgroundImage(folder)
+	files.cover = utils.FindCoverImage(ops, folder)
+	files.background = utils.FindBackgroundImage(ops, folder)
 	updateTxtFile(cfg, ops, col, folder, txtFile, files)
 
 	var missing []string
@@ -312,7 +312,7 @@ func moveToInvalid(cfg config.Config, ops *fsops.Ops, folder string) {
 // updateTxtFile rewrites txtFile as UTF-8 with fixed file tags (only if that changes the
 // file). Txts that cannot be decoded unambiguously are left untouched and reported.
 func updateTxtFile(cfg config.Config, ops *fsops.Ops, col *collector, rootDir, txtFile string, files songFiles) {
-	raw, err := os.ReadFile(txtFile)
+	raw, err := ops.ReadFile(txtFile)
 	if err != nil {
 		log.Errorf("Could not read %s: %v", txtFile, err)
 		ops.Fail()

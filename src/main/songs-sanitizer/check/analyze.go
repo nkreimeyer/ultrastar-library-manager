@@ -255,9 +255,6 @@ type songInput struct {
 	// FolderName is the base name of the song folder if fixtxt would fill a missing
 	// #ARTIST/#TITLE from it (utils.TagsFromFolderName); "" if fixtxt leaves the txt alone.
 	FolderName string
-	// FillWarns: a missing #ARTIST/#TITLE that fixtxt fills is a warning, not an error
-	// (dry run with fixtxt, see Options.FixTxt).
-	FillWarns bool
 }
 
 // analyze returns the findings of one song. It is pure: all file system and ffmpeg
@@ -337,8 +334,9 @@ func checkTags(fs *findings, s *songtxt.Song, in songInput) {
 }
 
 // checkNameTags reports a missing or empty #TITLE or #ARTIST: UltraStar Deluxe refuses such
-// songs. If fixtxt fills the tag from the folder name, the message says so, and with
-// in.FillWarns the finding is only a warning.
+// songs. If fixtxt fills the tag from the folder name, the message says so. This only
+// happens when fixtxt did not run before check: otherwise the tag is already filled (in a
+// dry run, check reads the txt fixtxt would write).
 func checkNameTags(fs *findings, s *songtxt.Song, in songInput) {
 	if hasValue(s, "TITLE") && hasValue(s, "ARTIST") {
 		return
@@ -359,11 +357,7 @@ func checkNameTags(fs *findings, s *songtxt.Song, in songInput) {
 		case !t.ok:
 			fs.add(SevError, codeMissingTag, tagLine(s, t.key), "", "#%s is missing or empty", t.key)
 		default:
-			sev := SevError
-			if in.FillWarns {
-				sev = SevWarning
-			}
-			fs.add(sev, codeMissingTag, tagLine(s, t.key), "", "#%s is missing or empty; fixtxt fills it from the folder name: %s", t.key, t.value)
+			fs.add(SevError, codeMissingTag, tagLine(s, t.key), "", "#%s is missing or empty; fixtxt fills it from the folder name: %s", t.key, t.value)
 		}
 	}
 }

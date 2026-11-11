@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,12 +52,19 @@ type Ops struct {
 	plannedMu    sync.Mutex
 	plannedMoves map[string]bool
 	runTargets   []string // targets of the (real or planned) moves of this run
+
+	// writesMu guards plannedWrites: in dry-run mode, the content of every planned write
+	// that changes a file (cleaned path -> data), so that later modules read the txts as
+	// an earlier module would have left them (see ReadFile).
+	writesMu      sync.Mutex
+	plannedWrites map[string][]byte
 }
 
 // New returns an Ops value. In dry-run mode no modification is executed; each planned
 // change is logged with a "[dry-run]" prefix instead.
 func New(dryRun bool) *Ops {
-	return &Ops{DryRun: dryRun, reserved: map[string]bool{}, plannedMoves: map[string]bool{}, failedKeys: map[string]bool{}}
+	return &Ops{DryRun: dryRun, reserved: map[string]bool{}, plannedMoves: map[string]bool{},
+		plannedWrites: map[string][]byte{}, failedKeys: map[string]bool{}}
 }
 
 // Stats returns a snapshot of the counters.
@@ -97,9 +105,12 @@ func (o *Ops) fail(err error) error {
 // The data is written to a temporary file in the same directory which then replaces the
 // original, so a crash never leaves a truncated file behind. The file mode of an existing
 // file is preserved. It reports whether the file was (or, in dry-run mode, would be) changed.
+//
+// In dry-run mode the data is compared with the content an earlier planned write left
+// (see ReadFile), and a changing write is recorded, so that ReadFile returns it.
 func (o *Ops) WriteFileAtomic(path string, data []byte) (bool, error) {
 	mode := os.FileMode(0o644)
-	current, err := os.ReadFile(path)
+	current, err := o.ReadFile(path)
 	switch {
 	case err == nil:
 		if bytes.Equal(current, data) {
@@ -114,6 +125,9 @@ func (o *Ops) WriteFileAtomic(path string, data []byte) (bool, error) {
 
 	if o.DryRun {
 		log.Infof("[dry-run] would rewrite %s", path)
+		o.writesMu.Lock()
+		o.plannedWrites[filepath.Clean(path)] = bytes.Clone(data)
+		o.writesMu.Unlock()
 		o.written.Add(1)
 		return true, nil
 	}
@@ -146,6 +160,32 @@ func (o *Ops) WriteFileAtomic(path string, data []byte) (bool, error) {
 	}
 	o.written.Add(1)
 	return true, nil
+}
+
+// ReadFile reads a library file as this run has left it so far. Outside dry-run mode (and
+// for a nil *Ops) it is os.ReadFile. In dry-run mode a file that an earlier MoveInto
+// planned to move away (the file itself or a parent folder, see WouldBeMoved) reads as
+// not existing (an error wrapping fs.ErrNotExist), a file with a planned WriteFileAtomic
+// returns the planned content, and every other file is read from disk.
+//
+// Only planned writes and planned moves away are simulated. A file planned to be moved or
+// renamed INTO path, or replaced by a processed version (Replace, PlanReplace), is not:
+// path then reads as it is on disk. Modules must read every txt they base a decision on
+// with ReadFile, so a dry run plans what a real run does.
+func (o *Ops) ReadFile(path string) ([]byte, error) {
+	if o == nil || !o.DryRun {
+		return os.ReadFile(path)
+	}
+	if o.WouldBeMoved(path) {
+		return nil, &fs.PathError{Op: "read", Path: path, Err: fmt.Errorf("planned to be moved away: %w", fs.ErrNotExist)}
+	}
+	o.writesMu.Lock()
+	data, ok := o.plannedWrites[filepath.Clean(path)]
+	o.writesMu.Unlock()
+	if ok {
+		return bytes.Clone(data), nil
+	}
+	return os.ReadFile(path)
 }
 
 // WriteReport atomically writes a report file (outside the library). Reports are written
@@ -372,8 +412,11 @@ func (o *Ops) PlanReplace(path, action string) {
 
 // WouldBeMoved reports whether path or one of its parent folders was moved away by an
 // earlier MoveInto in dry-run mode. It is always false outside dry-run mode, where moved
-// paths simply no longer exist.
+// paths simply no longer exist. A nil *Ops plans nothing.
 func (o *Ops) WouldBeMoved(path string) bool {
+	if o == nil {
+		return false
+	}
 	o.plannedMu.Lock()
 	defer o.plannedMu.Unlock()
 	if len(o.plannedMoves) == 0 {

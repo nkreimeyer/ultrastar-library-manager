@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/config"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fsops"
@@ -574,11 +575,11 @@ func TestReportJSONIsNotHTMLEscaped(t *testing.T) {
 	}
 }
 
-// TestRunMissingNameTagsFixTxt: in a dry run with fixtxt, a song whose missing #ARTIST
-// fixtxt would fill from the folder name is only suspicious and not planned to be moved. In
-// a real run (or without fixtxt) it stays broken. fixtxt never fills a txt with a decode
-// problem or in a folder with a non-UTF-8 media file name, so those stay errors.
-func TestRunMissingNameTagsFixTxt(t *testing.T) {
+// TestRunMissingNameTagsHint: a missing #ARTIST that fixtxt can fill from the folder name
+// is an error (check sees the txt as it is, e.g. with -t=false), and the message names the
+// value fixtxt would fill. fixtxt never fills a txt with a decode problem, a txt in a folder
+// with a non-UTF-8 media file name, or from a reversed folder name: those get no hint.
+func TestRunMissingNameTagsHint(t *testing.T) {
 	withoutFFmpeg(t)
 	lib := filepath.Join(t.TempDir(), "songs")
 	noArtist := "#TITLE:Hypa Hypa\n#MP3:song.mp3\n#BPM:300\n" + notes(10)
@@ -595,56 +596,98 @@ func TestRunMissingNameTagsFixTxt(t *testing.T) {
 	})
 	fillable := "Electric Callboy - Hypa Hypa"
 	wantMsg := "#ARTIST is missing or empty; fixtxt fills it from the folder name: Electric Callboy"
-	severity := func(t *testing.T, r report, path string) Severity {
-		t.Helper()
-		for _, f := range findSong(t, r, path).Findings {
-			if f.Code == codeMissingTag {
-				return f.Severity
-			}
-		}
-		t.Fatalf("%s has no missing-tag finding", path)
-		return ""
-	}
-
-	for _, tc := range []struct {
-		name         string
-		dry, fixTxt  bool
-		wantFillable Severity
-	}{
-		{"dry run with fixtxt", true, true, SevWarning},
-		{"dry run without fixtxt", true, false, SevError},
-		{"real run with fixtxt", false, true, SevError},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, dry := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dry=%v", dry), func(t *testing.T) {
 			before := snapshot(t, lib)
-			ops, r := run(t, newConfig(t, lib, tc.dry), Options{MoveBroken: tc.dry, FixTxt: tc.fixTxt})
-			if got := severity(t, r, fillable); got != tc.wantFillable {
-				t.Errorf("fillable song: severity %s, want %s", got, tc.wantFillable)
-			}
+			_, r := run(t, newConfig(t, lib, dry), Options{MoveBroken: dry})
 			s := findSong(t, r, fillable)
-			if s.Findings[0].Message != wantMsg {
-				t.Errorf("message = %q, want %q", s.Findings[0].Message, wantMsg)
+			if len(s.Findings) != 1 || s.Findings[0].Severity != SevError || s.Findings[0].Message != wantMsg {
+				t.Errorf("fillable song: findings %+v, want one error %q", s.Findings, wantMsg)
 			}
-			if wantMoved := tc.dry && tc.wantFillable == SevError; s.Moved != wantMoved {
-				t.Errorf("fillable song moved = %v, want %v", s.Moved, wantMoved)
+			if s.Moved != dry {
+				t.Errorf("fillable song moved = %v, want %v", s.Moved, dry)
 			}
 			for _, p := range []string{"Hypa Hypa - Electric Callboy", "Undecodable - Hypa Hypa", "Latin1 Name - Hypa Hypa"} {
-				if got := severity(t, r, p); got != SevError {
-					t.Errorf("%s: severity %s, want error", p, got)
-				}
+				found := false
 				for _, f := range findSong(t, r, p).Findings {
+					if f.Code == codeMissingTag {
+						found = found || f.Severity == SevError
+					}
 					if strings.Contains(f.Message, "fixtxt fills") {
 						t.Errorf("%s: unexpected fill hint %q", p, f.Message)
 					}
 				}
+				if !found {
+					t.Errorf("%s: no missing-tag error", p)
+				}
 			}
-			if tc.dry {
+			if dry {
 				if after := snapshot(t, lib); after != before {
 					t.Error("dry run modified the library")
 				}
-				if ops.Stats().Moved == 0 {
-					t.Error("dry run planned no moves")
+			}
+		})
+	}
+}
+
+// TestRunDryRunReadsPlannedTxt: in a dry run, check reads the song txt through ops, i.e.
+// with the content an earlier module planned to write, and ignores a song txt an earlier
+// module planned to move away. Here a planned fixtxt rewrite fills #ARTIST and fixes #MP3,
+// and a newer, broken duplicate txt is planned to be moved to extra-files: the song is
+// healthy and MoveBroken plans no move. Without the plan the same song is broken.
+func TestRunDryRunReadsPlannedTxt(t *testing.T) {
+	withoutFFmpeg(t)
+	lib := filepath.Join(t.TempDir(), "songs")
+	dir := filepath.Join(lib, "Electric Callboy - Hypa Hypa")
+	writeFiles(t, lib, map[string]string{
+		"Electric Callboy - Hypa Hypa/song.txt": "#TITLE:Hypa Hypa\n#MP3:old.mp3\n#BPM:300\n" + notes(10),
+		"Electric Callboy - Hypa Hypa/song.mp3": "x",
+		"Electric Callboy - Hypa Hypa/copy.txt": "#TITLE:Hypa Hypa\n#BPM:300\n",
+	})
+	// copy.txt is the newest song txt, so FindSongTxt picks it unless it is moved away.
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "song.txt"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	fixed := "#ARTIST:Electric Callboy\n#TITLE:Hypa Hypa\n#MP3:song.mp3\n#BPM:300\n" + notes(10)
+
+	for _, planned := range []bool{true, false} {
+		t.Run(fmt.Sprintf("planned=%v", planned), func(t *testing.T) {
+			cfg := newConfig(t, lib, true)
+			before := snapshot(t, lib)
+			ops := fsops.New(true)
+			if planned {
+				if _, err := ops.MoveInto(filepath.Join(dir, "copy.txt"), cfg.ExtraFilesDir(), "copy.txt"); err != nil {
+					t.Fatal(err)
 				}
+				if ok, err := ops.WriteFileAtomic(filepath.Join(dir, "song.txt"), []byte(fixed)); err != nil || !ok {
+					t.Fatalf("planning the write: %v, %v", ok, err)
+				}
+			}
+			moves := ops.Stats().Moved
+			if err := Run(cfg, ops, Options{MoveBroken: true}); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(cfg.ReportPath(reportJSON))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var r report
+			if err := json.Unmarshal(data, &r); err != nil {
+				t.Fatal(err)
+			}
+			if planned {
+				if r.Checked != 1 || len(r.Songs) != 0 || ops.Stats().Moved != moves {
+					t.Errorf("with the planned txt: report %s, %d moves planned by check", data, ops.Stats().Moved-moves)
+				}
+			} else {
+				s := findSong(t, r, "Electric Callboy - Hypa Hypa")
+				if s.Status != "broken" || !s.Moved || s.Txt != "copy.txt" {
+					t.Errorf("without the plan: %+v, want broken copy.txt, moved", s)
+				}
+			}
+			if after := snapshot(t, lib); after != before {
+				t.Error("dry run modified the library")
 			}
 		})
 	}

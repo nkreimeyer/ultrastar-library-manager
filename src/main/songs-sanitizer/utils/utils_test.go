@@ -74,12 +74,12 @@ func TestIsSongTxt(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(dir, tt.name+".txt")
 			writeFile(t, path, tt.content)
-			if got := IsSongTxt(path); got != tt.want {
+			if got := IsSongTxt(nil, path); got != tt.want {
 				t.Errorf("IsSongTxt(%q) = %v, want %v", tt.content, got, tt.want)
 			}
 		})
 	}
-	if IsSongTxt(filepath.Join(dir, "missing.txt")) {
+	if IsSongTxt(nil, filepath.Join(dir, "missing.txt")) {
 		t.Error("missing file reported as song txt")
 	}
 }
@@ -103,7 +103,7 @@ func TestListAndSongTxtFiles(t *testing.T) {
 	if !reflect.DeepEqual(all, want) {
 		t.Errorf("ListTxtFiles = %v, want %v", all, want)
 	}
-	songs, err := SongTxtFiles(dir)
+	songs, err := SongTxtFiles(nil, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestFindSongTxt(t *testing.T) {
 		setMtime(t, filepath.Join(dir, "old.txt"), base)
 		setMtime(t, filepath.Join(dir, "new.txt"), base.Add(time.Minute))
 		setMtime(t, filepath.Join(dir, "License.txt"), base.Add(time.Hour)) // newest, but no song
-		got, err := FindSongTxt(dir)
+		got, err := FindSongTxt(nil, dir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -140,7 +140,7 @@ func TestFindSongTxt(t *testing.T) {
 			writeFile(t, filepath.Join(dir, n), songTxt)
 			setMtime(t, filepath.Join(dir, n), base)
 		}
-		got, err := FindSongTxt(dir)
+		got, err := FindSongTxt(nil, dir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -151,7 +151,7 @@ func TestFindSongTxt(t *testing.T) {
 	t.Run("no song txt", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, filepath.Join(dir, "readme.txt"), "hello\n")
-		if _, err := FindSongTxt(dir); !errors.Is(err, os.ErrNotExist) {
+		if _, err := FindSongTxt(nil, dir); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("FindSongTxt err = %v, want os.ErrNotExist", err)
 		}
 	})
@@ -199,12 +199,12 @@ func TestIsFileReferenced(t *testing.T) {
 			if tt.txt != nil {
 				writeFile(t, filepath.Join(dir, "song.txt"), string(tt.txt))
 			}
-			if got := IsFileReferenced(dir, tt.check); got != tt.want {
+			if got := IsFileReferenced(nil, dir, tt.check); got != tt.want {
 				t.Errorf("IsFileReferenced(%q) = %v, want %v", tt.check, got, tt.want)
 			}
 		})
 	}
-	if !IsFileReferenced(filepath.Join(t.TempDir(), "missing"), "x.mp3") {
+	if !IsFileReferenced(nil, filepath.Join(t.TempDir(), "missing"), "x.mp3") {
 		t.Error("missing folder: want every file to count as referenced")
 	}
 }

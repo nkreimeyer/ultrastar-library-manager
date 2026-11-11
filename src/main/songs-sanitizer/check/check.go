@@ -34,11 +34,6 @@ type Options struct {
 	Deep bool
 	// MoveBroken moves songs with at least one error to invalid/.
 	MoveBroken bool
-	// FixTxt tells that the fixtxt module runs in this run (before check). In a dry run,
-	// a missing #ARTIST/#TITLE that fixtxt would fill from the folder name is then only a
-	// warning, so that MoveBroken does not plan to move a song the real run keeps. In a
-	// real run fixtxt has already written the tag.
-	FixTxt bool
 }
 
 const maxWorkers = 16
@@ -81,12 +76,9 @@ type checker struct {
 	media   bool // ffprobe is available
 	deep    bool // Deep requested and ffmpeg is available
 	deepSem chan struct{}
-	// fillWarns: a missing #ARTIST/#TITLE that fixtxt fills is a warning (dry run with
-	// fixtxt, see Options.FixTxt).
-	fillWarns bool
-	mu        sync.Mutex
-	results   []songResult // songs with findings
-	checked   int
+	mu      sync.Mutex
+	results []songResult // songs with findings
+	checked int
 }
 
 // Run checks every song folder below cfg.SongDir and writes the reports. It returns an
@@ -98,7 +90,7 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 		return fmt.Errorf("finding song folders in %q: %w", cfg.SongDir, err)
 	}
 
-	c := &checker{cfg: cfg, ops: ops, deepSem: make(chan struct{}, maxDeepDecodes), fillWarns: opts.FixTxt && cfg.DryRun}
+	c := &checker{cfg: cfg, ops: ops, deepSem: make(chan struct{}, maxDeepDecodes)}
 	var notes []string
 	if _, err := exec.LookPath("ffprobe"); err != nil {
 		log.Warnf("ffprobe not found on PATH: media files are not checked")
@@ -195,9 +187,11 @@ func (c *checker) skipUnreadable(folder string, err error) {
 	c.ops.FailOnce("unreadable:" + path)
 }
 
-// checkFolder checks one song folder.
+// checkFolder checks one song folder. The song txt is found and read through c.ops, so in
+// a dry run it is checked as fixtxt would have written it (and a duplicate song txt fixtxt
+// would move away is not used).
 func (c *checker) checkFolder(folder string) {
-	txt, err := utils.FindSongTxt(folder)
+	txt, err := utils.FindSongTxt(c.ops, folder)
 	if errors.Is(err, fs.ErrNotExist) {
 		c.record(songResult{folder: folder, findings: []Finding{{Severity: SevError, Code: codeNoSongTxt, Message: "the folder contains no song txt"}}})
 		return
@@ -206,14 +200,14 @@ func (c *checker) checkFolder(folder string) {
 		c.skipUnreadable(folder, err)
 		return
 	}
-	raw, err := os.ReadFile(txt)
+	raw, err := c.ops.ReadFile(txt)
 	if err != nil {
 		c.skipUnreadable(folder, err)
 		return
 	}
 
 	d := utils.DecodeTxt(raw)
-	in := songInput{EncodingProblem: d.Problem, Damaged: d.Damaged, FillWarns: c.fillWarns}
+	in := songInput{EncodingProblem: d.Problem, Damaged: d.Damaged}
 	if c.fixTxtWouldChange(folder, d) {
 		in.FolderName = filepath.Base(folder)
 	}

@@ -494,6 +494,35 @@ func TestStrippedAviIsJournaled(t *testing.T) {
 	}
 }
 
+// TestNeedsRemoveAudioSeesPlannedTxt: in a dry run, the strip-audio decision reads the song
+// txt as fixtxt would write it. On disk #MP3 names the video (swapped tags), so the video's
+// audio would be kept; the planned txt names the separate song.mp3, so the real run strips
+// it, and the dry run must plan the same.
+func TestNeedsRemoveAudioSeesPlannedTxt(t *testing.T) {
+	requireFFmpeg(t)
+	_, songDir, _ := newLibrary(t, false)
+	song := filepath.Join(songDir, "A - S")
+	txt := filepath.Join(song, "song.txt")
+	writeFile(t, txt, "#TITLE:S\n#ARTIST:A\n#MP3:video.mp4\n#VIDEO:song.mp3\n")
+	writeFile(t, filepath.Join(song, "song.mp3"), "audio")
+	video := filepath.Join(song, "video.mp4")
+	makeMedia(t, video, "-c:v", "libx264", "-crf", "35", "-c:a", "aac")
+
+	ops := fsops.New(true)
+	if needsRemoveAudio(ops, song, video) {
+		t.Error("before the planned fix: needsRemoveAudio = true, but #MP3 names the video")
+	}
+	if _, err := ops.WriteFileAtomic(txt, []byte("#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")); err != nil {
+		t.Fatal(err)
+	}
+	if !needsRemoveAudio(ops, song, video) {
+		t.Error("with the planned txt: needsRemoveAudio = false, want true")
+	}
+	if !isVideoReferenced(ops, song, video) || isVideoReferenced(nil, song, video) {
+		t.Error("isVideoReferenced does not follow the planned txt")
+	}
+}
+
 // A hidden file named by #MP3 (e.g. "._v.mp3" left by old versions) is not a separate audio
 // file, so the video keeps its audio.
 func TestHiddenAudioReferenceKeepsVideoAudio(t *testing.T) {
@@ -505,7 +534,7 @@ func TestHiddenAudioReferenceKeepsVideoAudio(t *testing.T) {
 	video := filepath.Join(song, "video.mp4")
 	makeMedia(t, video, "-c:v", "libx264", "-crf", "35", "-c:a", "aac")
 
-	if needsRemoveAudio(song, video) {
+	if needsRemoveAudio(nil, song, video) {
 		t.Error("needsRemoveAudio = true for a hidden #MP3 reference")
 	}
 	ops := fsops.New(false)

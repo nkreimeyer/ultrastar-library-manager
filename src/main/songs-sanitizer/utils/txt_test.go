@@ -3,8 +3,10 @@ package utils
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fsops"
 )
@@ -161,7 +163,95 @@ func TestSongTxtFilesReportsReadErrors(t *testing.T) {
 	if err := os.WriteFile(txt, []byte("#TITLE:A\n"), 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SongTxtFiles(dir); err == nil {
+	if _, err := SongTxtFiles(nil, dir); err == nil {
 		t.Error("an unreadable txt must be an error, not 'no song txt'")
+	}
+}
+
+// TestTxtLookupsSeeDryRunPlan: with a dry-run Ops, the song txt lookups and reads see the
+// library as the earlier modules planned it: planned txt content counts, and a txt planned
+// to be moved away is neither a song txt of its folder nor a reason to skip the folder as
+// unreadable. Without the plan (nil Ops) the disk content counts.
+func TestTxtLookupsSeeDryRunPlan(t *testing.T) {
+	lib := t.TempDir()
+	dir := filepath.Join(lib, "A - Song")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keep, dup, readme := filepath.Join(dir, "song.txt"), filepath.Join(dir, "a-copy.txt"), filepath.Join(dir, "readme.txt")
+	for path, content := range map[string]string{
+		keep:                           "#TITLE:Song\n#MP3:old.mp3\n",
+		dup:                            "#TITLE:Song\n#MP3:dup.mp3\n",
+		readme:                         "just a readme\n",
+		filepath.Join(dir, "song.mp3"): "audio",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// a-copy.txt is the newest song txt.
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(keep, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := fsops.New(true)
+	if _, err := ops.MoveInto(dup, filepath.Join(t.TempDir(), "extra"), "a-copy.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ops.WriteFileAtomic(keep, []byte("#TITLE:Song\n#MP3:song.mp3\n")); err != nil {
+		t.Fatal(err)
+	}
+	// A readme the plan turns into a song txt (no module does this; it shows the read path).
+	if _, err := ops.WriteFileAtomic(readme, []byte("#TITLE:Readme\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := SongTxtFiles(ops, dir); err != nil || !slices.Equal(got, []string{readme, keep}) {
+		t.Errorf("SongTxtFiles(plan) = %q, %v; want %q", got, err, []string{readme, keep})
+	}
+	if got, err := SongTxtFiles(nil, dir); err != nil || !slices.Equal(got, []string{dup, keep}) {
+		t.Errorf("SongTxtFiles(disk) = %q, %v", got, err)
+	}
+	if got, err := FindSongTxt(nil, dir); err != nil || got != dup {
+		t.Errorf("FindSongTxt(disk) = %q, %v; want %q", got, err, dup)
+	}
+	if !IsSongTxt(ops, readme) || IsSongTxt(nil, readme) {
+		t.Error("IsSongTxt does not follow the plan")
+	}
+
+	// Without the readme rewrite, the lookups pick song.txt with its planned content.
+	ops2 := fsops.New(true)
+	if _, err := ops2.MoveInto(dup, filepath.Join(t.TempDir(), "extra"), "a-copy.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ops2.WriteFileAtomic(keep, []byte("#TITLE:Song\n#MP3:song.mp3\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := FindSongTxt(ops2, dir); err != nil || got != keep {
+		t.Errorf("FindSongTxt(plan) = %q, %v; want %q", got, err, keep)
+	}
+	if tags, err := ReadSongTags(ops2, dir); err != nil || tags["MP3"] != "song.mp3" {
+		t.Errorf("ReadSongTags(plan) = %v, %v", tags, err)
+	}
+	if !IsFileReferenced(ops2, dir, "song.mp3") || IsFileReferenced(nil, dir, "song.mp3") {
+		t.Error("IsFileReferenced does not follow the plan")
+	}
+	if replaced, err := ReplaceFileReference(ops2, dir, "song.mp3", "new.mp3"); err != nil || !replaced {
+		t.Errorf("ReplaceFileReference(plan) = %v, %v", replaced, err)
+	}
+	if data, _ := ops2.ReadFile(keep); string(data) != "#TITLE:Song\n#MP3:new.mp3\n" {
+		t.Errorf("planned txt after ReplaceFileReference = %q", data)
+	}
+
+	// Discovery still finds the song: the planned-away txt is not "unreadable".
+	if got, err := GetAllSongFolders(ops2, lib); err != nil || !slices.Equal(got, []string{dir}) {
+		t.Errorf("GetAllSongFolders(plan) = %q, %v; want %q", got, err, []string{dir})
+	}
+	if st := ops2.Stats(); st.Failed != 0 {
+		t.Errorf("%d failures", st.Failed)
+	}
+	if data, _ := os.ReadFile(keep); string(data) != "#TITLE:Song\n#MP3:old.mp3\n" {
+		t.Errorf("dry run changed song.txt: %q", data)
 	}
 }
