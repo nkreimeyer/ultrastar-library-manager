@@ -6,6 +6,7 @@ package fixtxt
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,6 +19,7 @@ import (
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fsops"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/utils"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/text/unicode/norm"
 )
 
 // SongInfo holds the header tags fixtxt reads from a song txt.
@@ -47,6 +49,7 @@ const (
 
 // songFiles are the media files found in a song folder.
 type songFiles struct {
+	txtName    string   // file name of the song txt
 	audio      []string // audio file names
 	video      []string // video file names
 	cover      string   // square image, "" if none
@@ -63,6 +66,7 @@ type collector struct {
 	mu             sync.Mutex
 	missingFiles   []string
 	encodingIssues []string
+	unchanged      int // songs left untouched because of an encoding issue
 }
 
 func (c *collector) addMissing(entries ...string) {
@@ -77,15 +81,26 @@ func (c *collector) addEncodingIssue(path, problem string) {
 	c.mu.Unlock()
 }
 
+// leftUnchanged counts a song that was not changed because of an encoding issue.
+func (c *collector) leftUnchanged() {
+	c.mu.Lock()
+	c.unchanged++
+	c.mu.Unlock()
+}
+
 // Run scans all song folders below cfg.SongDir and applies the text sanitization rules:
-//   - no song txt, or neither audio nor video → the folder is moved to invalid/
+//   - a media or image file whose name is not valid UTF-8 → the folder is reported in
+//     encoding_issues.txt and left completely untouched
+//   - no .txt at all, neither audio nor video, or no song txt → the folder is moved to
+//     invalid/ as a whole
 //   - several song .txt files → the most recently modified one is kept, the others are
 //     moved to extra-files/ (other txts such as License.txt are never touched)
 //
 // The song txt of every remaining folder is decoded, converted to UTF-8 and its file tags
 // are fixed. Txts that cannot be decoded unambiguously are left untouched and listed in
-// encoding_issues.txt. Songs without a cover or background are listed in missing_files.txt.
-// Folders are processed concurrently, in batches.
+// encoding_issues.txt. Songs without a cover or background, or with several audio files
+// to choose #MP3 from, are listed in missing_files.txt. Folders are processed
+// concurrently, in batches.
 func Run(cfg config.Config, ops *fsops.Ops) error {
 	folders, err := utils.GetAllSongFolders(ops, cfg.SongDir)
 	if err != nil {
@@ -99,9 +114,7 @@ func Run(cfg config.Config, ops *fsops.Ops) error {
 			wg.Add(1)
 			go func(folder string) {
 				defer wg.Done()
-				if checkFolderForDupTxtFiles(cfg, ops, folder) {
-					handleDirectory(cfg, ops, col, folder)
-				}
+				handleFolder(cfg, ops, col, folder)
 			}(folder)
 		}
 		wg.Wait()
@@ -109,8 +122,8 @@ func Run(cfg config.Config, ops *fsops.Ops) error {
 
 	writeReport(cfg, ops, missingFilesReport, col.missingFiles)
 	writeReport(cfg, ops, encodingIssuesReport, col.encodingIssues)
-	if n := len(col.encodingIssues); n > 0 {
-		log.Warnf("%d song txt(s) have encoding issues and were not changed, see %s", n, cfg.ReportPath(encodingIssuesReport))
+	if n := col.unchanged; n > 0 {
+		log.Warnf("%d song(s) have encoding issues and were not changed, see %s", n, cfg.ReportPath(encodingIssuesReport))
 	}
 	return nil
 }
@@ -131,44 +144,125 @@ func writeReport(cfg config.Config, ops *fsops.Ops, name string, lines []string)
 	log.Infof("Wrote %s", path)
 }
 
-// checkFolderForDupTxtFiles makes sure folder contains at most one song txt. It reports
-// whether the folder should be processed further; it returns false if the folder has no
-// txt at all (it is moved to invalid/, or would be in dry-run mode) or cannot be read.
-func checkFolderForDupTxtFiles(cfg config.Config, ops *fsops.Ops, folder string) bool {
+// failUnreadable logs a folder or txt that cannot be read and counts it as a failure.
+// Discovery counts the same unreadable path under the same key, so it is counted once per
+// run however many modules run into it.
+func failUnreadable(ops *fsops.Ops, folder string, err error) {
+	log.Errorf("Skipping %s: %v", folder, err)
+	path := folder
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		path = pathErr.Path
+	}
+	ops.FailOnce("unreadable:" + path)
+}
+
+// handleFolder checks a song folder and fixes its song txt. Broken songs (no txt, neither
+// audio nor video, or no song txt) are moved to invalid/ as a whole, before any duplicate
+// song txt is split off. Folders that cannot be read, or that contain a media file whose
+// name is not valid UTF-8, are left untouched.
+func handleFolder(cfg config.Config, ops *fsops.Ops, col *collector, folder string) {
+	entries, err := os.ReadDir(folder)
+	if err != nil {
+		failUnreadable(ops, folder, err)
+		return
+	}
+	// A txt references media byte-for-byte. Converting a CP1252 txt to UTF-8 would break
+	// its reference to a Latin-1 file name, and a UTF-8 txt cannot reference it at all, so
+	// such a folder must be renamed by hand first.
+	if bad := nonUTF8MediaNames(entries); len(bad) > 0 {
+		for _, n := range bad {
+			col.addEncodingIssue(filepath.Join(folder, n), "file name is not valid UTF-8, rename it")
+		}
+		log.Warnf("Not changing %s: %d media file name(s) are not valid UTF-8", folder, len(bad))
+		col.leftUnchanged()
+		return
+	}
+
 	txtFiles, err := utils.ListTxtFiles(folder)
 	if err != nil {
-		log.Errorf("Could not read folder %s: %v", folder, err)
-		ops.Fail()
-		return false
+		failUnreadable(ops, folder, err)
+		return
 	}
-
-	switch len(txtFiles) {
-	case 0:
+	if len(txtFiles) == 0 {
 		log.Infof("Folder %s contains no .txt file, moving it to invalid", folder)
 		moveToInvalid(cfg, ops, folder)
-		return false
-	case 1:
-		return true
+		return
+	}
+	// An unreadable txt might be the song txt: never mistake the folder for a broken song.
+	songTxts, err := utils.SongTxtFiles(folder)
+	if err != nil {
+		failUnreadable(ops, folder, err)
+		return
 	}
 
-	// Only song txts are candidates; License.txt, readme.txt etc. stay where they are.
-	var candidates []string
-	for _, f := range txtFiles {
-		if utils.IsSongTxt(f) {
-			candidates = append(candidates, f)
+	var files songFiles
+	files.audio = utils.AudioFiles(folder)
+	files.video = utils.VideoFiles(folder)
+	// The video may contain the audio track, so only a song without both is broken.
+	if len(files.audio) == 0 && len(files.video) == 0 {
+		log.Infof("Folder %s has neither audio nor video, moving it to invalid", folder)
+		moveToInvalid(cfg, ops, folder)
+		return
+	}
+	if len(songTxts) == 0 {
+		log.Infof("Folder %s has no UltraStar song txt, moving it to invalid", folder)
+		moveToInvalid(cfg, ops, folder)
+		return
+	}
+
+	txtFile, ok := keepNewestSongTxt(cfg, ops, folder, songTxts)
+	if !ok {
+		return
+	}
+	files.txtName = filepath.Base(txtFile)
+	files.cover = utils.FindCoverImage(folder)
+	files.background = utils.FindBackgroundImage(folder)
+	updateTxtFile(cfg, ops, col, folder, txtFile, files)
+
+	var missing []string
+	if files.cover == "" {
+		missing = append(missing, "Missing cover file in "+folder)
+	}
+	if len(files.video) == 0 && files.background == "" {
+		missing = append(missing, "No video or background file in "+folder)
+	}
+	if len(missing) > 0 {
+		col.addMissing(missing...)
+	}
+}
+
+// nonUTF8MediaNames returns the names of the visible audio, video and image files among
+// entries that are not valid UTF-8 (e.g. Latin-1 names from old archives).
+func nonUTF8MediaNames(entries []os.DirEntry) []string {
+	var bad []string
+	for _, e := range entries {
+		n := e.Name()
+		if utf8.ValidString(n) || utils.IsHidden(n) || e.IsDir() {
+			continue
+		}
+		if utils.IsAudioFile(n) || utils.IsVideoFile(n) || utils.IsImageFile(n) {
+			bad = append(bad, n)
 		}
 	}
-	if len(candidates) < 2 {
-		return true
-	}
+	return bad
+}
 
-	keep, err := utils.NewestFile(candidates)
+// keepNewestSongTxt makes sure folder keeps only one of its song txts: the most recently
+// modified one stays, the others are moved to extra-files/ (other txts such as License.txt
+// are not in songTxts and stay where they are). It returns the song txt to fix and false
+// if the folder cannot be processed.
+func keepNewestSongTxt(cfg config.Config, ops *fsops.Ops, folder string, songTxts []string) (string, bool) {
+	keep, err := utils.NewestFile(songTxts)
 	if err != nil {
 		log.Errorf("Could not determine the most recently modified song txt in %s: %v", folder, err)
 		ops.Fail()
-		return false
+		return "", false
 	}
-	for _, f := range candidates {
+	if len(songTxts) < 2 {
+		return keep, true
+	}
+	for _, f := range songTxts {
 		if f == keep {
 			continue
 		}
@@ -178,8 +272,8 @@ func checkFolderForDupTxtFiles(cfg config.Config, ops *fsops.Ops, folder string)
 		}
 	}
 	log.Infof("Folder %s had %d song .txt files; kept the most recently modified one (%s)",
-		folder, len(candidates), filepath.Base(keep))
-	return true
+		folder, len(songTxts), filepath.Base(keep))
+	return keep, true
 }
 
 // moveToInvalid moves a broken song folder to the invalid dir, mirroring its path
@@ -188,63 +282,6 @@ func moveToInvalid(cfg config.Config, ops *fsops.Ops, folder string) {
 	if _, err := ops.MoveInto(folder, cfg.InvalidDir(), cfg.RelPath(folder)); err != nil {
 		log.Errorf("Could not move %s to invalid: %v", folder, err)
 	}
-}
-
-// handleDirectory checks the files in a song folder and updates the file tags in its song
-// txt. Songs without audio and video, or without a song txt, are moved to invalid/. Songs
-// without cover or background are recorded in col.
-func handleDirectory(cfg config.Config, ops *fsops.Ops, col *collector, rootDir string) {
-	var files songFiles
-	files.audio = usableNames(col, rootDir, utils.AudioFiles(rootDir))
-	files.video = usableNames(col, rootDir, utils.VideoFiles(rootDir))
-
-	// The video may contain the audio track, so only a song without both is broken.
-	if len(files.audio) == 0 && len(files.video) == 0 {
-		log.Infof("Folder %s has neither audio nor video, moving it to invalid", rootDir)
-		moveToInvalid(cfg, ops, rootDir)
-		return
-	}
-
-	txtFile, err := utils.FindSongTxt(rootDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			log.Infof("Folder %s has no UltraStar song txt, moving it to invalid", rootDir)
-			moveToInvalid(cfg, ops, rootDir)
-		} else {
-			log.Errorf("Could not find the song txt in %s: %v", rootDir, err)
-			ops.Fail()
-		}
-		return
-	}
-
-	files.cover = utils.FindCoverImage(rootDir)
-	files.background = utils.FindBackgroundImage(rootDir)
-	updateTxtFile(cfg, ops, col, rootDir, txtFile, files)
-
-	var missing []string
-	if files.cover == "" {
-		missing = append(missing, "Missing cover file in "+rootDir)
-	}
-	if len(files.video) == 0 && files.background == "" {
-		missing = append(missing, "No video or background file in "+rootDir)
-	}
-	if len(missing) > 0 {
-		col.addMissing(missing...)
-	}
-}
-
-// usableNames drops file names that are not valid UTF-8 (e.g. Latin-1 names from old
-// archives): they cannot be written into a UTF-8 txt. They are reported as encoding issues.
-func usableNames(col *collector, dir string, names []string) []string {
-	usable := names[:0:0]
-	for _, n := range names {
-		if utf8.ValidString(n) {
-			usable = append(usable, n)
-		} else {
-			col.addEncodingIssue(filepath.Join(dir, n), "file name is not valid UTF-8, rename it")
-		}
-	}
-	return usable
 }
 
 // updateTxtFile rewrites txtFile as UTF-8 with fixed file tags (only if that changes the
@@ -260,6 +297,7 @@ func updateTxtFile(cfg config.Config, ops *fsops.Ops, col *collector, rootDir, t
 	if decoded.Problem != "" {
 		log.Warnf("Not changing %s: %s", txtFile, decoded.Problem)
 		col.addEncodingIssue(txtFile, decoded.Problem)
+		col.leftUnchanged()
 		return
 	}
 	if decoded.Damaged {
@@ -270,7 +308,10 @@ func updateTxtFile(cfg config.Config, ops *fsops.Ops, col *collector, rootDir, t
 		log.Debugf("Decoded %s as %s", txtFile, decoded.Encoding)
 	}
 
-	updatedLines := fixTxtLines(splitLines(decoded.Text), rootDir, files)
+	updatedLines, notes := fixTxtLines(splitLines(decoded.Text), rootDir, files)
+	if len(notes) > 0 {
+		col.addMissing(notes...)
+	}
 	changed, err := ops.WriteFileAtomic(txtFile, []byte(strings.Join(updatedLines, "")))
 	switch {
 	case err != nil:
@@ -298,15 +339,21 @@ func splitLines(text string) []string {
 // fixTxtLines removes duplicate tags and a stale #ENCODING tag, and updates or inserts the
 // #MP3/#AUDIO, #VIDEO, #COVER and #BACKGROUND tags. Tags that already point to an existing
 // file of the right kind are left alone (cleanup takes care of unreferenced files later).
-func fixTxtLines(lines []string, rootDir string, files songFiles) []string {
+// It also returns notes for missing_files.txt (an audio file that cannot be chosen).
+func fixTxtLines(lines []string, rootDir string, files songFiles) ([]string, []string) {
 	// With fewer than 3 lines it's not a valid song txt, so return the lines unchanged.
 	if len(lines) < 3 {
-		return lines
+		return lines, nil
 	}
 
 	lines = dropEncodingTag(removeDuplicateTags(lines))
 
 	info := getSongInfoFromTxtFile(lines)
+	audio := chooseAudio(rootDir, lines, files, info)
+	video := fileChoice{candidates: len(files.video)}
+	if len(files.video) > 0 {
+		video.name = files.video[0]
+	}
 	// Images with the wrong shape for their tag are replaced; unreadable ones are re-detected.
 	forceUpdateCover, forceUpdateBackground, info := checkDimensionsOfImagesTagged(rootDir, info)
 	upd := tagUpdates{
@@ -315,15 +362,22 @@ func fixTxtLines(lines []string, rootDir string, files songFiles) []string {
 	}
 
 	updatedLines := make([]string, len(lines))
-	foundTagFlags := updateTagsInLines(rootDir, lines, updatedLines, files, upd)
+	foundTagFlags, audioUnresolved := updateTagsInLines(rootDir, lines, updatedLines, files, audio, video, upd)
+
+	var notes []string
+	if (audioUnresolved || !isFlagSet(foundTagFlags, flagAudio)) && len(audio.ambiguous) > 0 {
+		log.Warnf("Several audio files in %s, cannot choose #MP3: %q", rootDir, audio.ambiguous)
+		notes = append(notes, fmt.Sprintf("Several audio files, cannot choose #MP3 in %s: %s",
+			rootDir, strings.Join(audio.ambiguous, ", ")))
+	}
 
 	// Add the missing tags, inserting them as line 2.
 	var linesToInsert []string
-	if !isFlagSet(foundTagFlags, flagAudio) && len(files.audio) > 0 {
-		linesToInsert = append(linesToInsert, "#MP3:"+files.audio[0]+"\n")
+	if !isFlagSet(foundTagFlags, flagAudio) && audio.name != "" {
+		linesToInsert = append(linesToInsert, "#MP3:"+audio.name+"\n")
 	}
-	if !isFlagSet(foundTagFlags, flagVideo) && len(files.video) > 0 {
-		linesToInsert = append(linesToInsert, "#VIDEO:"+files.video[0]+"\n")
+	if !isFlagSet(foundTagFlags, flagVideo) && video.name != "" {
+		linesToInsert = append(linesToInsert, "#VIDEO:"+video.name+"\n")
 	}
 	if !isFlagSet(foundTagFlags, flagCover) && files.cover != "" {
 		linesToInsert = append(linesToInsert, "#COVER:"+files.cover+"\n")
@@ -334,7 +388,75 @@ func fixTxtLines(lines []string, rootDir string, files songFiles) []string {
 	if len(linesToInsert) > 0 {
 		log.Debugf("Inserting the following lines: %q", linesToInsert)
 	}
-	return slices.Insert(updatedLines, 1, linesToInsert...)
+	return slices.Insert(updatedLines, 1, linesToInsert...), notes
+}
+
+// fileChoice is the value to use for a missing or wrong file tag.
+type fileChoice struct {
+	name       string   // replacement value, "" if there is none
+	candidates int      // number of files of the tag's own kind
+	ambiguous  []string // the candidates, if there are several and none is preferred
+}
+
+// chooseAudio picks the file for a missing or wrong #MP3/#AUDIO tag. Audio files used by
+// #VOCALS or #INSTRUMENTAL are not candidates. A single candidate is used. Of several, the
+// one named like the song txt, the folder or "<#ARTIST> - <#TITLE>" is used; otherwise
+// there is no choice and the candidates are returned as ambiguous. Without any candidate
+// the first video is used: it carries the audio, and UltraStar needs an audio tag.
+func chooseAudio(rootDir string, lines []string, files songFiles, info SongInfo) fileChoice {
+	stems := map[string]bool{}
+	for _, tag := range []string{"#VOCALS", "#INSTRUMENTAL"} {
+		if onDisk, _, found := utils.ResolveFileName(rootDir, getTagValue(lines, tag)); found {
+			stems[onDisk] = true
+		}
+	}
+	var candidates []string
+	for _, a := range files.audio {
+		if !stems[a] {
+			candidates = append(candidates, a)
+		}
+	}
+
+	choice := fileChoice{candidates: len(candidates)}
+	switch len(candidates) {
+	case 0:
+		if len(files.video) > 0 {
+			choice.name = files.video[0]
+		}
+		return choice
+	case 1:
+		choice.name = candidates[0]
+		return choice
+	}
+
+	preferred := []string{stem(files.txtName), filepath.Base(rootDir)}
+	if info.Artist != "" && info.Title != "" {
+		preferred = append(preferred, info.Artist+" - "+info.Title)
+	}
+	for _, want := range preferred {
+		var matches []string
+		for _, c := range candidates {
+			if sameName(stem(c), want) {
+				matches = append(matches, c)
+			}
+		}
+		if len(matches) == 1 {
+			choice.name = matches[0]
+			return choice
+		}
+	}
+	choice.ambiguous = candidates
+	return choice
+}
+
+// stem returns name without its extension.
+func stem(name string) string {
+	return strings.TrimSuffix(name, filepath.Ext(name))
+}
+
+// sameName compares two file names case- and Unicode-normalization-insensitively.
+func sameName(a, b string) bool {
+	return a != "" && strings.EqualFold(norm.NFC.String(a), norm.NFC.String(b))
 }
 
 // fileExists reports whether name exists in dir with exactly this spelling (UltraStar
@@ -344,31 +466,38 @@ func fileExists(dir, name string) bool {
 	return found && exact
 }
 
-// resolveFileTag decides the value of a file tag (#MP3/#AUDIO with the audio files as
-// candidates, #VIDEO with the video files). A value naming an existing file of the right
-// kind is kept, or corrected to the on-disk spelling if it only differs in case or Unicode
-// normalization. A missing file, or a file of the wrong kind (e.g. #MP3 pointing to a
-// video while an audio file exists, as left behind by an old bug), is replaced by the
-// first candidate. It returns the new value and whether the tag has to be rewritten.
-func resolveFileTag(rootDir, value string, candidates []string, isKind func(string) bool) (string, bool) {
+// resolveFileTag decides the value of a file tag (#MP3/#AUDIO, #VIDEO). A value naming an
+// existing file of the right kind is kept, or corrected to the on-disk spelling if it only
+// differs in case or Unicode normalization. A file of another kind is kept too if there is
+// no file of the right kind (#MP3 may name the video of a video-only song). A missing
+// file, or a file of the wrong kind (e.g. #MP3 pointing to a video while an audio file
+// exists, as left behind by an old bug), is replaced by choice.name. It returns the new
+// value, whether the tag has to be rewritten, and whether it would need a new value but
+// there is no choice.
+func resolveFileTag(rootDir, value string, choice fileChoice, isKind func(string) bool) (string, bool, bool) {
 	onDisk, exact, found := utils.ResolveFileName(rootDir, value)
-	if found && (isKind(onDisk) || len(candidates) == 0) {
+	if found && (isKind(onDisk) || choice.candidates == 0) {
 		if exact || !utf8.ValidString(onDisk) {
-			return value, false
+			return value, false, false
 		}
-		return onDisk, true
+		return onDisk, true, false
 	}
-	if len(candidates) > 0 && candidates[0] != value {
-		return candidates[0], true
+	if choice.name == "" {
+		return value, false, true
 	}
-	return value, false
+	if choice.name != value {
+		return choice.name, true, false
+	}
+	return value, false, false
 }
 
 // updateTagsInLines copies lines to updatedLines (which must have the same length),
 // rewriting the file tags that need it. Lines that are not rewritten are copied unchanged.
-// It returns the flags of the file tags that were found.
-func updateTagsInLines(rootDir string, lines, updatedLines []string, files songFiles, upd tagUpdates) int {
+// It returns the flags of the file tags that were found, and whether the audio tag needs a
+// new value that audio does not provide.
+func updateTagsInLines(rootDir string, lines, updatedLines []string, files songFiles, audio, video fileChoice, upd tagUpdates) (int, bool) {
 	var found int
+	audioUnresolved := false
 	rewrite := func(i int, tag, value string) {
 		updatedLines[i] = tag + ":" + value + "\n"
 		log.Debugf("Updated %s in %s to %s", tag, rootDir, value)
@@ -379,13 +508,21 @@ func updateTagsInLines(rootDir string, lines, updatedLines []string, files songF
 		case hasTag(line, "#MP3"), hasTag(line, "#AUDIO"):
 			found = setFlag(found, flagAudio)
 			tag, value := splitTag(line)
-			if v, ok := resolveFileTag(rootDir, value, files.audio, utils.IsAudioFile); ok {
+			v, ok, unresolved := resolveFileTag(rootDir, value, audio, utils.IsAudioFile)
+			if ok {
 				rewrite(i, tag, v)
 			}
+			audioUnresolved = audioUnresolved || unresolved
 		case hasTag(line, "#VIDEO"):
 			found = setFlag(found, flagVideo)
-			if v, ok := resolveFileTag(rootDir, tagValue(line, "#VIDEO"), files.video, utils.IsVideoFile); ok {
+			if v, ok, _ := resolveFileTag(rootDir, tagValue(line, "#VIDEO"), video, utils.IsVideoFile); ok {
 				rewrite(i, "#VIDEO", v)
+			}
+		case hasTag(line, "#VOCALS"), hasTag(line, "#INSTRUMENTAL"):
+			// Stems are never chosen or inserted, only spelled exactly like the file on disk.
+			tag, value := splitTag(line)
+			if onDisk, exact, found := utils.ResolveFileName(rootDir, value); found && !exact && utf8.ValidString(onDisk) {
+				rewrite(i, tag, onDisk)
 			}
 		case hasTag(line, "#COVER"):
 			found = setFlag(found, flagCover)
@@ -399,7 +536,7 @@ func updateTagsInLines(rootDir string, lines, updatedLines []string, files songF
 			}
 		}
 	}
-	return found
+	return found, audioUnresolved
 }
 
 // hasTag reports whether line is a header line of tag (e.g. "#VIDEO"). The tag is matched

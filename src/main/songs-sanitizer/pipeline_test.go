@@ -151,3 +151,45 @@ func TestPipelineDryRun(t *testing.T) {
 		t.Errorf("dry-run created %s", dry.InvalidDir())
 	}
 }
+
+// A category keeping a readme.txt next to its broken songs: fixtxt moves the songs to
+// invalid/Cat/..., cleanup then moves the leftover category (one entry). It must be merged
+// into invalid/Cat, not become "invalid/Cat (2)", and the dry-run must plan the same.
+func TestPipelineMergesLeftoverCategory(t *testing.T) {
+	files := map[string]string{
+		"Cat/readme.txt":           "about this category\n",
+		"Cat/A - Broken/cover.jpg": "img",
+		"Cat/B - Broken/song.txt":  "#TITLE:B\n#ARTIST:B\n#BPM:300\n: 0 4 0 la\nE\n",
+		"Good/song.txt":            "#TITLE:G\n#ARTIST:G\n#MP3:song.mp3\n#BPM:300\n: 0 4 0 la\nE\n",
+		"Good/song.mp3":            "audio",
+	}
+	root := t.TempDir()
+	songs := filepath.Join(root, "songs")
+	for rel, content := range files {
+		p := filepath.Join(songs, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	planned := runPipeline(t, mustConfig(t, songs, true)).Stats()
+	cfg := mustConfig(t, songs, false)
+	real := runPipeline(t, cfg).Stats()
+	if planned.Moved != real.Moved {
+		t.Errorf("dry-run planned %d moves, real run did %d", planned.Moved, real.Moved)
+	}
+	for _, rel := range []string{"Cat/readme.txt", "Cat/A - Broken/cover.jpg", "Cat/B - Broken/song.txt"} {
+		if _, err := os.Stat(filepath.Join(cfg.InvalidDir(), filepath.FromSlash(rel))); err != nil {
+			t.Errorf("expected invalid/%s: %v", rel, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(cfg.InvalidDir(), "Cat (2)")); !os.IsNotExist(err) {
+		t.Errorf("leftover category must be merged, found invalid/Cat (2)")
+	}
+	if _, err := os.Stat(filepath.Join(songs, "Cat")); !os.IsNotExist(err) {
+		t.Errorf("category must be gone from the library (err=%v)", err)
+	}
+}

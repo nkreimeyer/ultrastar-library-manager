@@ -3,6 +3,7 @@ package fixtxt
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io/fs"
 	"maps"
 	"os"
@@ -11,10 +12,11 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/config"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fsops"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 // songTxt is a minimal valid song txt with the given extra header lines.
@@ -471,21 +473,72 @@ func TestRunResolvesFileTags(t *testing.T) {
 	}
 }
 
-func TestRunDoesNotInsertNonUTF8FileNames(t *testing.T) {
+// A Latin-1 media file name is referenced byte-for-byte by a CP1252 txt. Converting the txt
+// to UTF-8 would break the reference, so the whole folder must be left alone.
+func TestRunSkipsFolderWithNonUTF8MediaNames(t *testing.T) {
 	cfg := newLibrary(t, false)
-	latin1Name := "M\xe4dchen.mp3"
 	writeFiles(t, cfg.SongDir, map[string]string{
-		"Song/song.txt":      songTxt("#VIDEO:video.mp4"),
-		"Song/" + latin1Name: "a",
-		"Song/video.mp4":     "v",
+		// CP1252 txt referencing the Latin-1 name, plus an older duplicate song txt.
+		"Latin1/song.txt":       "#TITLE:M\xe4dchen\r\n#ARTIST:A\r\n#MP3:M\xe4dchen.mp3\r\n: 0 1 0 x\r\nE\r\n",
+		"Latin1/old.txt":        songTxt("#MP3:gone.mp3"),
+		"Latin1/M\xe4dchen.mp3": "a",
+		"Latin1/video.mp4":      "v",
+		// Only the cover has a Latin-1 name; the txt would be rewritten otherwise.
+		"Image/song.txt":       songTxt("#MP3:gone.mp3"),
+		"Image/song.mp3":       "a",
+		"Image/Cover \xe4.jpg": "not an image",
+		// No song txt: must not be moved to invalid/ either.
+		"NoSongTxt/License.txt":   "license\n",
+		"NoSongTxt/Lied \xfc.mp3": "a",
+	})
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(cfg.SongDir, "Latin1/old.txt"), past, past); err != nil {
+		t.Fatal(err)
+	}
+	before := hashTree(t, cfg.SongDir)
+	ops := run(t, cfg)
+
+	if after := hashTree(t, cfg.SongDir); !maps.Equal(before, after) {
+		t.Errorf("folders with non-UTF-8 media names were changed:\nbefore %v\nafter  %v", before, after)
+	}
+	if st := ops.Stats(); st.Written != 0 || st.Moved != 0 {
+		t.Errorf("Stats() = %+v, want nothing written or moved", st)
+	}
+	report := readFile(t, cfg.ReportPath(encodingIssuesReport))
+	for _, name := range []string{"Latin1/M\xe4dchen.mp3", "Image/Cover \xe4.jpg", "NoSongTxt/Lied \xfc.mp3"} {
+		if !strings.Contains(report, filepath.Join(cfg.SongDir, name)+": file name is not valid UTF-8, rename it") {
+			t.Errorf("%q not reported:\n%s", name, report)
+		}
+	}
+	if strings.Contains(report, "video.mp4") {
+		t.Errorf("valid file name reported:\n%s", report)
+	}
+}
+
+// The warning counts songs left unchanged: one per skipped folder (however many bad names
+// it has) and one per undecodable txt, but not damaged txts, which are still fixed.
+func TestRunCountsUnchangedSongs(t *testing.T) {
+	hook := logtest.NewGlobal()
+	defer log.StandardLogger().ReplaceHooks(make(log.LevelHooks))
+	cfg := newLibrary(t, false)
+	writeFiles(t, cfg.SongDir, map[string]string{
+		"Names/song.txt":   songTxt("#MP3:a.mp3"),
+		"Names/\xe41.mp3":  "a",
+		"Names/\xe42.mp4":  "v",
+		"Bad/song.txt":     "#TITLE:\xe4\x81\n#ARTIST:A\n#MP3:song.mp3\n: 0 1 0 x\nE\n",
+		"Bad/song.mp3":     "audio",
+		"Damaged/song.txt": "#TITLE:M\ufffddchen\n#ARTIST:A\n#MP3:song.mp3\n: 0 1 0 x\nE\n",
+		"Damaged/song.mp3": "audio",
 	})
 	run(t, cfg)
-	got := readFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
-	if !utf8.ValidString(got) || strings.Contains(got, "#MP3:") {
-		t.Errorf("a non-UTF-8 file name must not be written into the txt:\n%q", got)
+	var got []string
+	for _, e := range hook.AllEntries() {
+		if strings.Contains(e.Message, "encoding issues and were not changed") {
+			got = append(got, e.Message)
+		}
 	}
-	if report := readFile(t, cfg.ReportPath(encodingIssuesReport)); !strings.Contains(report, "not valid UTF-8") {
-		t.Errorf("file name not reported: %q", report)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "2 song(s) ") {
+		t.Errorf("warning = %q, want one warning counting 2 songs", got)
 	}
 }
 
@@ -499,5 +552,255 @@ func TestRunDoesNotRewriteTxtOfFolderMovedToInvalid(t *testing.T) {
 	}
 	if report := readFile(t, cfg.ReportPath(missingFilesReport)); report != "" {
 		t.Errorf("moved songs must not be listed as missing files: %q", report)
+	}
+}
+
+// A broken folder is moved to invalid/ as a whole, before duplicate song txts would be
+// split off into extra-files/.
+func TestRunMovesBrokenFolderWithDuplicateTxtsAsWhole(t *testing.T) {
+	cfg := newLibrary(t, false)
+	writeFiles(t, cfg.SongDir, map[string]string{
+		"NoMedia/old.txt":   songTxt("#MP3:song.mp3"),
+		"NoMedia/new.txt":   songTxt("#MP3:song.mp3"),
+		"NoMedia/cover.jpg": "img",
+	})
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(cfg.SongDir, "NoMedia/old.txt"), past, past); err != nil {
+		t.Fatal(err)
+	}
+	before := hashTree(t, filepath.Join(cfg.SongDir, "NoMedia"))
+	run(t, cfg)
+	if exists(filepath.Join(cfg.SongDir, "NoMedia")) {
+		t.Error("broken folder is still in the library")
+	}
+	if after := hashTree(t, filepath.Join(cfg.InvalidDir(), "NoMedia")); !maps.Equal(before, after) {
+		t.Errorf("folder was not moved as a whole:\nbefore %v\nafter  %v", before, after)
+	}
+	if exists(cfg.ExtraFilesDir()) {
+		t.Error("a song txt of the broken folder was split off into extra-files/")
+	}
+}
+
+// fixSong runs fixtxt on a library with one song folder and returns the fixed txt, the
+// missing_files report and the ops.
+func fixSong(t *testing.T, folder, txtName string, files map[string]string, header []string) (string, string, *fsops.Ops) {
+	t.Helper()
+	cfg := newLibrary(t, false)
+	all := map[string]string{filepath.Join(folder, txtName): songTxt(header...)}
+	for name, content := range files {
+		all[filepath.Join(folder, name)] = content
+	}
+	writeFiles(t, cfg.SongDir, all)
+	ops := run(t, cfg)
+	return readFile(t, filepath.Join(cfg.SongDir, folder, txtName)), readFile(t, cfg.ReportPath(missingFilesReport)), ops
+}
+
+func TestRunChoosesAudioFile(t *testing.T) {
+	nfd := "Ma\u0308dchen.mp3"
+	stems := map[string]string{"a-vocals.mp3": "v", "b-inst.mp3": "i", "c-full.mp3": "a"}
+	tests := []struct {
+		name          string
+		folder, txt   string
+		files         map[string]string
+		header        []string
+		want          string // expected audio tag line, "" for none
+		wantAmbiguous bool
+	}{
+		{
+			name:   "video only: missing #MP3 is set to the video",
+			files:  map[string]string{"clip.mp4": "v"},
+			header: []string{"#VIDEO:clip.mp4"},
+			want:   "#MP3:clip.mp4",
+		},
+		{
+			name:   "video only: #MP3 to a missing file is set to the video",
+			files:  map[string]string{"clip.mp4": "v"},
+			header: []string{"#MP3:gone.mp3"},
+			want:   "#MP3:clip.mp4",
+		},
+		{
+			name:   "video only: #AUDIO to a missing file is set to the video",
+			files:  map[string]string{"clip.mp4": "v"},
+			header: []string{"#AUDIO:gone.ogg"},
+			want:   "#AUDIO:clip.mp4",
+		},
+		{
+			name:   "vocals and instrumental are no candidates",
+			files:  stems,
+			header: []string{"#VOCALS:a-vocals.mp3", "#INSTRUMENTAL:B-Inst.MP3", "#MP3:gone.mp3"},
+			want:   "#MP3:c-full.mp3",
+		},
+		{
+			name:   "vocals and instrumental are no candidates for an inserted #MP3",
+			files:  stems,
+			header: []string{"#VOCALS:a-vocals.mp3", "#INSTRUMENTAL:b-inst.mp3"},
+			want:   "#MP3:c-full.mp3",
+		},
+		{
+			name:   "named like the song txt",
+			folder: "X", txt: "Song.txt",
+			files:  map[string]string{"other.mp3": "a", "song.ogg": "a"},
+			header: []string{"#MP3:gone.mp3"},
+			want:   "#MP3:song.ogg",
+		},
+		{
+			name:   "named like the song txt, NFC-insensitive",
+			folder: "X", txt: "M\u00e4dchen.txt",
+			files:  map[string]string{"a.mp3": "a", nfd: "a"},
+			header: []string{},
+			want:   "#MP3:" + nfd,
+		},
+		{
+			name:   "named like the folder",
+			folder: "My Folder", txt: "x.txt",
+			files:  map[string]string{"a.mp3": "a", "MY FOLDER.mp3": "a"},
+			header: []string{"#MP3:gone.mp3"},
+			want:   "#MP3:MY FOLDER.mp3",
+		},
+		{
+			name:   "named like artist - title",
+			folder: "X", txt: "x.txt",
+			files:  map[string]string{"a.mp3": "a", "artist - song.mp3": "a"},
+			header: []string{},
+			want:   "#MP3:artist - song.mp3",
+		},
+		{
+			name:          "ambiguous: wrong tag is left alone",
+			files:         map[string]string{"a.mp3": "a", "b.mp3": "a"},
+			header:        []string{"#MP3:gone.mp3"},
+			want:          "#MP3:gone.mp3",
+			wantAmbiguous: true,
+		},
+		{
+			name:          "ambiguous: tag pointing to the video is left alone",
+			files:         map[string]string{"a.mp3": "a", "b.mp3": "a", "clip.mp4": "v"},
+			header:        []string{"#MP3:clip.mp4"},
+			want:          "#MP3:clip.mp4",
+			wantAmbiguous: true,
+		},
+		{
+			name:          "ambiguous: no #MP3 is inserted",
+			files:         map[string]string{"a.mp3": "a", "b.mp3": "a"},
+			header:        []string{},
+			want:          "",
+			wantAmbiguous: true,
+		},
+		{
+			name:   "several audio files but a valid tag",
+			files:  map[string]string{"a.mp3": "a", "b.mp3": "a"},
+			header: []string{"#MP3:b.mp3"},
+			want:   "#MP3:b.mp3",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			folder, txt := tc.folder, tc.txt
+			if folder == "" {
+				folder, txt = "Song", "song.txt"
+			}
+			got, report, ops := fixSong(t, folder, txt, tc.files, tc.header)
+			if f := ops.Stats().Failed; f != 0 {
+				t.Errorf("%d failed operations", f)
+			}
+			n := strings.Count(got, "#MP3:") + strings.Count(got, "#AUDIO:")
+			switch {
+			case tc.want == "" && n != 0:
+				t.Errorf("want no audio tag:\n%s", got)
+			case tc.want != "" && (n != 1 || !strings.Contains(got, tc.want+"\n")):
+				t.Errorf("want exactly one audio tag %q:\n%s", tc.want, got)
+			}
+			note := "Several audio files, cannot choose #MP3 in "
+			if gotNote := strings.Contains(report, note); gotNote != tc.wantAmbiguous {
+				t.Errorf("ambiguity reported = %v, want %v:\n%s", gotNote, tc.wantAmbiguous, report)
+			}
+			if tc.wantAmbiguous && !strings.Contains(report, "Song: a.mp3, b.mp3\n") {
+				t.Errorf("report does not name the folder and candidates:\n%s", report)
+			}
+		})
+	}
+}
+
+// An unreadable txt might be the song txt: the folder is counted as failed and left alone,
+// never split up or moved to invalid/. Discovery sees the readable a.txt first, so it is
+// fixtxt that runs into b.txt.
+func TestRunSkipsFolderWithUnreadableTxt(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read everything")
+	}
+	for _, media := range []bool{true, false} {
+		t.Run(fmt.Sprintf("media=%v", media), func(t *testing.T) {
+			cfg := newLibrary(t, false)
+			files := map[string]string{
+				"Song/a.txt": "#TITLE:M\xe4dchen\r\n#ARTIST:A\r\n#MP3:gone.mp3\r\n: 0 1 0 x\r\nE\r\n",
+				"Song/b.txt": songTxt("#MP3:song.mp3"),
+			}
+			if media {
+				files["Song/song.mp3"] = "a"
+			}
+			writeFiles(t, cfg.SongDir, files)
+			unreadable := filepath.Join(cfg.SongDir, "Song/b.txt")
+			if err := os.Chmod(unreadable, 0); err != nil {
+				t.Fatal(err)
+			}
+			defer os.Chmod(unreadable, 0o644)
+			before := hashTreeExcept(t, cfg.SongDir, unreadable)
+			ops := run(t, cfg)
+
+			if after := hashTreeExcept(t, cfg.SongDir, unreadable); !maps.Equal(before, after) {
+				t.Errorf("folder was changed:\nbefore %v\nafter  %v", before, after)
+			}
+			if !exists(unreadable) {
+				t.Error("unreadable txt was moved")
+			}
+			if st := ops.Stats(); st.Failed != 1 || st.Moved != 0 || st.Written != 0 {
+				t.Errorf("Stats() = %+v, want 1 failure and nothing moved or written", st)
+			}
+		})
+	}
+}
+
+// hashTreeExcept is hashTree for a tree containing the unreadable file skip, which is only
+// recorded by name.
+func hashTreeExcept(t *testing.T, root, skip string) map[string]string {
+	t.Helper()
+	tree := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		switch {
+		case d.IsDir():
+			tree[rel] = "dir"
+		case path == skip:
+			tree[rel] = "unreadable"
+		default:
+			sum := sha256.Sum256([]byte(readFile(t, path)))
+			tree[rel] = hex.EncodeToString(sum[:])
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tree
+}
+
+func TestRunCorrectsStemSpelling(t *testing.T) {
+	cfg := newLibrary(t, false)
+	writeFiles(t, cfg.SongDir, map[string]string{
+		"Song/song.txt":         songTxt("#MP3:song.mp3", "#VOCALS:VOX.mp3", "#INSTRUMENTAL:missing.mp3"),
+		"Song/song.mp3":         "a",
+		"Song/vox.mp3":          "v",
+		"Song/Instrumental.MP3": "i",
+	})
+	run(t, cfg)
+	got := readFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
+	if !strings.Contains(got, "#VOCALS:vox.mp3\n") {
+		t.Errorf("#VOCALS not corrected to the on-disk spelling:\n%s", got)
+	}
+	// A stem tag pointing to a missing file is never replaced by a guess.
+	if !strings.Contains(got, "#INSTRUMENTAL:missing.mp3\n") {
+		t.Errorf("#INSTRUMENTAL must be left alone:\n%s", got)
 	}
 }

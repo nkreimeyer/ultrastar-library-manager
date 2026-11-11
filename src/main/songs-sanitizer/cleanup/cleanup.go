@@ -1,14 +1,18 @@
 // Package cleanup removes clutter from song folders: files that the song txt does not
-// reference are moved to <out>/extra-files/, folders with at most one entry are moved to
-// <out>/invalid/. Both targets mirror the folder's path relative to the library root.
+// reference are moved to <out>/extra-files/, folders with at most one visible entry are
+// moved to <out>/invalid/. Both targets mirror the folder's path relative to the library
+// root.
 package cleanup
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/config"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fsops"
@@ -45,20 +49,21 @@ func Run(cfg config.Config, ops *fsops.Ops) error {
 	return nil
 }
 
-// filterEntries moves folders with at most one entry to the invalid folder and returns the
-// remaining folders. Moved (or, in dry-run mode, to-be-moved) folders and unreadable
-// folders are excluded from further cleanup.
+// filterEntries moves folders with at most one visible entry to the invalid folder and
+// returns the remaining folders. Moved (or, in dry-run mode, to-be-moved) folders and
+// unreadable folders are excluded from further cleanup. An empty folder whose counterpart
+// already exists in invalid/ (a category whose songs fixtxt moved there) is merged into it
+// by ops.MoveInto.
 func filterEntries(cfg config.Config, ops *fsops.Ops, entries []string) []string {
 	validEntries := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		files, err := os.ReadDir(entry)
 		if err != nil {
-			log.Errorf("reading song folder %q: %v", entry, err)
-			ops.Fail()
+			reportUnreadable(ops, entry, err)
 			continue
 		}
-		if len(files) <= 1 {
-			log.Infof("Song folder %q has %d entries, moving it to invalid", entry, len(files))
+		if n := countEntries(ops, entry, files); n <= 1 {
+			log.Infof("Song folder %q has %d entries, moving it to invalid", entry, n)
 			if _, err := ops.MoveInto(entry, cfg.InvalidDir(), cfg.RelPath(entry)); err != nil {
 				log.Errorf("moving broken song folder: %v", err)
 			}
@@ -69,14 +74,51 @@ func filterEntries(cfg config.Config, ops *fsops.Ops, entries []string) []string
 	return validEntries
 }
 
+// countEntries counts the entries of dir that make up a song. Hidden files (leftovers of
+// interrupted runs, macOS "._*" files) and Synology "@eaDir" folders are no song content,
+// so a lone audio file next to "._song.mp3" still counts as a broken song; otherwise it
+// would only be detected on the next run, after cleanup moved the hidden file away. In
+// dry-run mode, entries an earlier module would have moved away (ops.WouldBeMoved) are not
+// counted either, so the plan matches a real run.
+func countEntries(ops *fsops.Ops, dir string, files []os.DirEntry) int {
+	n := 0
+	for _, f := range files {
+		name := f.Name()
+		if utils.IsHidden(name) || name == "@eaDir" || ops.WouldBeMoved(filepath.Join(dir, name)) {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 // cleanupDirectory moves all files of songFolder that its song txt does not reference to
-// extra-files/<relative song path>/.
+// extra-files/<relative song path>/. Folders without a readable song txt are left alone:
+// without the txt, nothing can be known to be unreferenced.
 func cleanupDirectory(cfg config.Config, ops *fsops.Ops, songFolder string) {
 	songFolder = filepath.Clean(songFolder)
+	txt, err := utils.FindSongTxt(songFolder)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			log.Debugf("Song folder %q has no song txt, leaving its files alone", songFolder)
+		} else {
+			reportUnreadable(ops, songFolder, err)
+		}
+		return
+	}
+	// fixtxt leaves txts it cannot decode unambiguously untouched (and reports them); their
+	// references may be stale or byte-encoded differently, so cleanup leaves the song alone
+	// too until the txt is fixed.
+	if raw, err := os.ReadFile(txt); err != nil {
+		reportUnreadable(ops, txt, err)
+		return
+	} else if d := utils.DecodeTxt(raw); d.Problem != "" {
+		log.Infof("Not cleaning up %q: its song txt has an encoding issue (%s)", songFolder, d.Problem)
+		return
+	}
 	files, err := os.ReadDir(songFolder)
 	if err != nil {
-		log.Errorf("reading song folder %q: %v", songFolder, err)
-		ops.Fail()
+		reportUnreadable(ops, songFolder, err)
 		return
 	}
 	for _, file := range files {
@@ -87,24 +129,36 @@ func cleanupDirectory(cfg config.Config, ops *fsops.Ops, songFolder string) {
 // handleFileCleanup moves a single file to the extra-files folder unless it must be kept.
 func handleFileCleanup(cfg config.Config, ops *fsops.Ops, songFolder string, file os.DirEntry) {
 	name := file.Name()
-	if !shouldConsider(file) || utils.IsFileReferenced(songFolder, name) {
+	src := filepath.Join(songFolder, name)
+	if !shouldConsider(songFolder, file) || ops.WouldBeMoved(src) {
 		return
 	}
-	src := filepath.Join(songFolder, name)
+	if !utf8.ValidString(name) {
+		// A CP1252 txt may reference this name byte-exactly, and once fixtxt converted the
+		// txt to UTF-8 the reference no longer matches. fixtxt lists the name in its
+		// encoding report; the user has to rename the file first.
+		log.Warnf("Not moving %q: its name is not valid UTF-8, rename it first", src)
+		return
+	}
+	if utils.IsFileReferenced(songFolder, name) || isUntaggedMedia(songFolder, name) {
+		return
+	}
 	rel := filepath.Join(cfg.RelPath(songFolder), name)
 	if _, err := ops.MoveInto(src, cfg.ExtraFilesDir(), rel); err != nil {
 		log.Errorf("moving unreferenced file to extra-files: %v", err)
 	}
 }
 
-// shouldConsider reports whether file is a candidate for removal at all. Folders, usdb
-// files and txt files (any case) are always left alone. Temp files left behind by an
-// interrupted run are not referenced, so they are moved to extra-files like any other
-// clutter; modules run one after another, so no temp file is in use while cleanup runs.
-func shouldConsider(file os.DirEntry) bool {
+// shouldConsider reports whether file is a candidate for removal at all. Only regular files
+// (or symlinks to them) are; folders, symlinks to folders, broken symlinks and special
+// files are left alone. usdb files and txt files (any case) are always kept. Temp files
+// left behind by an interrupted run are not referenced, so they are moved to extra-files
+// like any other clutter; modules run one after another, so no temp file is in use while
+// cleanup runs.
+func shouldConsider(dir string, file os.DirEntry) bool {
 	name := file.Name()
 	switch {
-	case file.IsDir():
+	case !utils.IsRegularFile(dir, file):
 		return false
 	case strings.EqualFold(filepath.Ext(name), ".usdb"):
 		return false
@@ -112,4 +166,41 @@ func shouldConsider(file os.DirEntry) bool {
 		return false
 	}
 	return true
+}
+
+// reportUnreadable logs an unreadable folder or song txt and counts it once per run. The
+// key matches the one used by song folder discovery, so a path every module runs into is
+// counted only once.
+func reportUnreadable(ops *fsops.Ops, path string, err error) {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		path = pathErr.Path
+	}
+	log.Errorf("Skipping unreadable %s: %v", path, err)
+	ops.FailOnce("unreadable:" + path)
+}
+
+// isUntaggedMedia reports whether name is an audio file of a song whose txt has no
+// #MP3/#AUDIO tag yet, a video file of a song without #VIDEO tag, or the image fixtxt
+// would use as cover (background) of a song without #COVER (#BACKGROUND) tag. fixtxt inserts that tag, unless it cannot choose between
+// several files; either way the file is the song's media, not clutter. (In dry-run mode
+// fixtxt's insertion is not on disk yet, so without this the plan would show the song's
+// main audio being moved away.)
+func isUntaggedMedia(songFolder, name string) bool {
+	isAudio, isVideo, isImage := utils.IsAudioFile(name), utils.IsVideoFile(name), utils.IsImageFile(name)
+	if !isAudio && !isVideo && !isImage {
+		return false
+	}
+	tags, err := utils.ReadSongTags(songFolder)
+	if err != nil {
+		return true // no readable song txt: never move media
+	}
+	if isImage {
+		return (tags["COVER"] == "" && utils.FindCoverImage(songFolder) == name) ||
+			(tags["BACKGROUND"] == "" && utils.FindBackgroundImage(songFolder) == name)
+	}
+	if isAudio && tags["MP3"] == "" && tags["AUDIO"] == "" {
+		return true
+	}
+	return isVideo && tags["VIDEO"] == ""
 }
