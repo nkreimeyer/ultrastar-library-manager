@@ -11,7 +11,8 @@ detection) and is kept for reference only.
 ## Requirements
 
 - Go 1.24+ to build
-- `ffmpeg` and `ffprobe` on `PATH` (only for the video `-m` and audio `-a` modules)
+- `ffmpeg` and `ffprobe` on `PATH` (only for the video `-m` and audio `-a` modules and the
+  media checks of `-k`; without ffprobe, `-k` checks only the txt files)
 
 ## Build
 
@@ -40,14 +41,19 @@ songs-sanitizer -s <song-dir> [flags]
 | `-n` | off | Dry run: log what would be changed and write the reports, but do not modify the library |
 | `-t` | **on** | Text-file module (`fixtxt`) |
 | `-c` | **on** | Cleanup module |
+| `-k` | off | Check module: report broken and suspicious songs (read-only) |
+| `-deep` | off | With `-k`: fully decode every referenced audio/video file with ffmpeg (slow) |
+| `-move-broken` | off | With `-k`: move songs with errors to `invalid/` |
 | `-m` | off | Video module (re-encoding) |
 | `-a` | off | Audio module (stereo downmix, normalization) |
 | `-v <level>` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 
 `-t` and `-c` are enabled by default. Bool flags are disabled with `=`, e.g. `-t=false`;
 `-t false` is rejected because it would stop flag parsing. Modules run in the order
-fixtxt → cleanup → video → audio. Exit codes: `0` success, `1` some operations failed (see
-the log and the summary line), `2` invalid command line.
+fixtxt → cleanup → check → video → audio. Exit codes: `0` success, `1` some operations
+failed (see the log and the summary line), `2` invalid command line (also `-deep` or
+`-move-broken` without `-k`). Broken songs found by `-k` are findings, not failed
+operations: they do not change the exit code.
 
 > **The tool modifies your library in place.** Run it with `-n` first and keep a backup.
 > The text and cleanup modules never delete anything: removed files and broken songs are
@@ -74,12 +80,36 @@ that fixtxt would fix). Folders an earlier module would move away are skipped, t
     folders with media file names that are not valid UTF-8 (cleanup leaves those songs alone too)
   - if a folder has several song `.txt` files, keeps the most recently modified one and moves the others to `extra-files/`
   - fixes or adds `#MP3`/`#AUDIO`, `#VIDEO`, `#COVER` and `#BACKGROUND` tags so they point
-    to existing files of the right kind, with the exact on-disk spelling
+    to existing files of the right kind, with the exact on-disk spelling. Cover and
+    background are told apart by file name hints (`[CO]`, `[BG]`, the words `cover`,
+    `background`, `bg`, unless they are part of the song's name) and then by shape (square
+    within 5 % = cover); JPEG, PNG, GIF, BMP and WebP headers are read
+  - removes repeated header tags, keeping the last one (the one UltraStar uses)
   - moves songs without an UltraStar song `.txt` or without any audio/video to `invalid/`
   - writes `missing_files.txt` (songs without cover / background)
 - **cleanup**
   - moves files not referenced by the song's `.txt` to `extra-files/`
   - moves folders with at most one file to `invalid/`
+- **check** (`-k`) – reports broken and suspicious songs in `check_report.json` and
+  `check_report.txt`. A song with at least one *error* is **broken** (it will not load or
+  play correctly), one with only *warnings* is **suspicious**. Read-only unless
+  `-move-broken` is given, which moves broken songs to `invalid/`. Songs whose txt has an
+  encoding problem are never moved, since their file references may only look broken.
+  - txt: missing `#TITLE`/`#ARTIST`/`#MP3` (or `#AUDIO`), invalid `#BPM`/`#GAP`
+    (decimal comma allowed), malformed note lines, no notes (fewer than 10 is a warning),
+    no `E`, beats going backwards (error) or overlapping notes (warning), inconsistent duet
+    sections, repeated tags (the last one counts, as in UltraStar)
+  - referenced files: missing or zero-length files (an error for the audio source, a
+    warning for video, cover, background and stems), unreadable media, an audio source
+    without an audio stream, unreadable cover/background images
+  - duration: notes ending more than 1 s after the end of the audio (wrong `#BPM`/`#GAP` or
+    truncated audio), lyrics ending before half of the song with more than 30 s left, a
+    video ending more than 10 s before the audio (honouring `#VIDEOGAP`), and invalid
+    `#START`/`#END`. Notes after `#END` are only a warning. mp3 lengths that ffprobe can only
+    estimate are measured by reading the packets first
+  - `-deep`: a full decode of every referenced file. A file ffmpeg cannot decode is an
+    error for the audio source; decode errors in the middle of a file (truncated or
+    damaged) are warnings
 - **video** (`-m`) – re-encodes videos to H.264 MP4 when potentially beneficial
   - re-encodes old or too new codecs and high-bitrate videos, downscales videos wider than
     1920 or taller than 1080 px
@@ -104,6 +134,7 @@ that fixtxt would fix). Folders an earlier module would move away are skipped, t
 <out>/missing_files.txt                      songs without cover / background, ambiguous #MP3
 <out>/encoding_issues.txt                    txts left untouched or needing manual repair
 <out>/potentiallyCorruptedFiles.txt          videos ffmpeg cannot read (-m)
+<out>/check_report.json, check_report.txt    broken and suspicious songs with reasons (-k), regenerated each run
 ```
 
 If a target already exists (e.g. from an earlier run), a suffix like ` (2)` is appended;

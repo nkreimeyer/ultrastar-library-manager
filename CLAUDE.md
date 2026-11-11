@@ -13,14 +13,19 @@ duplicate-folder detection exists today.
 ```
 src/main/songs-sanitizer/     Go module github.com/nkreimeyer/ultrastar-songs-sanitizer (go 1.24)
   main.go                     flags, validation, runs the modules in fixed order, summary + exit code
-  pipeline_test.go            fixtxt → cleanup integration tests (real run, dry-run, idempotence)
+  main_test.go                flag validation (-deep/-move-broken need -k), module order
+  pipeline_test.go            fixtxt → cleanup (→ check) integration tests (real run, dry-run, idempotence)
   config/                     Config{SongDir, OutDir, DryRun}: path validation, output layout, marker file
   fsops/                      the ONLY place that modifies files: dry-run, atomic writes, moves, stats
-  utils/txt.go                txt decoding (DecodeTxt), header tags, song-txt lookup, file references
+  utils/decode.go             txt decoding (DecodeTxt): UTF-16/UTF-8/#ENCODING/CP1250/CP1252, "when in doubt, Problem"
+  utils/txt.go                header tags, song-txt lookup, file references
   utils/folders.go            song folder discovery (GetAllSongFolders)
-  utils/utils.go              media type checks, cover/background detection
+  utils/utils.go              media type checks
+  utils/image.go              image headers (JPEG/PNG/GIF via stdlib, own BMP/WebP readers), cover/background choice
+  songtxt/                    UltraStar txt parser (tags, notes, breaks, duets, RELATIVE, B lines, BeatToMs); pure
   fixtxt/                     dedupe song txts, decode → UTF-8, fix #MP3/#AUDIO/#VIDEO/#COVER/#BACKGROUND
   cleanup/                    move unreferenced files to extra-files/, near-empty folders to invalid/
+  check/                      broken-song detection: analyze.go (pure), probe.go (ffprobe/ffmpeg), report.go
   fixvideos/                  ffmpeg: re-encode to H.264 mp4, downscale to fit 1920x1080, strip audio, flag corrupt files (tagged, idempotent)
   fixaudio/                   ffmpeg: downmix to stereo, peak-normalize to -3 dB, originals kept (tagged, idempotent)
   journal/                    content-fingerprint journal for media formats that cannot carry a marker tag
@@ -41,8 +46,9 @@ cd ../../../test-assets && ./mybin -s songs -n     # dry run; outputs go to test
 ```
 
 Flags: `-s <songdir>` (required) · `-o <outdir>` (default `sanitizer-output/` next to the resolved `-s`) ·
-`-n` dry run · `-t` fixtxt (default **on**) · `-c` cleanup (default **on**) · `-m` fixvideos ·
-`-a` fixaudio · `-v <level>`. Order is always fixtxt → cleanup → fixvideos → fixaudio. Bool
+`-n` dry run · `-t` fixtxt (default **on**) · `-c` cleanup (default **on**) · `-k` check
+(`-deep`, `-move-broken` only with `-k`) · `-m` fixvideos · `-a` fixaudio · `-v <level>`.
+Order is always fixtxt → cleanup → check → fixvideos → fixaudio. Bool
 flags are turned off with `-t=false`; leftover arguments (`-t false`) are rejected. Exit codes:
 0 ok, 1 some operation failed, 2 usage error. See README.md for user-facing details.
 
@@ -94,8 +100,16 @@ flags are turned off with `-t=false`; leftover arguments (`-t false`) are reject
 - Folders whose media or image names are not valid UTF-8 are skipped entirely by fixtxt
   (and their files are never moved by cleanup). They are reported until renamed, because a
   CP1252 txt may reference them byte-for-byte.
-- Cover vs. background is guessed from image shape (square = cover). JPEG, PNG and GIF
-  headers are read with `image.DecodeConfig`.
+- Cover vs. background (`utils.FindCoverImage`/`FindBackgroundImage`): filename hints first
+  (`[CO]`/`[BG]` strong; the words `cover`/`background`/`bg` weak and ignored when they are
+  part of the folder name, `#ARTIST` or `#TITLE`), then shape (`utils.IsSquareImage`:
+  within 5 %). An image is never both. Image headers come from `utils.ReadImageHeader`;
+  errors wrap `ErrUnsupportedImage` (TIFF, HEIF, …) or `ErrInvalidImage`.
+- check: `analyze` is a pure function over the parsed song and probed file info, so every
+  rule is table-tested without ffmpeg. Findings are not `ops.Fail`s and don't change the
+  exit code. Repeated tags resolve like UltraStar does (the last one wins; fixtxt's
+  `removeDuplicateTags` also keeps the last). Songs whose txt has a decode Problem are
+  reported but never moved by `-move-broken`.
 
 ### UltraStar format reminders
 
@@ -147,7 +161,15 @@ Still open (roadmap items):
   the side of keeping files. It will be replaced by the txt parser.
 - `-c:a copy` into mp4 fails for audio codecs mp4 cannot hold (PCM/WMA inside `.avi`); the
   failure is logged and the original kept.
-- Cover vs. background uses exact squareness (600×598 counts as a background).
+- check: `#ARTIST`/`#TITLE` missing is an error (UltraStar Deluxe refuses such songs), so
+  `-move-broken` would move them. fixtxt does not fill them in from the folder name yet.
+- check: without `-xerror`, ffmpeg exits 0 on truncated/damaged files, so `-deep` reports
+  them as `decode-warning`; `decode-error` only fires when ffmpeg cannot open the file.
+- check: `check_report.*` is regenerated each run, so moves done by `-move-broken` are only
+  in that run's report and the log (an undo journal is in item 4).
+- check: an empty folder inside a category is reported as `no-song-txt` (error).
+- fixaudio drops cover attachments of `.mka` files (kept in `originals/`). Codecs it cannot
+  re-encode as themselves (DTS, TrueHD) are skipped with a warning.
 - `-t` and `-c` are on by default.
 
 ## Roadmap
@@ -231,7 +253,22 @@ Also:
 
 ### 3. Detect broken songs in more ways
 
-Today a song is "broken" only if it has ≤1 file, no txt, or no audio and no video.
+**Done** (2026-11) as the `check` module (`-k`, report-only; `-move-broken` opt-in, `-deep`
+opt-in) on top of the new `songtxt` parser:
+- [x] txt structure: tags, `#BPM`/`#GAP` (decimal comma), notes, `E`, duet sections
+  (`P1`/`P2`/`P3`), monotonic beats per section, overlaps per singer, RELATIVE and `B` lines;
+- [x] durations: notes past the audio end (estimated mp3 lengths are measured first), lyrics
+  ending early, video too short (with `#VIDEOGAP`), `#START`/`#END`;
+- [x] media integrity: missing/zero-length/unreadable files, missing streams, `-deep` full
+  decode; `.mka` audio;
+- [x] images: own BMP/WebP header readers, 5 % squareness tolerance, filename hints;
+- [x] `check_report.json` + `check_report.txt` with a reason code per finding.
+
+Still open from this item: the other modules still write their own reports
+(`missing_files.txt`, `encoding_issues.txt`, `potentiallyCorruptedFiles.txt`), and fixtxt/cleanup
+still move structurally broken songs (no txt, no media) to `invalid/` by default.
+
+Original plan:
 
 - Parse the txt properly: `#BPM` present and > 0 (decimal comma allowed), `#GAP` parseable,
   at least N note lines, `E` terminator, consistent `P1`/`P2` sections for duets, beats
@@ -290,7 +327,8 @@ Next slices:
   for ffmpeg, and removing the temp file on cancel.
 - Parse each song's txt **once** into a `Song` struct (tags with their original case and
   order, note lines, the chosen txt file) that all modules share. This replaces substring
-  reference checks and lets dry-run apply earlier modules' planned txt changes.
+  reference checks and lets dry-run apply earlier modules' planned txt changes. The parser
+  exists (`songtxt`, used by check); fixtxt, cleanup and the media modules don't use it yet.
 - CLI: subcommands (`fixtxt`, `cleanup`, `video`, `audio`, `dedupe`, `check`, `organize`) or
   at least opt-in destructive modules, progress output (n/total, ETA), and an undo journal
   for moves and txt edits (not for re-encoded media, see "Design decision").
