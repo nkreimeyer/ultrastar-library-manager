@@ -137,8 +137,9 @@ func TestHasTag(t *testing.T) {
 }
 
 func TestRemoveDuplicateTags(t *testing.T) {
-	in := []string{"#TITLE:A\n", "#MP3:a.mp3\n", "#mp3:b.mp3\n", "#VIDEO:v.mp4\n", "#VIDEOGAP:1\n", ": 0 1 0 x\n"}
-	want := []string{"#TITLE:A\n", "#MP3:a.mp3\n", "#VIDEO:v.mp4\n", "#VIDEOGAP:1\n", ": 0 1 0 x\n"}
+	// The last occurrence wins, as in UltraStar Deluxe: #BPM:300 is the tempo that plays.
+	in := []string{"#TITLE:A\n", "#BPM:150\n", "#MP3:a.mp3\n", "#mp3:b.mp3\n", "#VIDEO:v.mp4\n", "#VIDEOGAP:1\n", "#BPM:300\n", ": 0 1 0 x\n"}
+	want := []string{"#TITLE:A\n", "#mp3:b.mp3\n", "#VIDEO:v.mp4\n", "#VIDEOGAP:1\n", "#BPM:300\n", ": 0 1 0 x\n"}
 	if got := removeDuplicateTags(in); !slices.Equal(got, want) {
 		t.Errorf("removeDuplicateTags = %q, want %q", got, want)
 	}

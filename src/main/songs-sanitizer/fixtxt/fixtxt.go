@@ -601,23 +601,30 @@ func checkDimensionsOfImagesTagged(rootDir string, info SongInfo) (bool, bool, S
 	return forceUpdateCover, forceUpdateBackground, info
 }
 
-// removeDuplicateTags drops every repetition of a header tag, keeping its first line.
-// Tag names are compared case-insensitively ("#mp3:" duplicates "#MP3:").
+// removeDuplicateTags drops every repetition of a header tag, keeping its LAST line:
+// UltraStar Deluxe and Performous read the header top to bottom and let a later tag
+// overwrite an earlier one, so the last value is the one that plays. Tag names are
+// compared case-insensitively ("#mp3:" duplicates "#MP3:").
 func removeDuplicateTags(lines []string) []string {
-	seen := make(map[string]bool)
-	result := make([]string, 0, len(lines))
-	for _, line := range lines {
+	tagKey := func(line string) (string, bool) {
 		name, _, isTag := strings.Cut(line, ":")
 		if !strings.HasPrefix(line, "#") || !isTag {
-			result = append(result, line)
+			return "", false
+		}
+		return strings.ToUpper(name), true
+	}
+	last := make(map[string]int)
+	for i, line := range lines {
+		if key, ok := tagKey(line); ok {
+			last[key] = i
+		}
+	}
+	result := make([]string, 0, len(lines))
+	for i, line := range lines {
+		if key, ok := tagKey(line); ok && last[key] != i {
+			log.Debugf("Removing duplicate tag line %q (a later one overrides it)", strings.TrimSpace(line))
 			continue
 		}
-		key := strings.ToUpper(name)
-		if seen[key] {
-			log.Debugf("Removing duplicate tag line %q", strings.TrimSpace(line))
-			continue
-		}
-		seen[key] = true
 		result = append(result, line)
 	}
 	return result
