@@ -225,6 +225,9 @@ func buildFFmpegArgs(input, output string, pl encodePlan) []string {
 	if pl.reEncode {
 		args = append(args,
 			"-c:v", "libx264",
+			// 8-bit 4:2:0: libx264 keeps the source format otherwise, and High 10 or
+			// 4:4:4 H.264 (from 10-bit HEVC/VP9) plays on fewer devices than the source.
+			"-pix_fmt", "yuv420p",
 			"-crf", strconv.Itoa(pl.crf), // Constant Rate Factor (18-28, lower = higher quality)
 			"-maxrate", "2.5M", // Maximum bitrate cap
 			"-bufsize", "5.0M", // Buffer size (typically 2x maxrate)
@@ -236,6 +239,9 @@ func buildFFmpegArgs(input, output string, pl encodePlan) []string {
 
 	if pl.resize {
 		args = append(args, "-vf", scaleFilter())
+	} else if pl.reEncode {
+		// libx264 refuses odd sizes in 4:2:0 (853x480 DivX). No upscaling, unlike scaleFilter.
+		args = append(args, "-vf", evenFilter)
 	}
 
 	args = append(args, markerArgs(output)...)
@@ -250,18 +256,22 @@ func scaleFilter() string {
 	return fmt.Sprintf("scale=w=%d:h=%d:force_original_aspect_ratio=decrease:force_divisible_by=2", maxWidth, maxHeight)
 }
 
+// evenFilter rounds odd video dimensions down to even ones, which libx264 requires.
+const evenFilter = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+
 // needsResize reports whether a width x height video exceeds the size limits.
 func needsResize(width, height int) bool {
 	return width > maxWidth || height > maxHeight
 }
 
-// fitWithin returns the size of a width x height video after scaleFilter.
+// fitWithin returns the size of a width x height video after scaleFilter (or evenFilter,
+// if it is not downscaled).
 func fitWithin(width, height int) (int, int) {
+	even := func(v float64) int { return max(2, int(v)&^1) }
 	if !needsResize(width, height) {
-		return width, height
+		return even(float64(width)), even(float64(height))
 	}
 	f := min(float64(maxWidth)/float64(width), float64(maxHeight)/float64(height))
-	even := func(v float64) int { return max(2, int(v)&^1) }
 	return even(float64(width) * f), even(float64(height) * f)
 }
 
@@ -338,10 +348,19 @@ func (p *processor) processVideoFile(dir, file string) {
 		return
 	}
 
-	if pl.renames(file) && !isVideoReferenced(p.ops, dir, file) {
-		// Converting changes the file name, which only works if the txt references it.
-		log.Warnf("Not converting %s to %s: the song txt's #VIDEO tag does not reference it", file, pl.outputExt(file))
-		return
+	if pl.renames(file) {
+		if !isVideoReferenced(p.ops, dir, file) {
+			// Converting changes the file name, which only works if the txt references it.
+			log.Warnf("Not converting %s to %s: the song txt's #VIDEO tag does not reference it", file, pl.outputExt(file))
+			return
+		}
+		// Checked before encoding, so a blocked conversion is not encoded and discarded on
+		// every run, and the dry run plans what the real run does. In a dry run, a file an
+		// earlier module would move away does not count (in the real run it is gone).
+		if newPath := renamedPath(file, pl); p.exists(newPath) {
+			log.Warnf("Cannot convert %s: %s already exists, keeping the original", file, newPath)
+			return
+		}
 	}
 
 	if p.cfg.DryRun {
@@ -353,6 +372,23 @@ func (p *processor) processVideoFile(dir, file string) {
 		return
 	}
 
+	p.encode(dir, file, pl)
+}
+
+// renamedPath returns the path file gets when pl changes its extension.
+func renamedPath(file string, pl encodePlan) string {
+	return strings.TrimSuffix(file, filepath.Ext(file)) + pl.outputExt(file)
+}
+
+// exists reports whether path exists and no earlier module would move it away in a dry run.
+func (p *processor) exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil && !p.ops.WouldBeMoved(path)
+}
+
+// encode runs ffmpeg on file according to pl into a temp file next to it and replaces the
+// original with the result (see replaceOriginal).
+func (p *processor) encode(dir, file string, pl encodePlan) {
 	tmp, err := fsops.TempFileNear(file, pl.outputExt(file))
 	if err != nil {
 		log.Errorf("creating temp file for %s: %v", file, err)
@@ -377,17 +413,19 @@ func (p *processor) processVideoFile(dir, file string) {
 		return
 	}
 
-	p.replaceOriginal(dir, file, tmp)
+	p.replaceOriginal(dir, file, tmp, pl)
 }
 
-// replaceOriginal replaces file with the processed tmp file. A larger result is discarded
-// and the original marked as checked. If the extension changed (not only its case), tmp is
+// replaceOriginal replaces file with the processed tmp file, the output of pl. A larger
+// result is discarded and the original marked as checked; if pl also strips the audio, the
+// audio is stripped by a stream copy instead (marking the original would keep its audio
+// forever). If the extension changed (not only its case), tmp is
 // renamed to the new name, the song txt is updated to reference it and the original is
 // deleted: like an in-place replacement, a conversion is not undoable (keeping originals
 // would make the library very large). If anything goes wrong before the txt points to the
 // new file, the original stays in place and keeps being referenced, so the song keeps
 // working.
-func (p *processor) replaceOriginal(dir, file, tmp string) {
+func (p *processor) replaceOriginal(dir, file, tmp string, pl encodePlan) {
 	discard := func() { os.Remove(tmp) } // our own temp file, not a library file
 
 	inInfo, err := os.Stat(file)
@@ -405,8 +443,13 @@ func (p *processor) replaceOriginal(dir, file, tmp string) {
 		return
 	}
 	if outInfo.Size() > inInfo.Size() {
-		log.Infof("Processed video is larger than the original (%d > %d bytes), keeping %s", outInfo.Size(), inInfo.Size(), file)
 		discard()
+		if pl.reEncode && pl.removeAudio {
+			log.Infof("Re-encoded video is larger than the original (%d > %d bytes), only stripping the audio of %s", outInfo.Size(), inInfo.Size(), file)
+			p.encode(dir, file, encodePlan{removeAudio: true})
+			return
+		}
+		log.Infof("Processed video is larger than the original (%d > %d bytes), keeping %s", outInfo.Size(), inInfo.Size(), file)
 		p.markChecked(file)
 		return
 	}
@@ -427,7 +470,7 @@ func (p *processor) replaceOriginal(dir, file, tmp string) {
 	p.renameMu.Lock()
 	defer p.renameMu.Unlock()
 	newPath := strings.TrimSuffix(file, filepath.Ext(file)) + filepath.Ext(tmp)
-	if _, err := os.Lstat(newPath); err == nil {
+	if _, err := os.Lstat(newPath); err == nil { // created since processVideoFile checked
 		log.Warnf("Cannot convert %s: %s already exists, keeping the original", file, newPath)
 		discard()
 		return
@@ -467,9 +510,17 @@ func (p *processor) rememberProcessed(file string) {
 	if canCarryMarker(file) {
 		return
 	}
-	if err := p.journal.AddAndSave(journalProcessed, file, p.ops); err != nil {
+	p.record(journalProcessed, file)
+}
+
+// record adds file to the media journal as kind and saves the journal. A failing Save is
+// counted by ops (WriteReport); a failing Add (fingerprinting the file) is not.
+func (p *processor) record(kind, file string) {
+	if err := p.journal.Add(kind, file); err != nil {
 		log.Errorf("Recording %s in the media journal: %v", file, err)
 		p.ops.Fail()
+	} else if err := p.journal.Save(p.ops); err != nil {
+		log.Errorf("Saving the media journal after %s: %v", file, err) // counted by ops
 	}
 }
 
@@ -485,10 +536,7 @@ func (p *processor) markChecked(file string) {
 		}
 		log.Infof("Could not tag %s (%v), recording it in the media journal instead", file, err)
 	}
-	if err := p.journal.AddAndSave(journalChecked, file, p.ops); err != nil {
-		log.Errorf("Recording %s in the media journal: %v", file, err)
-		p.ops.Fail()
-	}
+	p.record(journalChecked, file)
 }
 
 // tagByRemux replaces file with a stream copy of all its streams that carries markerTag.
@@ -519,7 +567,7 @@ func (p *processor) tagByRemux(file string) error {
 	case err != nil:
 	case !got.tagged:
 		err = errors.New("the remux does not carry the tag")
-	case math.Abs(got.duration-orig.duration) > durationTolerance:
+	case !durationsMatch(got.duration, orig.duration):
 		err = fmt.Errorf("the remux is %.3f s long instead of %.3f s", got.duration, orig.duration)
 	}
 	if err != nil {
@@ -527,6 +575,12 @@ func (p *processor) tagByRemux(file string) error {
 		return err
 	}
 	return p.ops.Replace(tmp, file) // removes tmp on failure
+}
+
+// durationsMatch reports whether two durations (in seconds) differ by at most
+// durationTolerance.
+func durationsMatch(a, b float64) bool {
+	return math.Abs(a-b) <= durationTolerance
 }
 
 // isVideoReferenced reports whether the #VIDEO tag of the song txt in dir names file
@@ -542,7 +596,7 @@ func isVideoReferenced(ops *fsops.Ops, dir, file string) bool {
 
 // needsRemoveAudio reports whether the audio stream of the video should be removed: only
 // if the video has an audio stream and the song's #AUDIO/#MP3 tag names a separate,
-// existing, visible audio file. A song whose #MP3 points to the video itself, to a hidden
+// existing, visible, non-empty audio file. A song whose #MP3 points to the video itself, to a hidden
 // file (e.g. "._v.mp3" left by old versions) or to nothing keeps the video's audio,
 // because it may be the only audio track of the song. The txt is read through ops, so in
 // a dry run the #MP3 fixtxt would write counts.
@@ -561,6 +615,10 @@ func needsRemoveAudio(ops *fsops.Ops, dir, file string) bool {
 	}
 	onDisk, _, found := utils.ResolveFileName(dir, audioRef)
 	if !found || utils.IsHidden(onDisk) || !utils.IsAudioFile(onDisk) || onDisk == filepath.Base(file) {
+		return false
+	}
+	// An empty file (e.g. a failed download) is no audio source either.
+	if info, err := os.Stat(filepath.Join(dir, onDisk)); err != nil || info.Size() == 0 {
 		return false
 	}
 
@@ -583,23 +641,30 @@ func getNeedsReEncode(file, codec string) bool {
 		return false
 	}
 
-	codecReason := slices.Contains(codecsNeedReencode, codec)
-
-	// An unknown bitrate is not treated as high.
-	bitrate, err := getVideoBitrate(file)
-	if err != nil {
-		log.Debugf("Error getting bitrate for %s: %v", file, err)
+	bitrate, bitrateErr := getVideoBitrate(file)
+	if bitrateErr != nil {
+		log.Debugf("Error getting bitrate for %s: %v", file, bitrateErr)
 	}
-	highBitrate := err == nil && bitrate > bitrateThreshold
-
 	// estimate the size of the reencoded video based on its resolution, framerate and duration
-	// and determine if it's worth reencoding based on size of input file
-	sizeOutput, err := estimatedSizeOfReEncodedVideo(file)
-	if err != nil {
-		log.Debugf("Error estimating re-encoded size for %s: %v", file, err)
+	estimate, estimateErr := estimatedSizeOfReEncodedVideo(file)
+	if estimateErr != nil {
+		log.Debugf("Error estimating re-encoded size for %s: %v", file, estimateErr)
+	}
+	return reEncodeWorthIt(codec, bitrate, bitrateErr, estimate, estimateErr, infoInput.Size())
+}
+
+// reEncodeWorthIt decides whether a video of the given codec, bitrate (bit/s) and size
+// (bytes) should be re-encoded, given the estimated size of the re-encode: only if its
+// codec is in codecsNeedReencode or its bitrate is above bitrateThreshold, and the
+// estimate is smaller than the video. An unknown bitrate is not treated as high; without
+// an estimate, the codec alone decides.
+func reEncodeWorthIt(codec string, bitrate int, bitrateErr error, estimate int64, estimateErr error, size int64) bool {
+	codecReason := slices.Contains(codecsNeedReencode, codec)
+	if estimateErr != nil {
 		return codecReason
 	}
-	return (highBitrate || codecReason) && sizeOutput < infoInput.Size()
+	highBitrate := bitrateErr == nil && bitrate > bitrateThreshold
+	return (highBitrate || codecReason) && estimate < size
 }
 
 // The function estimates the size of a re-encoded video file based on its duration, resolution, and
@@ -615,23 +680,35 @@ func estimatedSizeOfReEncodedVideo(file string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if width <= 0 || height <= 0 {
-		return 0, fmt.Errorf("invalid resolution %dx%d", width, height)
+	width, height, err = encodedResolution(width, height)
+	if err != nil {
+		return 0, err
 	}
-	// The size the video is scaled down to, if it is too large.
-	width, height = fitWithin(width, height)
 
 	// Get video framerate
 	framerate, err := getVideoFramerate(file)
 	if err != nil {
 		return 0, err
 	}
-	// Estimate the bitrate of the reencoded video with 1.8mbps as a base for 1080p 30fps
-	// and scale it down for lower resolutions and framerates
+	return estimateSize(width, height, framerate, duration), nil
+}
+
+// encodedResolution returns the size a width x height video is encoded at (scaled down
+// if it is too large, see fitWithin). A dimension of 0 or less (unknown) is an error.
+func encodedResolution(width, height int) (int, int, error) {
+	if width <= 0 || height <= 0 {
+		return 0, 0, fmt.Errorf("invalid resolution %dx%d", width, height)
+	}
+	w, h := fitWithin(width, height)
+	return w, h, nil
+}
+
+// estimateSize returns the estimated size in bytes of a width x height H.264 video at
+// framerate fps lasting duration seconds: 1.8 Mbit/s for 1080p at 30 fps, scaled by the
+// number of pixels per second.
+func estimateSize(width, height int, framerate, duration float64) int64 {
 	bitrate := 1800000 * (float64(width) / 1920) * (float64(height) / 1080) * (framerate / 30)
-	// Calculate the estimated size in bytes
-	size := int64(bitrate * duration / 8)
-	return size, nil
+	return int64(bitrate * duration / 8)
 }
 
 // flagCorrupted records a video ffmpeg could not read for the report.
@@ -739,45 +816,85 @@ func getVideoCodec(file string) (string, error) {
 	return codec, nil
 }
 
-// The `getVideoBitrate` function retrieves the bitrate of a video file using ffprobe and calculates it
-// if not directly available.
+// getVideoBitrate returns the bitrate of the first video stream of file in bit/s. Matroska
+// and WebM store no per-stream bitrate; then the BPS statistics tag (mkvmerge) is used, or
+// the sizes of the video packets are summed up. The container bitrate is never used: it
+// includes the audio, so a large audio track would make a low-bitrate video look high.
 func getVideoBitrate(file string) (int, error) {
-	cmd := exec.Command("ffprobe", "-v", "error", selectStreams, "v:0", showEntries, "stream=bit_rate", "-of", "csv=p=0", "--", filepath.Clean(file))
-	output, err := cmd.Output()
+	out, err := exec.Command("ffprobe", "-v", "error", selectStreams, "v:0", showEntries, "stream=bit_rate:stream_tags", "-of", "json", "--", filepath.Clean(file)).Output()
 	if err != nil {
 		return 0, err
 	}
-	bitrateStr := strings.TrimSpace(string(output))
-	if bitrateStr == "N/A" {
-		// calculate bitrate from duration and file size using ffprobe
-		cmd = exec.Command("ffprobe", "-v", "error", showEntries, "format=duration,size", "-of", "csv=p=0", "--", filepath.Clean(file))
-		output, err = cmd.Output()
-		if err != nil {
-			return 0, err
-		}
-		fields := strings.Split(strings.TrimSpace(string(output)), ",")
-		if len(fields) != 2 {
-			return 0, fmt.Errorf("unexpected output format: %s", output)
-		}
-		duration, err := strconv.ParseFloat(fields[0], 64)
-		if err != nil {
-			return 0, err
-		}
-		if duration <= 0 {
-			return 0, fmt.Errorf("invalid duration %v", duration)
-		}
-		size, err := strconv.ParseInt(fields[1], 10, 64)
-		if err != nil {
-			return 0, err
-		}
-		bitrate := int(float64(size) * 8 / duration)
+	if bitrate, ok := parseStreamBitrate(out); ok {
 		return bitrate, nil
 	}
-	bitrate, err := strconv.Atoi(bitrateStr)
+	duration, err := getVideoDuration(file)
 	if err != nil {
 		return 0, err
 	}
-	return bitrate, nil
+	out, err = exec.Command("ffprobe", "-v", "error", selectStreams, "v:0", showEntries, "packet=size", "-of", "csv=p=0", "--", filepath.Clean(file)).Output()
+	if err != nil {
+		return 0, err
+	}
+	return packetBitrate(out, duration)
+}
+
+// parseStreamBitrate returns the bitrate of the stream in ffprobe's JSON output for
+// "stream=bit_rate:stream_tags": its bit_rate, else its BPS tag ("BPS", "BPS-eng"). ok is
+// false if neither is a positive number.
+func parseStreamBitrate(data []byte) (bitrate int, ok bool) {
+	var probe struct {
+		Streams []struct {
+			BitRate string            `json:"bit_rate"`
+			Tags    map[string]string `json:"tags"`
+		} `json:"streams"`
+	}
+	if json.Unmarshal(data, &probe) != nil || len(probe.Streams) == 0 {
+		return 0, false
+	}
+	st := probe.Streams[0]
+	if b, err := strconv.Atoi(st.BitRate); err == nil && b > 0 {
+		return b, true
+	}
+	// Plain "BPS" first, then the "BPS-<lang>" tags in sorted order, so that the result
+	// does not depend on map iteration order.
+	var keys, langKeys []string
+	for k := range st.Tags {
+		switch {
+		case strings.EqualFold(k, "BPS"):
+			keys = append(keys, k)
+		case strings.HasPrefix(strings.ToUpper(k), "BPS-"):
+			langKeys = append(langKeys, k)
+		}
+	}
+	slices.Sort(keys)
+	slices.Sort(langKeys)
+	for _, k := range append(keys, langKeys...) {
+		if b, err := strconv.Atoi(strings.TrimSpace(st.Tags[k])); err == nil && b > 0 {
+			return b, true
+		}
+	}
+	return 0, false
+}
+
+// packetBitrate returns the bitrate of a stream from its packet sizes (ffprobe
+// "packet=size" csv output, one size in bytes per line) and its duration in seconds.
+func packetBitrate(sizes []byte, duration float64) (int, error) {
+	if duration <= 0 {
+		return 0, fmt.Errorf("invalid duration %v", duration)
+	}
+	var total int64
+	for _, line := range strings.Fields(string(sizes)) {
+		size, err := strconv.ParseInt(strings.TrimSuffix(line, ","), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("unexpected packet size %q", line)
+		}
+		total += size
+	}
+	if total == 0 {
+		return 0, errors.New("no video packets")
+	}
+	return int(float64(total) * 8 / duration), nil
 }
 
 func getVideoResolution(file string) (int, int, error) {
@@ -819,22 +936,27 @@ func getVideoFramerate(file string) (float64, error) {
 		filepath.Clean(file))
 	output, err := cmd.Output()
 	if err != nil {
-		return 30.0, err
+		return 0, err
 	}
-	framerate := strings.Split(strings.TrimSpace(string(output)), "/")
-	if len(framerate) != 2 {
-		return 30.0, fmt.Errorf("unexpected framerate format: %s", output)
+	return parseFramerate(string(output))
+}
+
+// parseFramerate parses ffprobe's r_frame_rate ("30000/1001").
+func parseFramerate(output string) (float64, error) {
+	num, den, ok := strings.Cut(strings.TrimSpace(output), "/")
+	if !ok {
+		return 0, fmt.Errorf("unexpected framerate format: %s", output)
 	}
-	numerator, err := strconv.Atoi(framerate[0])
+	numerator, err := strconv.Atoi(num)
 	if err != nil {
-		return 30.0, err
+		return 0, err
 	}
-	denominator, err := strconv.Atoi(framerate[1])
+	denominator, err := strconv.Atoi(den)
 	if err != nil {
-		return 30.0, err
+		return 0, err
 	}
-	if denominator == 0 {
-		return 30.0, fmt.Errorf("invalid framerate %s", output)
+	if numerator <= 0 || denominator <= 0 {
+		return 0, fmt.Errorf("invalid framerate %s", output)
 	}
 	return float64(numerator) / float64(denominator), nil
 }

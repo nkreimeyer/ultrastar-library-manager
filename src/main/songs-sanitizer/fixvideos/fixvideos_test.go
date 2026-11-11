@@ -19,9 +19,10 @@ import (
 
 func TestBuildFFmpegArgs(t *testing.T) {
 	head := []string{"-hide_banner", "-nostdin", "-loglevel", "error", "-i", "/lib/song/v.avi", "-map", "0:v:0"}
-	x264 := []string{"-c:v", "libx264", "-crf", "23", "-maxrate", "2.5M", "-bufsize", "5.0M", "-preset", "fast"}
+	x264 := []string{"-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23", "-maxrate", "2.5M", "-bufsize", "5.0M", "-preset", "fast"}
 	tail := []string{"-metadata", "SANITIZER_VIDEO=processed", "-movflags", "+use_metadata_tags", "-y", "/lib/song/.v.tmp.mp4"}
 	scale := []string{"-vf", "scale=w=1920:h=1080:force_original_aspect_ratio=decrease:force_divisible_by=2"}
+	even := []string{"-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"}
 
 	tests := []struct {
 		name   string
@@ -32,7 +33,12 @@ func TestBuildFFmpegArgs(t *testing.T) {
 		{
 			name: "re-encode keeps audio",
 			plan: encodePlan{reEncode: true, crf: 23},
-			want: slices.Concat(head, []string{"-map", "0:a?", "-c:a", "copy"}, x264, tail),
+			want: slices.Concat(head, []string{"-map", "0:a?", "-c:a", "copy"}, x264, even, tail),
+		},
+		{
+			name: "re-encode at crf 28 without resize gets even dimensions",
+			plan: encodePlan{reEncode: true, crf: 28, removeAudio: true},
+			want: slices.Concat(head, []string{"-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "28"}, x264[6:], even, tail),
 		},
 		{
 			name: "strip audio only copies video",
@@ -78,20 +84,26 @@ func TestEncodePlanOutputExt(t *testing.T) {
 }
 
 func TestFitWithin(t *testing.T) {
-	tests := []struct{ w, h, wantW, wantH int }{
-		{1920, 1080, 1920, 1080},
-		{1280, 720, 1280, 720},
-		{3840, 2160, 1920, 1080},
-		{2560, 1080, 1920, 810}, // ultrawide: limited by the width
-		{1080, 1920, 606, 1080}, // portrait: limited by the height, even width
-		{1440, 1440, 1080, 1080},
+	tests := []struct {
+		w, h, wantW, wantH int
+		resize             bool
+	}{
+		{1920, 1080, 1920, 1080, false},
+		{1280, 720, 1280, 720, false},
+		{853, 481, 852, 480, false}, // odd sizes are rounded down to even (evenFilter)
+		{1921, 1080, 1920, 1078, true},
+		{1920, 1081, 1918, 1080, true},
+		{3840, 2160, 1920, 1080, true},
+		{2560, 1080, 1920, 810, true}, // ultrawide: limited by the width
+		{1080, 1920, 606, 1080, true}, // portrait: limited by the height, even width
+		{1440, 1440, 1080, 1080, true},
 	}
 	for _, tt := range tests {
 		gotW, gotH := fitWithin(tt.w, tt.h)
 		if gotW != tt.wantW || gotH != tt.wantH {
 			t.Errorf("fitWithin(%d, %d) = %dx%d, want %dx%d", tt.w, tt.h, gotW, gotH, tt.wantW, tt.wantH)
 		}
-		if got := needsResize(tt.w, tt.h); got != (tt.w != tt.wantW || tt.h != tt.wantH) {
+		if got := needsResize(tt.w, tt.h); got != tt.resize {
 			t.Errorf("needsResize(%d, %d) = %v", tt.w, tt.h, got)
 		}
 	}
