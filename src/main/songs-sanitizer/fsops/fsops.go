@@ -52,6 +52,10 @@ type Ops struct {
 	plannedMu    sync.Mutex
 	plannedMoves map[string]bool
 	runTargets   []string // targets of the (real or planned) moves of this run
+	// plannedPresent: in dry-run mode, the paths a planned move took away (false) or
+	// put in place (true), in the order the moves were planned. MoveTo uses it to see
+	// the library as a real run would have left it so far (see dryRunExists).
+	plannedPresent map[string]bool
 
 	// writesMu guards plannedWrites: in dry-run mode, the content of every planned write
 	// that changes a file (cleaned path -> data), so that later modules read the txts as
@@ -64,7 +68,7 @@ type Ops struct {
 // change is logged with a "[dry-run]" prefix instead.
 func New(dryRun bool) *Ops {
 	return &Ops{DryRun: dryRun, reserved: map[string]bool{}, plannedMoves: map[string]bool{},
-		plannedWrites: map[string][]byte{}, failedKeys: map[string]bool{}}
+		plannedPresent: map[string]bool{}, plannedWrites: map[string][]byte{}, failedKeys: map[string]bool{}}
 }
 
 // Stats returns a snapshot of the counters.
@@ -254,6 +258,148 @@ func (o *Ops) MoveInto(src, dstDir, relPath string) (string, error) {
 	return dst, nil
 }
 
+// MoveTo moves src (a file or a folder) to exactly dst, creating the parent folders of
+// dst as needed. Unlike MoveInto it never picks another name and never merges: it fails
+// if dst exists (Lstat, so a dangling symlink counts) or is reserved by a concurrent move
+// of this run. Moves across file systems fall back to copy + delete.
+//
+// In dry-run mode nothing is touched; the move is logged, counted and recorded, so that
+// later MoveTo calls of the same run see the library as a real run would have left it:
+// a planned source counts as gone (WouldBeMoved, and ReadFile below it) and a planned
+// target as taken. A path moved away and then refilled by a planned MoveTo counts as
+// present again (the ordered moves of organize, e.g. breaking a cycle through a
+// temporary name), but files below such a refilled path are not simulated.
+func (o *Ops) MoveTo(src, dst string) error {
+	src, dst = filepath.Clean(src), filepath.Clean(dst)
+	if !o.exists(src) {
+		return o.fail(fmt.Errorf("moving %s -> %s: %w", src, dst, fs.ErrNotExist))
+	}
+	o.reserveMu.Lock()
+	switch {
+	case o.reserved[dst]:
+		o.reserveMu.Unlock()
+		return o.fail(fmt.Errorf("moving %s -> %s: target is reserved by another move", src, dst))
+	case o.exists(dst):
+		o.reserveMu.Unlock()
+		return o.fail(fmt.Errorf("moving %s -> %s: target exists", src, dst))
+	}
+	o.reserved[dst] = true
+	o.reserveMu.Unlock()
+	defer o.release(dst)
+
+	if o.DryRun {
+		o.markPlanned(src, dst)
+		log.Infof("[dry-run] would move %s -> %s", src, dst)
+		o.moved.Add(1)
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return o.fail(fmt.Errorf("creating %s: %w", filepath.Dir(dst), err))
+	}
+	if err := move(src, dst); err != nil {
+		return o.fail(fmt.Errorf("moving %s -> %s: %w", src, dst, err))
+	}
+	log.Infof("Moved %s -> %s", src, dst)
+	o.recordTarget(dst)
+	o.moved.Add(1)
+	return nil
+}
+
+// exists reports whether path exists as this run has left it so far: on disk outside
+// dry-run mode, and in dry-run mode after the planned moves (see MoveTo).
+func (o *Ops) exists(path string) bool {
+	if o.DryRun {
+		o.plannedMu.Lock()
+		present, known := o.plannedPresent[path]
+		o.plannedMu.Unlock()
+		if known {
+			return present
+		}
+		if o.WouldBeMoved(path) {
+			return false
+		}
+	}
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+// AppendJournal appends line (a newline is added if it lacks one) to the journal file
+// path, creating the file and its folder if needed, and fsyncs it, so a completed step is
+// on disk before the next one starts. It is meant for journals in the output dir, never
+// for library files. In dry-run mode it does nothing: a dry run must leave no journal
+// entries behind. A crash can leave a truncated last line, which readers must skip.
+func (o *Ops) AppendJournal(path string, line []byte) error {
+	if o.DryRun {
+		return nil
+	}
+	if !bytes.HasSuffix(line, []byte("\n")) {
+		line = append(bytes.Clone(line), '\n')
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return o.fail(fmt.Errorf("creating journal dir for %s: %w", path, err))
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+	if err != nil {
+		return o.fail(fmt.Errorf("opening journal %s: %w", path, err))
+	}
+	_, werr := f.Write(line)
+	if err := errors.Join(werr, f.Sync(), f.Close()); err != nil {
+		return o.fail(fmt.Errorf("appending to journal %s: %w", path, err))
+	}
+	return nil
+}
+
+// RemoveEmptyDir removes the folder path if it is empty and reports whether it did (or,
+// in dry-run mode, would). It is meant for undoing a run: removing the folders a MoveTo
+// of that run created as parents. It never removes data: os.Remove refuses a folder that
+// is not empty, and a folder with any entry (hidden ones included) is left alone and not
+// counted as a failure. A missing path is no error. In dry-run mode the folder counts as
+// empty if every entry on disk was planned to be moved away and no planned move put
+// anything below it or the folder itself in place; it then counts as gone for later
+// MoveTo calls. Removed folders are
+// not counted in Stats (they held no files).
+func (o *Ops) RemoveEmptyDir(path string) (bool, error) {
+	path = filepath.Clean(path)
+	if !o.exists(path) {
+		return false, nil
+	}
+	if !isDir(path) {
+		return false, nil
+	}
+	if o.DryRun {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return false, o.fail(fmt.Errorf("reading %s: %w", path, err))
+		}
+		for _, e := range entries {
+			if o.exists(filepath.Join(path, e.Name())) {
+				return false, nil
+			}
+		}
+		o.plannedMu.Lock()
+		prefix := path + string(filepath.Separator)
+		for p, present := range o.plannedPresent {
+			// A folder a planned move put in place has unknown content: never empty.
+			if present && (p == path || strings.HasPrefix(p, prefix)) {
+				o.plannedMu.Unlock()
+				return false, nil
+			}
+		}
+		o.plannedMu.Unlock()
+		o.markPlanned(path, "")
+		log.Infof("[dry-run] would remove the empty folder %s", path)
+		return true, nil
+	}
+	if !isEmptyDir(path) {
+		return false, nil
+	}
+	if err := os.Remove(path); err != nil {
+		return false, o.fail(fmt.Errorf("removing empty folder %s: %w", path, err))
+	}
+	log.Infof("Removed the empty folder %s", path)
+	return true, nil
+}
+
 // Rename renames src to dst within the library. Unlike MoveInto it does not pick a new
 // name: it fails if dst already exists.
 func (o *Ops) Rename(src, dst string) error {
@@ -326,6 +472,10 @@ func (o *Ops) CopyInto(src, dstDir, relPath string) (string, error) {
 func (o *Ops) markPlanned(src, dst string) {
 	o.plannedMu.Lock()
 	o.plannedMoves[filepath.Clean(src)] = true
+	o.plannedPresent[filepath.Clean(src)] = false
+	if dst != "" {
+		o.plannedPresent[filepath.Clean(dst)] = true
+	}
 	o.plannedMu.Unlock()
 	if dst != "" {
 		o.recordTarget(dst)
