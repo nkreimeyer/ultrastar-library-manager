@@ -482,3 +482,30 @@ func writePNG(t *testing.T, path string, w, h int) {
 		t.Fatal(err)
 	}
 }
+
+// Untagged images fixtxt would choose by name hint or by near-square shape stay; the
+// other images are clutter.
+func TestUntaggedHintedImagesAreKept(t *testing.T) {
+	cfg := newEnv(t, false)
+	writeFiles(t, cfg.SongDir, map[string]string{
+		"A/song.txt": "#TITLE:A\n#ARTIST:A\n#MP3:song.mp3\n: 0 1 0 la\nE\n",
+		"A/song.mp3": "a",
+		// Lossless WebP header (VP8L) of 640x360, hinted as background.
+		"A/Song [BG].webp": "RIFF\x15\x00\x00\x00WEBPVP8L\x05\x00\x00\x00\x2f\x7f\xc2\x59\x00",
+		"B/song.txt":       "#TITLE:B\n#ARTIST:B\n#MP3:song.mp3\n: 0 1 0 la\nE\n",
+		"B/song.mp3":       "a",
+	})
+	writePNG(t, filepath.Join(cfg.SongDir, "A", "Song [CO].png"), 64, 36) // hint beats shape
+	writePNG(t, filepath.Join(cfg.SongDir, "A", "square.png"), 10, 10)
+	writePNG(t, filepath.Join(cfg.SongDir, "A", "wide.png"), 64, 36)
+	writePNG(t, filepath.Join(cfg.SongDir, "B", "a.png"), 600, 598) // square within 5 %
+	writePNG(t, filepath.Join(cfg.SongDir, "B", "b.png"), 600, 600)
+	run(t, cfg)
+	want := []string{"A/Song [BG].webp", "A/Song [CO].png", "A/song.mp3", "A/song.txt", "B/a.png", "B/song.mp3", "B/song.txt"}
+	if got := files(tree(t, cfg.SongDir)); !reflect.DeepEqual(got, want) {
+		t.Errorf("library files = %q, want %q", got, want)
+	}
+	if got, want := files(tree(t, cfg.ExtraFilesDir())), []string{"A/square.png", "A/wide.png", "B/b.png"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("extra files = %q, want %q", got, want)
+	}
+}

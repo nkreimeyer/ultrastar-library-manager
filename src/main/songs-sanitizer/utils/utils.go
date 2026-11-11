@@ -1,13 +1,9 @@
 // Package utils contains helpers shared by the sanitizer modules: song txt decoding and
-// lookup (txt.go), song folder discovery (folders.go) and media file helpers (this file).
+// lookup (txt.go), song folder discovery (folders.go), image headers and cover/background
+// choice (image.go) and media file helpers (this file).
 package utils
 
 import (
-	"fmt"
-	"image"
-	_ "image/gif" // register decoders for image.DecodeConfig
-	_ "image/jpeg"
-	_ "image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,10 +55,11 @@ func VideoFiles(dir string) []string { return mediaEntries(dir, IsVideoFile) }
 // AudioFileExists reports whether dir contains a visible audio file.
 func AudioFileExists(dir string) bool { return len(AudioFiles(dir)) > 0 }
 
-// IsAudioFile reports whether filename has an audio file extension.
+// IsAudioFile reports whether filename has an audio file extension (".mka" is Matroska
+// audio; ".mkv" is a video).
 func IsAudioFile(filename string) bool {
 	switch strings.ToLower(filepath.Ext(filename)) {
-	case ".mp3", ".ogg", ".wav", ".flac", ".m4a", ".aac", ".opus", ".wma":
+	case ".mp3", ".ogg", ".wav", ".flac", ".m4a", ".aac", ".opus", ".wma", ".mka":
 		return true
 	}
 	return false
@@ -77,10 +74,11 @@ func IsVideoFile(filename string) bool {
 	return false
 }
 
-// IsImageFile reports whether filename has an image file extension.
+// IsImageFile reports whether filename has an image file extension (".jfif" is JPEG).
+// ReadImageHeader can measure all of them except TIFF.
 func IsImageFile(filename string) bool {
 	switch strings.ToLower(filepath.Ext(filename)) {
-	case ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff":
+	case ".jpg", ".jpeg", ".jfif", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff":
 		return true
 	}
 	return false
@@ -94,45 +92,4 @@ func SplitIntoBatches[T any](items []T, batchSize int) [][]T {
 	}
 	batches = append(batches, items)
 	return batches
-}
-
-// FindCoverImage returns the first square image in rootDir, or "" if there is none.
-func FindCoverImage(rootDir string) string {
-	return findImage(rootDir, "cover", func(x, y int) bool { return x == y })
-}
-
-// FindBackgroundImage returns the first non-square image in rootDir, or "" if there is none.
-func FindBackgroundImage(rootDir string) string {
-	return findImage(rootDir, "background", func(x, y int) bool { return x != y })
-}
-
-func findImage(rootDir, kind string, match func(x, y int) bool) string {
-	for _, name := range mediaEntries(rootDir, IsImageFile) {
-		x, y, err := GetImageDimensions(filepath.Join(rootDir, name))
-		if err != nil {
-			log.Debugf("Could not get image dimensions of %s in %s: %v", name, rootDir, err)
-			continue
-		}
-		if match(x, y) {
-			log.Debugf("Found %s image %s in %s", kind, name, rootDir)
-			return name
-		}
-	}
-	log.Debugf("No %s image found in %s", kind, rootDir)
-	return ""
-}
-
-// GetImageDimensions returns width and height of a JPEG, PNG or GIF image. Only the image
-// header is decoded.
-func GetImageDimensions(filePath string) (int, int, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer file.Close()
-	cfg, _, err := image.DecodeConfig(file)
-	if err != nil {
-		return 0, 0, fmt.Errorf("decoding image header: %w", err)
-	}
-	return cfg.Width, cfg.Height, nil
 }

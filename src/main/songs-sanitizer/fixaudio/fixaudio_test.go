@@ -1,6 +1,7 @@
 package fixaudio
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"io/fs"
@@ -140,8 +141,12 @@ func TestEncodeArgs(t *testing.T) {
 			[][]string{{"-c:a", "pcm_s24le"}}, []string{"-b:a", "0:v?"}},
 		{"ogg audio only", "/s/a/song.ogg", audioInfo{Codec: "vorbis", Channels: 2, Bitrate: 192000},
 			[][]string{{"-c:a", "libvorbis"}, {"-b:a", "192000"}}, []string{"0:v?"}},
-		{"unknown codec, lossy extension", "/s/a/song.MP3", audioInfo{Codec: "mp2", Channels: 2, Bitrate: 256000},
-			[][]string{{"-b:a", "256000"}}, []string{"-c:a", "-sample_fmt"}},
+		{"mp2 in an .MP3 file", "/s/a/song.MP3", audioInfo{Codec: "mp2", Channels: 2, Bitrate: 256000},
+			[][]string{{"-c:a", "mp2"}, {"-b:a", "256000"}}, []string{"-sample_fmt"}},
+		{"ac3 in matroska keeps codec and bitrate", "/s/a/song.mka", audioInfo{Codec: "ac3", Channels: 6, SampleFmt: "fltp", Bitrate: 448000},
+			[][]string{{"-c:a", "ac3"}, {"-b:a", "320000"}, {"-metadata", "SANITIZER_NORMALIZED=-3.0dB"}}, []string{"-sample_fmt", "0:v?"}},
+		{"eac3", "/s/a/song.mka", audioInfo{Codec: "eac3", Channels: 2, Bitrate: 192000},
+			[][]string{{"-c:a", "eac3"}, {"-b:a", "192000"}}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -309,6 +314,38 @@ func TestDownmixSixChannels(t *testing.T) {
 	run(t, cfg, ops2)
 	if got := ops2.Stats().Replaced; got != 0 {
 		t.Errorf("second run replaced %d files, want 0", got)
+	}
+}
+
+// Matroska audio (.mka): an AC3 5.1 track stays AC3 (downmixed, bitrate kept), a codec
+// without a known encoder (DTS) is left alone instead of becoming default-quality Vorbis.
+func TestMatroskaAudio(t *testing.T) {
+	requireFFmpeg(t)
+	cfg, ops := newLibrary(t, false)
+	ac3Dir := addSong(t, cfg, "Artist - AC3", "a.mka")
+	ac3 := filepath.Join(ac3Dir, "a.mka")
+	ffmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=1", "-af", "volume=-20dB", "-ac", "6", "-c:a", "ac3", "-b:a", "448k", ac3)
+	dtsDir := addSong(t, cfg, "Artist - DTS", "d.mka")
+	dts := filepath.Join(dtsDir, "d.mka")
+	if out, err := exec.Command("ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=1",
+		"-af", "volume=-20dB", "-ac", "6", "-c:a", "dca", "-strict", "-2", dts).CombinedOutput(); err != nil {
+		t.Skipf("cannot encode DTS: %v\n%s", err, out)
+	}
+	before, err := os.ReadFile(dts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run(t, cfg, ops)
+
+	if info := probe(t, ac3); info.Codec != "ac3" || info.Channels != 2 || info.Bitrate < 300000 || !info.Normalized {
+		t.Errorf("ac3 result = %+v, want stereo ac3 at 320 kbit/s, normalized", info)
+	}
+	if after, err := os.ReadFile(dts); err != nil || !bytes.Equal(after, before) {
+		t.Errorf("the DTS file was changed (err %v)", err)
+	}
+	if got := ops.Stats().Replaced; got != 1 {
+		t.Errorf("replaced %d files, want 1", got)
 	}
 }
 

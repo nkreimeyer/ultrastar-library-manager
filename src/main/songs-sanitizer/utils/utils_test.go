@@ -431,3 +431,54 @@ func TestGetAllSongFoldersCountsUnreadableOnce(t *testing.T) {
 		}
 	}
 }
+
+func TestMediaFileTypes(t *testing.T) {
+	for _, tt := range []struct {
+		name                 string
+		audio, video, imageF bool
+	}{
+		{"song.mp3", true, false, false},
+		{"song.MKA", true, false, false}, // Matroska audio
+		{"song.mka.part", false, false, false},
+		{"clip.mkv", false, true, false},
+		{"song.opus", true, false, false},
+		{"cover.webp", false, false, true},
+		{"cover.JFIF", false, false, true},
+		{"cover.tif", false, false, true},
+		{"cover.tiff", false, false, true},
+		{"cover.jpg", false, false, true},
+		{"cover.bmp", false, false, true},
+		{"cover.heic", false, false, false},
+		{"notes.txt", false, false, false},
+	} {
+		if got := IsAudioFile(tt.name); got != tt.audio {
+			t.Errorf("IsAudioFile(%q) = %v, want %v", tt.name, got, tt.audio)
+		}
+		if got := IsVideoFile(tt.name); got != tt.video {
+			t.Errorf("IsVideoFile(%q) = %v, want %v", tt.name, got, tt.video)
+		}
+		if got := IsImageFile(tt.name); got != tt.imageF {
+			t.Errorf("IsImageFile(%q) = %v, want %v", tt.name, got, tt.imageF)
+		}
+	}
+}
+
+// A folder whose only audio is Matroska audio is a song, not a broken folder.
+func TestGetAllSongFoldersMatroskaAudio(t *testing.T) {
+	lib := t.TempDir()
+	writeFile(t, filepath.Join(lib, "Cat", "Song", "song.mka"), "a")
+	writeFile(t, filepath.Join(lib, "Cat", "Broken", "song.mka"), "a") // no txt: broken song
+	writeFile(t, filepath.Join(lib, "Cat", "Song", "song.txt"), songTxt)
+	cfg, err := config.New(lib, t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := GetAllSongFolders(fsops.New(false), cfg.SongDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(cfg.SongDir, "Cat", "Broken"), filepath.Join(cfg.SongDir, "Cat", "Song")}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("GetAllSongFolders = %q, want %q", got, want)
+	}
+}

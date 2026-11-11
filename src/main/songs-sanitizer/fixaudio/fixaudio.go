@@ -73,10 +73,10 @@ var workers = min(maxWorkers, runtime.NumCPU())
 
 // coverExts are the containers verified to carry embedded cover art via "-c:v copy".
 // Other formats (ogg/opus store pictures as metadata, wav/wma/aac cannot) map audio only.
+// Matroska (.mka) is not among them: ffmpeg reads a cover attachment as a picture
+// stream, but writes it back as a video track, not as an attachment, so it is dropped
+// (the original keeps it, in originals/).
 var coverExts = map[string]bool{".mp3": true, ".m4a": true, ".flac": true}
-
-// lossyExts are used to decide about "-b:a" when the source codec is unknown.
-var lossyExts = map[string]bool{".mp3": true, ".m4a": true, ".aac": true, ".ogg": true, ".opus": true, ".wma": true}
 
 // Run processes all audio files of all song folders below cfg.SongDir.
 func Run(cfg config.Config, ops *fsops.Ops) error {
@@ -198,6 +198,12 @@ func (p *processor) processFile(folder, name string) {
 	if err != nil {
 		log.Errorf("Skipping %s: probing audio failed: %v", path, err)
 		ops.Fail()
+		return
+	}
+	if _, _, known := encoderFor(info.Codec); !known {
+		// ffmpeg would pick its default encoder for the extension (Vorbis at a low default
+		// quality for .mka): a silent loss of quality, fixed in place by the marker tag.
+		log.Warnf("Skipping %s: no encoder known to keep its %q audio, it is left unchanged", path, info.Codec)
 		return
 	}
 
@@ -434,17 +440,15 @@ func encodeArgs(in, out string, info audioInfo, filters []string) []string {
 		args = append(args, "-af", strings.Join(filters, ","))
 	}
 
-	encoder, lossy, known := encoderFor(info.Codec)
-	if !known {
-		lossy = lossyExts[ext]
-	}
+	// processFile only encodes codecs encoderFor knows.
+	encoder, lossy, _ := encoderFor(info.Codec)
 	if encoder != "" {
 		args = append(args, "-c:a", encoder)
 	}
 	switch {
 	case lossy && info.Bitrate > 0:
 		args = append(args, "-b:a", strconv.Itoa(min(info.Bitrate, maxLossyBitrate)))
-	case !lossy && known && info.SampleFmt != "":
+	case !lossy && info.SampleFmt != "":
 		// Keep the bit depth: the volume filter outputs float, which would otherwise turn
 		// a 16-bit FLAC into a 24-bit one.
 		args = append(args, "-sample_fmt", info.SampleFmt)
@@ -453,12 +457,14 @@ func encodeArgs(in, out string, info audioInfo, filters []string) []string {
 }
 
 // encoderFor returns the ffmpeg encoder that produces the given codec, and whether it is
-// lossy. known is false for codecs not listed here; ffmpeg then picks its default encoder
-// for the file extension.
+// lossy. known is false for codecs not listed here (DTS, TrueHD, ...: their ffmpeg
+// encoders are experimental or missing); such files are not re-encoded.
 func encoderFor(codec string) (encoder string, lossy, known bool) {
 	switch codec {
 	case "mp3":
 		return "libmp3lame", true, true
+	case "mp2", "ac3", "eac3":
+		return codec, true, true // ffmpeg's native encoders
 	case "aac":
 		return "aac", true, true
 	case "vorbis":

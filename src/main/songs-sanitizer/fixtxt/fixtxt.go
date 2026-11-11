@@ -360,6 +360,16 @@ func fixTxtLines(lines []string, rootDir string, files songFiles) ([]string, []s
 		cover:      files.cover != "" && (!fileExists(rootDir, info.Cover) || forceUpdateCover),
 		background: files.background != "" && (!fileExists(rootDir, info.Background) || forceUpdateBackground),
 	}
+	// FindCoverImage and FindBackgroundImage never pick the same image, but the image one
+	// of them picks may be the one the other tag keeps. Never point both tags at one file.
+	if files.cover != "" && !upd.background && sameFileName(files.cover, info.Background) {
+		upd.cover = false
+		files.cover = ""
+	}
+	if files.background != "" && !upd.cover && sameFileName(files.background, info.Cover) {
+		upd.background = false
+		files.background = ""
+	}
 
 	updatedLines := make([]string, len(lines))
 	foundTagFlags, audioUnresolved := updateTagsInLines(rootDir, lines, updatedLines, files, audio, video, upd)
@@ -557,8 +567,15 @@ func tagValue(line, tag string) string {
 	return strings.TrimSpace(line[len(tag)+1:])
 }
 
+// sameFileName reports whether a tag value names the on-disk file name (case-insensitive,
+// as utils.ResolveFileName matches).
+func sameFileName(onDisk, tagValue string) bool {
+	return tagValue != "" && strings.EqualFold(onDisk, strings.TrimSpace(tagValue))
+}
+
 // checkDimensionsOfImagesTagged checks the images referenced by #COVER and #BACKGROUND.
-// It reports whether the cover (not square) or background (square) has to be replaced.
+// It reports whether the cover (not square) or background (square) has to be replaced,
+// using the same shape rule as utils.FindCoverImage (utils.IsSquareImage).
 // Tags pointing to unreadable images are cleared in the returned SongInfo.
 func checkDimensionsOfImagesTagged(rootDir string, info SongInfo) (bool, bool, SongInfo) {
 	forceUpdateCover := false
@@ -568,7 +585,7 @@ func checkDimensionsOfImagesTagged(rootDir string, info SongInfo) (bool, bool, S
 		if err != nil {
 			log.Debugf("Could not get image dimensions for %s in %s: %v", info.Cover, rootDir, err)
 			info.Cover = ""
-		} else if x != y {
+		} else if !utils.IsSquareImage(x, y) {
 			forceUpdateCover = true
 		}
 	}
@@ -577,7 +594,7 @@ func checkDimensionsOfImagesTagged(rootDir string, info SongInfo) (bool, bool, S
 		if err != nil {
 			log.Debugf("Could not get image dimensions for %s in %s: %v", info.Background, rootDir, err)
 			info.Background = ""
-		} else if x == y {
+		} else if utils.IsSquareImage(x, y) {
 			forceUpdateBackground = true
 		}
 	}

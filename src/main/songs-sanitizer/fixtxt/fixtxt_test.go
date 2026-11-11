@@ -1,9 +1,12 @@
 package fixtxt
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"image"
+	"image/png"
 	"io/fs"
 	"maps"
 	"os"
@@ -686,6 +689,12 @@ func TestRunChoosesAudioFile(t *testing.T) {
 			wantAmbiguous: true,
 		},
 		{
+			name:   "Matroska audio is audio",
+			files:  map[string]string{"song.mka": "a"},
+			header: []string{"#MP3:gone.mp3"},
+			want:   "#MP3:song.mka",
+		},
+		{
 			name:   "several audio files but a valid tag",
 			files:  map[string]string{"a.mp3": "a", "b.mp3": "a"},
 			header: []string{"#MP3:b.mp3"},
@@ -802,5 +811,98 @@ func TestRunCorrectsStemSpelling(t *testing.T) {
 	// A stem tag pointing to a missing file is never replaced by a guess.
 	if !strings.Contains(got, "#INSTRUMENTAL:missing.mp3\n") {
 		t.Errorf("#INSTRUMENTAL must be left alone:\n%s", got)
+	}
+}
+
+// fixtxt inserts the cover and background chosen by name hint (over shape) and by
+// near-square shape, including WebP and BMP images.
+func TestRunChoosesCoverAndBackground(t *testing.T) {
+	// Lossless WebP (VP8L) 640x360 and a BITMAPINFOHEADER BMP of 500x-498 (top-down).
+	webp := "RIFF\x15\x00\x00\x00WEBPVP8L\x05\x00\x00\x00\x2f\x7f\xc2\x59\x00"
+	bmp := "BM\x00\x00\x00\x00\x00\x00\x00\x00\x36\x00\x00\x00\x28\x00\x00\x00\xf4\x01\x00\x00\x0e\xfe\xff\xff\x01\x00\x18\x00"
+	tests := []struct {
+		name      string
+		header    []string // tags besides #MP3
+		files     map[string]string
+		pngs      map[string][2]int
+		cover, bg string // "" = no such tag
+	}{
+		{
+			name:  "hints beat shape",
+			pngs:  map[string][2]int{"Song [CO].png": {64, 36}, "a.png": {10, 10}, "b.png": {64, 36}, "Song [BG].png": {10, 10}},
+			cover: "Song [CO].png", bg: "Song [BG].png",
+		},
+		{
+			name:  "near square cover, webp background",
+			files: map[string]string{"bg.webp": webp},
+			pngs:  map[string][2]int{"a.png": {600, 598}},
+			cover: "a.png", bg: "bg.webp",
+		},
+		{
+			name:  "bmp cover",
+			files: map[string]string{"front.bmp": bmp},
+			pngs:  map[string][2]int{"wide.png": {64, 36}},
+			cover: "front.bmp", bg: "wide.png",
+		},
+		{
+			// Tagged images are checked with the same near-square rule: the 600x598 tagged
+			// background is replaced, too, not made the cover as well.
+			name:   "near square tagged background and wide tagged cover are swapped",
+			header: []string{"#COVER:wide.png", "#BACKGROUND:pic.png"},
+			pngs:   map[string][2]int{"wide.png": {64, 36}, "pic.png": {600, 598}},
+			cover:  "pic.png", bg: "wide.png",
+		},
+		{
+			// FindCoverImage picks the cover-hinted image, which the tagged background
+			// already uses: no #COVER is inserted for it.
+			name:   "the kept background is never also the cover",
+			header: []string{"#BACKGROUND:a cover.png"},
+			pngs:   map[string][2]int{"a cover.png": {64, 36}},
+			cover:  "", bg: "a cover.png",
+		},
+		{
+			name:   "the kept cover is never also the background",
+			header: []string{"#COVER:a bg.png"},
+			pngs:   map[string][2]int{"a bg.png": {10, 10}},
+			cover:  "a bg.png", bg: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := newLibrary(t, false)
+			files := map[string]string{"Song/song.txt": songTxt(append([]string{"#MP3:song.mp3"}, tc.header...)...), "Song/song.mp3": "a"}
+			for name, content := range tc.files {
+				files["Song/"+name] = content
+			}
+			writeFiles(t, cfg.SongDir, files)
+			for name, wh := range tc.pngs {
+				writeTestPNG(t, filepath.Join(cfg.SongDir, "Song", name), wh[0], wh[1])
+			}
+			ops := run(t, cfg)
+			if f := ops.Stats().Failed; f != 0 {
+				t.Errorf("%d failed operations", f)
+			}
+			got := readFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
+			for tag, want := range map[string]string{"#COVER:": tc.cover, "#BACKGROUND:": tc.bg} {
+				if want == "" {
+					if strings.Contains(got, tag) {
+						t.Errorf("txt has an unexpected %s line:\n%s", tag, got)
+					}
+				} else if !strings.Contains(got, tag+want+"\n") {
+					t.Errorf("txt lacks %q:\n%s", tag+want, got)
+				}
+			}
+		})
+	}
+}
+
+func writeTestPNG(t *testing.T, path string, w, h int) {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewGray(image.Rect(0, 0, w, h))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
