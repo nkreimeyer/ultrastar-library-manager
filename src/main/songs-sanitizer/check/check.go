@@ -12,9 +12,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -24,7 +22,6 @@ import (
 
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/config"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fsops"
-	"github.com/nkreimeyer/ultrastar-songs-sanitizer/songtxt"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/utils"
 )
 
@@ -72,10 +69,6 @@ type songResult struct {
 // checker holds the state of one run. It is safe for concurrent use.
 type checker struct {
 	cfg     config.Config
-	ops     *fsops.Ops
-	media   bool // ffprobe is available
-	deep    bool // Deep requested and ffmpeg is available
-	deepSem chan struct{}
 	mu      sync.Mutex
 	results []songResult // songs with findings
 	checked int
@@ -90,24 +83,15 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 		return fmt.Errorf("finding song folders in %q: %w", cfg.SongDir, err)
 	}
 
-	c := &checker{cfg: cfg, ops: ops, deepSem: make(chan struct{}, maxDeepDecodes)}
-	var notes []string
-	if _, err := exec.LookPath("ffprobe"); err != nil {
-		log.Warnf("ffprobe not found on PATH: media files are not checked")
-		notes = append(notes, noteNoFFprobe)
-	} else {
-		c.media = true
-	}
-	if opts.Deep {
-		if _, err := exec.LookPath("ffmpeg"); err != nil {
-			log.Warnf("ffmpeg not found on PATH: the deep decode check is skipped")
-			notes = append(notes, noteNoFFmpeg)
-		} else {
-			c.deep = c.media // without ffprobe nothing is known to be a readable media file
+	insp, notes := NewInspector(ops, opts.Deep)
+	c := &checker{cfg: cfg}
+	forEachParallel(folders, workers, func(folder string) {
+		res, err := insp.Inspect(folder)
+		if err != nil {
+			return // logged and counted by Inspect
 		}
-	}
-
-	forEachParallel(folders, workers, c.checkFolder)
+		c.record(songResult{folder: folder, txt: res.Txt, findings: res.Findings, encodingProblem: res.EncodingProblem})
+	})
 
 	results := c.results
 	sortResults(results)
@@ -129,7 +113,7 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 		}
 	}
 
-	rep := buildReport(c.checked, results, notes, c.media, c.deep, cfg.DryRun)
+	rep := buildReport(c.checked, results, notes, insp.MediaChecked(), insp.DeepChecked(), cfg.DryRun)
 	jsonData, err := rep.json()
 	if err != nil {
 		return fmt.Errorf("encoding check report: %w", err)
@@ -175,53 +159,10 @@ func (c *checker) record(res songResult) {
 	}
 }
 
-// skipUnreadable logs an unreadable path and counts it once per run (same key as the
-// folder discovery and the other modules).
-func (c *checker) skipUnreadable(folder string, err error) {
-	log.Errorf("Skipping %s: %v", folder, err)
-	path := folder
-	var pathErr *fs.PathError
-	if errors.As(err, &pathErr) {
-		path = pathErr.Path
-	}
-	c.ops.FailOnce("unreadable:" + path)
-}
-
-// checkFolder checks one song folder. The song txt is found and read through c.ops, so in
-// a dry run it is checked as fixtxt would have written it (and a duplicate song txt fixtxt
-// would move away is not used).
-func (c *checker) checkFolder(folder string) {
-	txt, err := utils.FindSongTxt(c.ops, folder)
-	if errors.Is(err, fs.ErrNotExist) {
-		c.record(songResult{folder: folder, findings: []Finding{{Severity: SevError, Code: codeNoSongTxt, Message: "the folder contains no song txt"}}})
-		return
-	}
-	if err != nil {
-		c.skipUnreadable(folder, err)
-		return
-	}
-	raw, err := c.ops.ReadFile(txt)
-	if err != nil {
-		c.skipUnreadable(folder, err)
-		return
-	}
-
-	d := utils.DecodeTxt(raw)
-	in := songInput{EncodingProblem: d.Problem, Damaged: d.Damaged}
-	if c.fixTxtWouldChange(folder, d) {
-		in.FolderName = filepath.Base(folder)
-	}
-	if d.Text != "" {
-		in.Song, in.Issues = songtxt.Parse(d.Text)
-		in.Files = c.observeFiles(folder, refCandidates(in.Song), rawHeaderValues(raw, d.Encoding))
-	}
-	c.record(songResult{folder: folder, txt: filepath.Base(txt), findings: analyze(in), encodingProblem: d.Problem != ""})
-}
-
 // fixTxtWouldChange reports whether fixtxt rewrites the song txt of folder, so that it
 // fills a missing #ARTIST/#TITLE from the folder name: it never rewrites a txt with a
 // decode Problem, nor any txt of a folder with a media file name that is not valid UTF-8.
-func (c *checker) fixTxtWouldChange(folder string, d utils.DecodedTxt) bool {
+func fixTxtWouldChange(folder string, d utils.DecodedTxt) bool {
 	if d.Problem != "" {
 		return false
 	}
@@ -234,14 +175,14 @@ func (c *checker) fixTxtWouldChange(folder string, d utils.DecodedTxt) bool {
 // fileRefs). rawValues are the undecoded tag values of a txt in a legacy codepage, by
 // line: a CP1252 txt references a file named in CP1252 bytes, which the decoded value
 // does not match.
-func (c *checker) observeFiles(folder string, cands []refCandidate, rawValues map[int]string) map[string]fileObs {
+func (i *Inspector) observeFiles(folder string, cands []refCandidate, rawValues map[int]string) map[string]fileObs {
 	obs := map[string]fileObs{}
 	byName := map[string]fileObs{} // one probe per file, even if several tags reference it
 	for _, cand := range cands {
 		var name, value string
 		found := false
-		for i := len(cand.Occ) - 1; i >= 0 && !found; i-- {
-			t := cand.Occ[i]
+		for k := len(cand.Occ) - 1; k >= 0 && !found; k-- {
+			t := cand.Occ[k]
 			name, _, found = utils.ResolveFileName(folder, t.Value)
 			if !found {
 				if rv, ok := rawValues[t.Line]; ok && rv != t.Value {
@@ -260,7 +201,7 @@ func (c *checker) observeFiles(folder string, cands []refCandidate, rawValues ma
 		}
 		o, ok := byName[key]
 		if !ok {
-			o = c.observeFile(filepath.Join(folder, name), cand.Kind)
+			o = i.observeFile(filepath.Join(folder, name), cand.Kind)
 			o.Name, o.Found = name, true
 			byName[key] = o
 		}
@@ -274,7 +215,7 @@ func (c *checker) observeFiles(folder string, cands []refCandidate, rawValues ma
 // extensions are not checked, whatever the content.
 var supportedImageExts = map[string]bool{".jpg": true, ".jpeg": true, ".jfif": true, ".png": true, ".gif": true, ".bmp": true, ".webp": true}
 
-func (c *checker) observeFile(path string, kind refKind) fileObs {
+func (i *Inspector) observeFile(path string, kind refKind) fileObs {
 	var o fileObs
 	st, err := os.Stat(path)
 	if err != nil {
@@ -294,7 +235,7 @@ func (c *checker) observeFile(path string, kind refKind) fileObs {
 	f, err := os.Open(path)
 	if err != nil {
 		log.Errorf("Cannot check %s: %v", path, err)
-		c.ops.FailOnce("unreadable:" + path)
+		i.ops.FailOnce("unreadable:" + path)
 		o.Unreadable = true
 		return o
 	}
@@ -308,27 +249,27 @@ func (c *checker) observeFile(path string, kind refKind) fileObs {
 		}
 		return o
 	}
-	if !c.media {
+	if !i.media {
 		return o
 	}
 	info, err := probeMedia(path)
 	switch {
 	case errors.Is(err, errToolFailed):
 		log.Errorf("Checking %s: %v", path, err)
-		c.ops.Fail()
+		i.ops.Fail()
 		return o
 	case err != nil:
 		o.Probed, o.ProbeErr = true, err.Error()
 		return o
 	}
 	o.Probed, o.Media = true, info
-	if c.deep {
-		c.deepSem <- struct{}{}
+	if i.deep {
+		i.deepSem <- struct{}{}
 		decErr, decWarn, err := decodeCheck(path)
-		<-c.deepSem
+		<-i.deepSem
 		if err != nil {
 			log.Errorf("Checking %s: %v", path, err)
-			c.ops.Fail()
+			i.ops.Fail()
 			return o
 		}
 		o.DecodeErr, o.DecodeWarn = decErr, decWarn
