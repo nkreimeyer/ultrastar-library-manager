@@ -30,6 +30,31 @@ func TestDecodeTxt(t *testing.T) {
 		{"literal replacement char is damaged", "#TITLE:M�dchen\n", "#TITLE:M�dchen\n", EncUTF8, false, true},
 		{"utf16le with bom", "\xff\xfe#\x00A\x00:\x00\xe4\x00\n\x00", "#A:ä\n", EncUTF16LE, false, false},
 		{"utf16be with bom", "\xfe\xff\x00#\x00A\x00:\x00\xe4\x00\n", "#A:ä\n", EncUTF16BE, false, false},
+		{"utf16 odd length is a problem", "\xff\xfe#\x00A", "#�", EncUTF16LE, true, false},
+		{"utf16 unpaired surrogate is a problem", "\xff\xfe#\x00\x00\xd8A\x00", "#�A", EncUTF16LE, true, false},
+		{"cp1252 sharp s before ellipsis is not mojibake", "#TITLE:Gru\xdf\x85\n", "#TITLE:Gruß…\n", EncCP1252, false, false},
+		{"cp1250 hint", "#ENCODING:CP1250\n#TITLE:\xb9\n", "#ENCODING:CP1250\n#TITLE:ą\n", "CP1250", false, false},
+		{"stale cp1252 hint on converted utf8", "#ENCODING:CP1252\n#TITLE:Mädchen „x“\n", "#ENCODING:CP1252\n#TITLE:Mädchen „x“\n", EncUTF8, false, false},
+		{"cp1252 hint on non-western utf8 is a problem", "#ENCODING:CP1252\n#TITLE:Привет\n", "#ENCODING:CP1252\n#TITLE:Привет\n", EncUTF8, true, false},
+		{"utf8 without hint stays utf8", "#TITLE:Привет\n", "#TITLE:Привет\n", EncUTF8, false, false},
+		{"cp1251 hint", "#ENCODING:CP1251\n#TITLE:\xca\xe0\xeb\xe8\xed\xea\xe0\n", "#ENCODING:CP1251\n#TITLE:Калинка\n", "CP1251", false, false},
+		{"iso-8859-2 hint", "#ENCODING:ISO-8859-2\n#TITLE:Za\xbf\xf3\xb3\xe6\n", "#ENCODING:ISO-8859-2\n#TITLE:Zażółć\n", "ISO-8859-2", false, false},
+		{"unknown codec is a problem", "#ENCODING:EBCDIC\n#TITLE:\xe4\n", "#ENCODING:EBCDIC\n#TITLE:ä\n", EncLatin1, true, false},
+		{"cp1252 mixed with utf8 cyrillic is a problem", "#TITLE:Sch\xf6ne Gr\xfc\xdfe \xd0\x9a\xd0\xb0\xd0\xbb\xd0\xb8\n", "#TITLE:Schöne Grüße ÐšÐ°Ð»Ð¸\n", EncCP1252, true, false},
+		{"cp1252 mixed with utf8 greek is a problem", "#TITLE:\xe4 \xce\x93\xce\xb5\xce\xb9\xce\xb1\n", "#TITLE:ä Î“ÎµÎ¹Î±\n", EncCP1252, true, false},
+		{"accidental pair next to utf8 cyrillic is a problem", "#TITLE:GRO\xdf\x85 \xd0\x9a\xd0\xb0\n", "#TITLE:GRO\u07c5 Ка\n", EncUTF8, true, false},
+		{"cp1250 by language tag", "#LANGUAGE:Polish\n#TITLE:Za\xbf\xf3\xb3\xe6 g\xea\x9cl\xb9\n", "#LANGUAGE:Polish\n#TITLE:Zażółć gęślą\n", EncCP1250, false, false},
+		{"cp1250 without tags is a problem", "#TITLE:Za\xbf\xf3\xb3\xe6\n", "#TITLE:Za¿ó³æ\n", EncCP1252, true, false},
+		{"french guillemets with nbsp are cp1252", "#TITLE:\xe9t\xe9 aim\xe9\xa0\xbb\n", "#TITLE:été aimé\u00a0»\n", EncCP1252, false, false},
+		{"only an isolated accidental sequence is a problem", "#TITLE:aim\xe9\xa0\xbb\n", "#TITLE:aim頻\n", EncUTF8, true, false},
+		{"stale cp1252 tag with bullet is utf8", "#ENCODING:CP1252\n#TITLE:a \u2022 b \u2030\n", "#ENCODING:CP1252\n#TITLE:a • b ‰\n", EncUTF8, false, false},
+		{"cp1252 tag with accidental latin extended is a problem", "#ENCODING:CP1252\n#TITLE:H\xc4\x85\n", "#ENCODING:CP1252\n#TITLE:Hą\n", EncUTF8, true, false},
+		{"latin1 hint is read as cp1252", "#ENCODING:ISO-8859-1\n#TITLE:\x84Hi\x93 \x85\n", "#ENCODING:ISO-8859-1\n#TITLE:„Hi“ …\n", EncCP1252, false, false},
+		{"latin9 hint with c1 bytes is a problem", "#ENCODING:ISO-8859-15\n#TITLE:\xa4 \x85\n", "#ENCODING:ISO-8859-15\n#TITLE:¤ \u0085\n", EncLatin1, true, false}, // 0x80-0x9F are undefined in ISO-8859-15
+		{"latin9 hint", "#ENCODING:ISO-8859-15\n#TITLE:\xa4\n", "#ENCODING:ISO-8859-15\n#TITLE:€\n", "ISO-8859-15", false, false},
+		{"utf8 punctuation in cp1252 file is mixed", "#TITLE:M\xe4dchen \xe2\x80\x99s\n", "#TITLE:Mädchen â€™s\n", EncCP1252, true, false},
+		{"utf8 latin extended in cp1252 file is mixed", "#TITLE:\xe4 \xc5\x82\n", "#TITLE:ä Å‚\n", EncCP1252, true, false},
+		{"accidental pair next to real utf8 is a problem", "#TITLE:Gru\xdf\x85 M\xc3\xa4dchen\n", "#TITLE:Gru\u07c5 Mädchen\n", EncUTF8, true, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -38,7 +63,7 @@ func TestDecodeTxt(t *testing.T) {
 				t.Errorf("DecodeTxt(%q) = %q, %s, problem=%q, damaged=%v; want %q, %s, problem=%v, damaged=%v",
 					tc.raw, got.Text, got.Encoding, got.Problem, got.Damaged, tc.want, tc.encoding, tc.problem, tc.damaged)
 			}
-			if !tc.damaged && strings.ContainsRune(got.Text, '�') {
+			if !tc.damaged && !tc.problem && strings.ContainsRune(got.Text, '�') {
 				t.Errorf("DecodeTxt(%q) introduced U+FFFD: %q", tc.raw, got.Text)
 			}
 		})
@@ -58,7 +83,7 @@ func TestHeaderTags(t *testing.T) {
 func TestResolveFileName(t *testing.T) {
 	dir := t.TempDir()
 	nfd := "Mädchen.mp3"
-	for _, n := range []string{"Song.mp3", nfd} {
+	for _, n := range []string{"Song.mp3", nfd, "._Song.mp3"} {
 		if err := os.WriteFile(filepath.Join(dir, n), nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -71,6 +96,7 @@ func TestResolveFileName(t *testing.T) {
 		{"song.MP3", "Song.mp3", false, true},
 		{"Mädchen.mp3", nfd, false, true},
 		{"missing.mp3", "", false, false},
+		{"._Song.mp3", "", false, false}, // hidden files are never resolved
 		{"", "", false, false},
 	}
 	for _, tc := range tests {
@@ -124,4 +150,18 @@ func TestReplaceFileReference(t *testing.T) {
 			t.Error("expected an error for a CP1252 txt")
 		}
 	})
+}
+
+func TestSongTxtFilesReportsReadErrors(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read everything")
+	}
+	dir := t.TempDir()
+	txt := filepath.Join(dir, "song.txt")
+	if err := os.WriteFile(txt, []byte("#TITLE:A\n"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SongTxtFiles(dir); err == nil {
+		t.Error("an unreadable txt must be an error, not 'no song txt'")
+	}
 }

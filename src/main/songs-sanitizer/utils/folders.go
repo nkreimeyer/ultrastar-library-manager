@@ -14,17 +14,15 @@ import (
 // returned):
 //
 //   - a folder that directly contains a song txt (see IsSongTxt) is a song folder;
-//   - a folder without one is a category folder if a song folder exists below it;
-//   - otherwise, if it directly contains a .txt or a media file, or has no subfolders, it
-//     is returned itself as a (probably broken) song folder, so a broken song is handled as
-//     a whole together with its subfolders;
-//   - a folder with only subfolders and no song below is a category of broken songs, and
-//     those are returned individually (a category is never returned as one song).
+//   - a folder without one is a category folder if any of its subfolders contains a txt or
+//     media file (at any depth); its own loose files (readme.txt, ...) are left alone;
+//   - otherwise it is returned itself as a (probably broken) song folder, together with its
+//     subfolders (e.g. an empty "covers/" folder).
 //
 // Hidden folders, Synology "@eaDir" folders and sanitizer output folders (containing
 // config.OutputMarker) are skipped. In dry-run mode, folders that an earlier module would
-// have moved away are skipped too. Unreadable folders are logged, counted as failures in
-// ops (which may be nil) and skipped; only an unreadable songDir is an error.
+// have moved away are skipped too. Unreadable folders and song txts are logged, counted
+// once per run in ops (which may be nil) and skipped; only an unreadable songDir is an error.
 func GetAllSongFolders(ops *fsops.Ops, songDir string) ([]string, error) {
 	entries, err := os.ReadDir(songDir)
 	if err != nil {
@@ -35,22 +33,23 @@ func GetAllSongFolders(ops *fsops.Ops, songDir string) ([]string, error) {
 		if !entry.IsDir() || skipFolder(ops, songDir, entry.Name()) {
 			continue
 		}
-		folders, _ := collectSongFolders(ops, filepath.Join(songDir, entry.Name()))
-		songFolders = append(songFolders, folders...)
+		r := collectSongFolders(ops, filepath.Join(songDir, entry.Name()))
+		songFolders = append(songFolders, r.folders...)
 	}
 	return songFolders, nil
 }
 
-// collectSongFolders returns the song folders at or below dir and whether at least one of
-// them is a real song folder (contains a song txt).
-func collectSongFolders(ops *fsops.Ops, dir string) ([]string, bool) {
+// collected is the result of collectSongFolders for one folder.
+type collected struct {
+	folders []string // song folders at or below the folder
+	content bool     // the folder or a subfolder directly contains a txt or media file
+}
+
+func collectSongFolders(ops *fsops.Ops, dir string) collected {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		log.Errorf("Skipping unreadable folder %s: %v", dir, err)
-		if ops != nil {
-			ops.Fail()
-		}
-		return nil, false
+		skipUnreadable(ops, dir, err)
+		return collected{content: true} // unknown content: never treat the parent as one song
 	}
 
 	var subdirs []string
@@ -60,15 +59,20 @@ func collectSongFolders(ops *fsops.Ops, dir string) ([]string, bool) {
 		switch {
 		case name == config.OutputMarker:
 			log.Debugf("Skipping sanitizer output folder %s", dir)
-			return nil, false
+			return collected{}
 		case e.IsDir():
 			if !skipFolder(ops, dir, name) {
 				subdirs = append(subdirs, filepath.Join(dir, name))
 			}
 		case IsTxtFile(name) && IsRegularFile(dir, e):
 			hasTxt = true
-			if IsSongTxt(filepath.Join(dir, name)) {
-				return []string{dir}, true
+			isSong, err := isSongTxt(filepath.Join(dir, name))
+			if err != nil {
+				skipUnreadable(ops, filepath.Join(dir, name), err)
+				return collected{content: true}
+			}
+			if isSong {
+				return collected{folders: []string{dir}, content: true}
 			}
 		case !IsHidden(name) && (IsAudioFile(name) || IsVideoFile(name)):
 			hasMedia = true
@@ -76,19 +80,26 @@ func collectSongFolders(ops *fsops.Ops, dir string) ([]string, bool) {
 	}
 
 	var below []string
-	hasRealSong := false
+	contentBelow := false
 	for _, sub := range subdirs {
-		folders, real := collectSongFolders(ops, sub)
-		below = append(below, folders...)
-		hasRealSong = hasRealSong || real
+		r := collectSongFolders(ops, sub)
+		below = append(below, r.folders...)
+		contentBelow = contentBelow || r.content
 	}
 	switch {
-	case hasRealSong:
-		return below, true // category folder
-	case hasTxt || hasMedia || len(subdirs) == 0:
-		return []string{dir}, false // broken song folder (or empty folder)
+	case contentBelow:
+		return collected{folders: below, content: true} // category folder
 	default:
-		return below, false // category containing only broken songs
+		// No txt or media anywhere below: this folder is a (broken or empty) song.
+		return collected{folders: []string{dir}, content: hasTxt || hasMedia}
+	}
+}
+
+// skipUnreadable logs an unreadable folder or file and counts it once per run.
+func skipUnreadable(ops *fsops.Ops, path string, err error) {
+	log.Errorf("Skipping unreadable %s: %v", path, err)
+	if ops != nil {
+		ops.FailOnce("unreadable:" + path)
 	}
 }
 

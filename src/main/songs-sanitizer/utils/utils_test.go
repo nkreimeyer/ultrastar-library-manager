@@ -286,6 +286,16 @@ func TestGetAllSongFolders(t *testing.T) {
 			want: []string{"Cat/A - Broken", "Cat/B - Broken"},
 		},
 		{
+			name: "category with loose files and only broken songs below",
+			files: []entry{
+				{"Cat/readme.txt", "about this category\n"},
+				{"Cat/intro.mp3", "a"},
+				{"Cat/A - Broken/song.mp3", "a"},
+				{"Cat/B - Broken/clip.mp4", "v"},
+			},
+			want: []string{"Cat/A - Broken", "Cat/B - Broken"},
+		},
+		{
 			name: "utf16 song txts are songs",
 			files: []entry{
 				{"Cat/A - One/song.txt", "\xff\xfe#\x00T\x00I\x00T\x00L\x00E\x00:\x00A\x00\n\x00"},
@@ -379,5 +389,45 @@ func TestSplitIntoBatches(t *testing.T) {
 	want := [][]int{{1, 2}, {3, 4}, {5}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("SplitIntoBatches = %v, want %v", got, want)
+	}
+}
+
+// Every module calls GetAllSongFolders with the same ops; an unreadable song txt or folder
+// must be skipped (not mistaken for a broken song) and counted only once per run.
+func TestGetAllSongFoldersCountsUnreadableOnce(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read everything")
+	}
+	lib := t.TempDir()
+	// Cat2 contains nothing but the unreadable folder: its content is unknown, so Cat2 must
+	// not be returned as one (broken) song.
+	for _, f := range []string{"A - One/song.txt", "Cat/B - Locked/song.txt", "Cat/C - Fine/song.txt", "Cat2/Locked/D - Hidden/song.txt"} {
+		writeFile(t, filepath.Join(lib, filepath.FromSlash(f)), songTxt)
+	}
+	writeFile(t, filepath.Join(lib, "Cat", "B - Locked", "song.mp3"), "audio")
+	lockedTxt := filepath.Join(lib, "Cat", "B - Locked", "song.txt")
+	lockedDir := filepath.Join(lib, "Cat2", "Locked")
+	for path, mode := range map[string]os.FileMode{lockedTxt: 0o644, lockedDir: 0o755} {
+		if err := os.Chmod(path, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(path, mode) })
+	}
+
+	for _, dry := range []bool{false, true} {
+		ops := fsops.New(dry)
+		for i := range 4 {
+			got, err := GetAllSongFolders(ops, lib)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{filepath.Join(lib, "A - One"), filepath.Join(lib, "Cat", "C - Fine")}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("dry=%v call %d: got %v, want %v", dry, i, got, want)
+			}
+		}
+		if s := ops.Stats(); s.Failed != 2 {
+			t.Errorf("dry=%v: Failed = %d after 4 scans, want 2 (one txt, one folder)", dry, s.Failed)
+		}
 	}
 }

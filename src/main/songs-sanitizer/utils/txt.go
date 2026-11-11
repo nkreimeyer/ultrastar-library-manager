@@ -10,125 +10,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"golang.org/x/text/encoding/charmap"
-	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fsops"
 )
-
-// Names of the encodings DecodeTxt can detect.
-const (
-	EncUTF8    = "UTF-8"
-	EncUTF16LE = "UTF-16LE"
-	EncUTF16BE = "UTF-16BE"
-	EncCP1252  = "CP1252"
-	EncLatin1  = "ISO-8859-1"
-)
-
-var (
-	utf8BOM    = []byte{0xEF, 0xBB, 0xBF}
-	utf16LEBOM = []byte{0xFF, 0xFE}
-	utf16BEBOM = []byte{0xFE, 0xFF}
-)
-
-// DecodedTxt is the result of DecodeTxt.
-type DecodedTxt struct {
-	// Text is the decoded content without BOM and with "\n" line endings.
-	Text string
-	// Encoding is the encoding the file was read as.
-	Encoding string
-	// Problem is non-empty if the file could not be decoded unambiguously. Such a file must
-	// not be rewritten: Text is only a best-effort reading for matching purposes.
-	Problem string
-	// Damaged reports that the (otherwise cleanly decoded) text contains U+FFFD, i.e. the
-	// file was damaged before, for example by an earlier version of this tool.
-	Damaged bool
-}
-
-// DecodeTxt decodes the raw content of a song txt without losing data. A codec that cannot
-// represent the input exactly fails and the next one is tried:
-//
-//  1. UTF-16 if the file starts with a UTF-16 BOM
-//  2. strict UTF-8
-//  3. CP1252, unless the input contains one of the five bytes CP1252 leaves undefined
-//  4. otherwise the file is read as ISO-8859-1 and Problem is set
-//
-// A file that is not valid UTF-8 but contains valid UTF-8 multi-byte sequences mixes
-// encodings (or contains mojibake such as "Ã¤"); Problem is set for it as well.
-func DecodeTxt(raw []byte) DecodedTxt {
-	var d DecodedTxt
-	switch {
-	case bytes.HasPrefix(raw, utf16LEBOM), bytes.HasPrefix(raw, utf16BEBOM):
-		order, enc := unicode.LittleEndian, EncUTF16LE
-		if bytes.HasPrefix(raw, utf16BEBOM) {
-			order, enc = unicode.BigEndian, EncUTF16BE
-		}
-		out, err := unicode.UTF16(order, unicode.IgnoreBOM).NewDecoder().Bytes(raw[2:])
-		d = DecodedTxt{Text: string(out), Encoding: enc}
-		if err != nil || bytes.ContainsRune(out, utf8.RuneError) {
-			d.Problem = "invalid UTF-16 data"
-		}
-	case utf8.Valid(raw):
-		d = DecodedTxt{Text: string(bytes.TrimPrefix(raw, utf8BOM)), Encoding: EncUTF8}
-		d.Damaged = strings.ContainsRune(d.Text, utf8.RuneError)
-	default:
-		raw = bytes.TrimPrefix(raw, utf8BOM)
-		if text, ok := decodeCP1252(raw); ok {
-			d = DecodedTxt{Text: text, Encoding: EncCP1252}
-		} else {
-			d = DecodedTxt{Text: decodeLatin1(raw), Encoding: EncLatin1,
-				Problem: "contains bytes that are undefined in CP1252 (0x81, 0x8D, 0x8F, 0x90 or 0x9D)"}
-		}
-		if d.Problem == "" && hasUTF8MultiByte(raw) {
-			d.Problem = "mixes UTF-8 with another encoding (or contains mojibake such as \"Ã¤\")"
-		}
-	}
-
-	d.Text = strings.TrimPrefix(d.Text, "\ufeff")
-	d.Text = strings.ReplaceAll(d.Text, "\r\n", "\n")
-	d.Text = strings.ReplaceAll(d.Text, "\r", "\n")
-	return d
-}
-
-// decodeCP1252 decodes raw as Windows-1252. It fails if raw contains a byte that is
-// undefined in CP1252: the x/text decoder silently turns those into U+FFFD.
-func decodeCP1252(raw []byte) (string, bool) {
-	for _, b := range raw {
-		switch b {
-		case 0x81, 0x8D, 0x8F, 0x90, 0x9D:
-			return "", false
-		}
-	}
-	decoded, err := charmap.Windows1252.NewDecoder().Bytes(raw)
-	if err != nil || bytes.ContainsRune(decoded, utf8.RuneError) {
-		return "", false
-	}
-	return string(decoded), true
-}
-
-// decodeLatin1 decodes raw as ISO-8859-1, where every byte is the code point of the same value.
-func decodeLatin1(raw []byte) string {
-	var sb strings.Builder
-	sb.Grow(len(raw) * 2)
-	for _, b := range raw {
-		sb.WriteRune(rune(b))
-	}
-	return sb.String()
-}
-
-// hasUTF8MultiByte reports whether raw contains at least one valid UTF-8 multi-byte sequence.
-func hasUTF8MultiByte(raw []byte) bool {
-	for i := 0; i < len(raw); i++ {
-		if raw[i] < 0xC2 {
-			continue
-		}
-		if r, size := utf8.DecodeRune(raw[i:]); r != utf8.RuneError && size > 1 {
-			return true
-		}
-	}
-	return false
-}
 
 // HeaderTags returns the header tags of a decoded song txt: upper-cased tag name without
 // "#" mapped to its trimmed value. The header ends at the first non-empty line that does
@@ -163,17 +48,23 @@ var songHeaderTags = []string{"TITLE", "ARTIST", "MP3", "AUDIO", "BPM"}
 // one of the known tags (case-insensitive, any supported encoding). Unreadable files are
 // not song files.
 func IsSongTxt(path string) bool {
+	ok, _ := isSongTxt(path)
+	return ok
+}
+
+// isSongTxt is IsSongTxt that also reports read errors.
+func isSongTxt(path string) (bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return false, err
 	}
 	tags := HeaderTags(DecodeTxt(data).Text)
 	for _, tag := range songHeaderTags {
 		if _, ok := tags[tag]; ok {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // IsTxtFile reports whether name has a .txt extension (case-insensitive).
@@ -196,7 +87,8 @@ func ListTxtFiles(dir string) ([]string, error) {
 	return txtFiles, nil
 }
 
-// SongTxtFiles returns the .txt files directly inside dir that look like song files.
+// SongTxtFiles returns the .txt files directly inside dir that look like song files. A txt
+// that cannot be read is an error: the folder must not be mistaken for a broken song.
 func SongTxtFiles(dir string) ([]string, error) {
 	txtFiles, err := ListTxtFiles(dir)
 	if err != nil {
@@ -204,7 +96,11 @@ func SongTxtFiles(dir string) ([]string, error) {
 	}
 	var songFiles []string
 	for _, f := range txtFiles {
-		if IsSongTxt(f) {
+		ok, err := isSongTxt(f)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", f, err)
+		}
+		if ok {
 			songFiles = append(songFiles, f)
 		}
 	}
@@ -279,7 +175,7 @@ func normalizeName(s string) string {
 	return strings.ToLower(norm.NFC.String(s))
 }
 
-// ResolveFileName looks for name in dir. exact reports a byte-identical match. Otherwise a
+// ResolveFileName looks for name in dir, ignoring hidden files. exact reports a byte-identical match. Otherwise a
 // name that only differs in case or Unicode normalization (NFC/NFD) is returned as onDisk
 // with exact == false, so callers can correct the reference. found is false if neither
 // exists or name is empty.
@@ -291,14 +187,16 @@ func ResolveFileName(dir, name string) (onDisk string, exact, found bool) {
 	if err != nil {
 		return "", false, false
 	}
+	// Hidden files (leftovers of interrupted runs, "._x" AppleDouble files) are never valid
+	// targets, even if an old txt references one.
 	want := norm.NFC.String(name)
 	for _, e := range entries {
-		if e.Name() == name {
+		if e.Name() == name && !IsHidden(name) {
 			return name, true, true
 		}
 	}
 	for _, e := range entries {
-		if strings.EqualFold(norm.NFC.String(e.Name()), want) {
+		if !IsHidden(e.Name()) && strings.EqualFold(norm.NFC.String(e.Name()), want) {
 			return e.Name(), false, true
 		}
 	}
