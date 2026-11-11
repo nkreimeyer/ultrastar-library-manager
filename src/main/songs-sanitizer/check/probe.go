@@ -41,14 +41,15 @@ func (b *cappedBuffer) String() string { return b.buf.String() }
 const estimatedMsg = "Estimating duration from bitrate"
 
 // probeMedia runs ffprobe on path (an absolute path, so it never looks like an option)
-// and returns the container duration and the stream types. An estimated duration is
+// and returns the container duration, the stream types, the audio bitrate and the video
+// size. An estimated duration is
 // replaced by a measured one (measureDuration); if that fails, DurationEstimated is set.
 // An error wrapping errToolFailed means ffprobe could not run; any other error means the
 // file is unreadable.
 func probeMedia(path string) (mediaInfo, error) {
 	// Warning level, to see estimatedMsg; stderr only counts as an error with a non-zero exit.
 	cmd := exec.Command("ffprobe", "-v", "warning",
-		"-show_entries", "format=duration:stream=codec_type,codec_name",
+		"-show_entries", "format=duration,bit_rate:stream=codec_type,codec_name,bit_rate,width,height:stream_disposition=attached_pic",
 		"-of", "json", path)
 	stderr := &cappedBuffer{max: maxStderr}
 	cmd.Stderr = stderr
@@ -110,10 +111,17 @@ func parseProgressDuration(out string) (float64, bool) {
 func parseProbe(data []byte) (mediaInfo, error) {
 	var probe struct {
 		Streams []struct {
-			CodecType string `json:"codec_type"`
+			CodecType   string `json:"codec_type"`
+			BitRate     string `json:"bit_rate"`
+			Width       int    `json:"width"`
+			Height      int    `json:"height"`
+			Disposition struct {
+				AttachedPic int `json:"attached_pic"`
+			} `json:"disposition"`
 		} `json:"streams"`
 		Format struct {
 			Duration string `json:"duration"`
+			BitRate  string `json:"bit_rate"`
 		} `json:"format"`
 	}
 	if err := json.Unmarshal(data, &probe); err != nil {
@@ -123,16 +131,35 @@ func parseProbe(data []byte) (mediaInfo, error) {
 	for _, s := range probe.Streams {
 		switch s.CodecType {
 		case "audio":
+			if !info.HasAudio {
+				info.AudioBitrate = parseBitrate(s.BitRate)
+			}
 			info.HasAudio = true
 		case "video":
 			info.HasVideo = true
+			if s.Disposition.AttachedPic == 0 && info.VideoHeight == 0 && s.Width > 0 && s.Height > 0 {
+				info.VideoWidth, info.VideoHeight = s.Width, s.Height
+			}
 		}
+	}
+	// Streams in some containers (Ogg, Matroska, WebM) carry no bit_rate; the container
+	// rate is then the audio rate, unless a video stream is part of it.
+	if info.HasAudio && info.AudioBitrate == 0 && info.VideoHeight == 0 {
+		info.AudioBitrate = parseBitrate(probe.Format.BitRate)
 	}
 	// "N/A" or missing for streams without a known length.
 	if d, err := strconv.ParseFloat(probe.Format.Duration, 64); err == nil && d > 0 {
 		info.DurationSec, info.HasDuration = d, true
 	}
 	return info, nil
+}
+
+// parseBitrate parses an ffprobe bit_rate ("128000", "N/A", ""); 0 if unknown.
+func parseBitrate(s string) int64 {
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+		return n
+	}
+	return 0
 }
 
 // decodeCheck decodes the whole file with ffmpeg. decodeErr is set if ffmpeg failed,

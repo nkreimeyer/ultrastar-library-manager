@@ -28,6 +28,9 @@ type Finding struct {
 	Message  string   `json:"message"`
 	File     string   `json:"file,omitempty"` // file name inside the song folder
 	Line     int      `json:"line,omitempty"` // 1-based line of the song txt
+	// Tag is the upper-case file tag (e.g. "VIDEO") a file finding is about; "" for
+	// findings about the txt or the timing. Not part of the report.
+	Tag string `json:"-"`
 }
 
 // Thresholds of the timing checks.
@@ -218,7 +221,14 @@ type mediaInfo struct {
 	// without Xing/VBRI header) and measuring it failed, so it may be far off.
 	DurationEstimated bool
 	HasAudio          bool
-	HasVideo          bool
+	HasVideo          bool // any video stream, including an attached picture (cover art)
+	// AudioBitrate in bit/s: of the first audio stream, else of the container if the
+	// file has no moving video stream (the container rate would include the video); 0 if
+	// unknown.
+	AudioBitrate int64
+	// VideoWidth and VideoHeight of the first video stream that is not an attached
+	// picture; 0 if there is none.
+	VideoWidth, VideoHeight int
 }
 
 // fileObs are the observations about one referenced file, gathered by the checker.
@@ -370,7 +380,11 @@ func checkDuplicates(fs *findings, s *songtxt.Song) {
 		if isRefTag(key) {
 			used = "the last one whose file exists"
 		}
-		fs.add(SevWarning, codeDuplicateTag, dupLine(s, key), "", "#%s occurs more than once; players use %s", key, used)
+		tag := "" // a repeated file tag is about that file (Finding.Tag), others about the txt
+		if isRefTag(key) {
+			tag = key
+		}
+		fs.addFile(tag, SevWarning, codeDuplicateTag, dupLine(s, key), "", "#%s occurs more than once; players use %s", key, used)
 	}
 }
 
@@ -588,41 +602,41 @@ func checkFiles(fs *findings, refs []ref, files map[string]fileObs) {
 		}
 		obs := files[r.Tag]
 		if !obs.Found {
-			fs.add(sev, codeMissingFile, r.Line, r.Value, "#%s file %q not found", r.Tag, r.Value)
+			fs.addFile(r.Tag, sev, codeMissingFile, r.Line, r.Value, "#%s file %q not found", r.Tag, r.Value)
 			continue
 		}
 		if obs.Unreadable {
 			continue // counted as a failure of the run; nothing is known about the file
 		}
 		if obs.StatErr != "" {
-			fs.add(sev, codeMissingFile, r.Line, obs.Name, "#%s file %q cannot be read: %s", r.Tag, obs.Name, obs.StatErr)
+			fs.addFile(r.Tag, sev, codeMissingFile, r.Line, obs.Name, "#%s file %q cannot be read: %s", r.Tag, obs.Name, obs.StatErr)
 			continue
 		}
 		if obs.Size == 0 {
-			fs.add(sev, codeEmptyFile, r.Line, obs.Name, "#%s file %q is empty", r.Tag, obs.Name)
+			fs.addFile(r.Tag, sev, codeEmptyFile, r.Line, obs.Name, "#%s file %q is empty", r.Tag, obs.Name)
 			continue
 		}
 		if r.Kind == kindImage {
 			if obs.ImageErr != "" {
-				fs.add(SevWarning, codeUnreadableImage, r.Line, obs.Name, "#%s image cannot be read: %s", r.Tag, obs.ImageErr)
+				fs.addFile(r.Tag, SevWarning, codeUnreadableImage, r.Line, obs.Name, "#%s image cannot be read: %s", r.Tag, obs.ImageErr)
 			}
 			continue
 		}
 		if obs.Probed {
 			switch {
 			case obs.ProbeErr != "":
-				fs.add(sev, codeUnreadableMedia, r.Line, obs.Name, "#%s file cannot be read by ffprobe: %s", r.Tag, obs.ProbeErr)
+				fs.addFile(r.Tag, sev, codeUnreadableMedia, r.Line, obs.Name, "#%s file cannot be read by ffprobe: %s", r.Tag, obs.ProbeErr)
 				continue // a decode check would only repeat the error
 			case r.Source && !obs.Media.HasAudio:
-				fs.add(SevError, codeNoAudioStream, r.Line, obs.Name, "#%s file has no audio stream", r.Tag)
+				fs.addFile(r.Tag, SevError, codeNoAudioStream, r.Line, obs.Name, "#%s file has no audio stream", r.Tag)
 			case r.Kind == kindVideo && !obs.Media.HasVideo:
-				fs.add(SevWarning, codeNoVideoStream, r.Line, obs.Name, "#VIDEO file has no video stream")
+				fs.addFile(r.Tag, SevWarning, codeNoVideoStream, r.Line, obs.Name, "#VIDEO file has no video stream")
 			}
 		}
 		if obs.DecodeErr != "" {
-			fs.add(sev, codeDecodeError, r.Line, obs.Name, "decoding failed: %s", obs.DecodeErr)
+			fs.addFile(r.Tag, sev, codeDecodeError, r.Line, obs.Name, "decoding failed: %s", obs.DecodeErr)
 		} else if obs.DecodeWarn != "" {
-			fs.add(SevWarning, codeDecodeWarning, r.Line, obs.Name, "decoding reported errors: %s", obs.DecodeWarn)
+			fs.addFile(r.Tag, SevWarning, codeDecodeWarning, r.Line, obs.Name, "decoding reported errors: %s", obs.DecodeWarn)
 		}
 	}
 }
@@ -706,7 +720,7 @@ func checkTiming(fs *findings, s *songtxt.Song, refs []ref, files map[string]fil
 		}
 		videoEndMs := (v.Media.DurationSec - gap) * 1000
 		if videoEndMs < songEndMs-videoShortToleranceMs {
-			fs.add(SevWarning, codeVideoTooShort, r.Line, v.Name, "the video ends at song time %s, %s before %s at %s",
+			fs.addFile(r.Tag, SevWarning, codeVideoTooShort, r.Line, v.Name, "the video ends at song time %s, %s before %s at %s",
 				fmtMs(videoEndMs), fmtMs(songEndMs-videoEndMs), endBy, fmtMs(songEndMs))
 		}
 	}
@@ -728,7 +742,12 @@ func fmtMs(ms float64) string {
 type findings struct{ list []Finding }
 
 func (f *findings) add(sev Severity, code string, line int, file, format string, args ...any) {
-	nf := Finding{Severity: sev, Code: code, Message: fmt.Sprintf(format, args...), File: file, Line: line}
+	f.addFile("", sev, code, line, file, format, args...)
+}
+
+// addFile adds a finding about the file referenced by tag (see Finding.Tag).
+func (f *findings) addFile(tag string, sev Severity, code string, line int, file, format string, args ...any) {
+	nf := Finding{Severity: sev, Code: code, Message: fmt.Sprintf(format, args...), File: file, Line: line, Tag: tag}
 	if file != "" {
 		for i, old := range f.list {
 			if old.Code == code && old.File != "" && sameFile(old.File, file) {

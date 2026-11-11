@@ -135,3 +135,163 @@ func TestRunFillsNameTagsBeforeCheck(t *testing.T) {
 		t.Errorf("txt = %q", data)
 	}
 }
+
+func TestRunOrganizeUsage(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no ffprobe: placeholder media are enough
+	base := t.TempDir()
+	src, src2, lib, out := filepath.Join(base, "src"), filepath.Join(base, "src2"), filepath.Join(base, "lib"), filepath.Join(base, "out")
+	song := filepath.Join(src, "a")
+	if err := os.MkdirAll(song, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(src2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	notes := "#ARTIST:ABBA\n#TITLE:SOS\n#MP3:a.mp3\n#BPM:300\n"
+	for i := range 10 {
+		notes += fmt.Sprintf(": %d 2 0 la\n", i*4)
+	}
+	for name, content := range map[string]string{"song.txt": notes + "E\n", "a.mp3": "x"} {
+		if err := os.WriteFile(filepath.Join(song, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := string(filepath.ListSeparator)
+	tests := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"no source", []string{"organize", "-l", lib}, exitUsage},
+		{"no library", []string{"organize", "-s", src}, exitUsage},
+		{"leftover argument", []string{"organize", "-s", src, "-l", lib, "-priority", "false"}, exitUsage},
+		{"unknown flag", []string{"organize", "-s", src, "-l", lib, "-k"}, exitUsage},
+		{"empty tier", []string{"organize", "-s", "", "-l", lib}, exitUsage},
+		{"empty element in a tier list", []string{"organize", "-s", src + list + list + src2, "-l", lib}, exitUsage},
+		{"missing source", []string{"organize", "-s", filepath.Join(base, "missing"), "-l", lib}, exitUsage},
+		{"source given twice", []string{"organize", "-s", src, "-s", src, "-l", lib}, exitUsage},
+		{"out dir inside a source", []string{"organize", "-s", src, "-l", lib, "-o", filepath.Join(src, "out")}, exitUsage},
+		{"undo with a source", []string{"organize", "-undo", "-s", src, "-o", out}, exitUsage},
+		{"undo with -priority", []string{"organize", "-undo", "-priority", "-o", out}, exitUsage},
+		{"undo without -o or -l", []string{"organize", "-undo"}, exitUsage},
+		{"bad log level", []string{"organize", "-s", src, "-l", lib, "-v", "loud"}, exitUsage},
+		{"dry run", []string{"organize", "-s", src + list + src2, "-l", lib, "-o", out, "-n", "-priority", "-ignore-the"}, exitOK},
+		{"undo with nothing to undo", []string{"organize", "-undo", "-o", out}, exitOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := runWithArgs(t, tt.args...); got != tt.want {
+				t.Errorf("run(%q) = %d, want %d", tt.args, got, tt.want)
+			}
+		})
+	}
+	if _, err := os.Stat(filepath.Join(out, "organize_plan.txt")); err != nil {
+		t.Errorf("the dry run wrote no plan: %v", err)
+	}
+	if _, err := os.Stat(lib); !os.IsNotExist(err) {
+		t.Errorf("the dry run created the library: %v", err)
+	}
+
+	// A real run moves the song into its bucket, -undo with -l (default out dir) moves it back.
+	if got := runWithArgs(t, "organize", "-s", src, "-l", lib); got != exitOK {
+		t.Fatalf("real run = %d", got)
+	}
+	if _, err := os.Stat(filepath.Join(lib, "A", "ABBA - SOS", "song.txt")); err != nil {
+		t.Errorf("song not in the library: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "organize-output", "organize-journal.jsonl")); err != nil {
+		t.Errorf("default out dir: %v", err)
+	}
+	if got := runWithArgs(t, "organize", "-undo", "-l", lib); got != exitOK {
+		t.Fatalf("undo = %d", got)
+	}
+	if _, err := os.Stat(filepath.Join(song, "song.txt")); err != nil {
+		t.Errorf("song not moved back: %v", err)
+	}
+	// The default CLI does not know the subcommand's flags.
+	if got := runWithArgs(t, "-s", src, "-l", lib); got != exitUsage {
+		t.Errorf("default CLI with -l = %d, want %d", got, exitUsage)
+	}
+}
+
+// TestRunOrganizeFlags: -priority, -ignore-the and -deep reach organize. hq and low both
+// hold ABBA - SOS; the low version is better (#VERSION), so it only loses with -priority.
+func TestRunOrganizeFlags(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no ffprobe/ffmpeg: placeholder media are enough
+	songTxt := func(artist, title, extra string) string {
+		s := "#ARTIST:" + artist + "\n#TITLE:" + title + "\n#MP3:a.mp3\n#BPM:300\n" + extra
+		for i := range 10 {
+			s += fmt.Sprintf(": %d 2 0 la\n", i*4)
+		}
+		return s + "E\n"
+	}
+	setup := func(t *testing.T) (hq, low, lib, out string) {
+		base := t.TempDir()
+		hq, low, lib, out = filepath.Join(base, "hq"), filepath.Join(base, "low"), filepath.Join(base, "lib"), filepath.Join(base, "out")
+		for dir, txt := range map[string]string{
+			filepath.Join(hq, "ABBA - SOS"):         songTxt("ABBA", "SOS", ""),
+			filepath.Join(low, "ABBA - SOS"):        songTxt("ABBA", "SOS", "#VERSION:1.0.0\n"),
+			filepath.Join(hq, "The Beatles - Help"): songTxt("The Beatles", "Help!", ""),
+		} {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for name, content := range map[string]string{"song.txt": txt, "a.mp3": "x"} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return
+	}
+	type report struct {
+		Priority  bool     `json:"priority"`
+		IgnoreThe bool     `json:"ignoreThe"`
+		Notes     []string `json:"notes"`
+	}
+	tests := []struct {
+		name               string
+		flags              []string
+		abbaHasVersion     bool
+		beatles            string
+		priority, ignoreTh bool
+		deepNote           bool
+	}{
+		{"defaults", nil, true, "T", false, false, false},
+		{"all flags", []string{"-priority", "-ignore-the", "-deep"}, false, "B", true, true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hq, low, lib, out := setup(t)
+			args := append([]string{"organize", "-s", hq, "-s", low, "-l", lib, "-o", out}, tt.flags...)
+			if got := runWithArgs(t, args...); got != exitOK {
+				t.Fatalf("run(%q) = %d", args, got)
+			}
+			data, err := os.ReadFile(filepath.Join(lib, "A", "ABBA - SOS", "song.txt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(string(data), "#VERSION"); got != tt.abbaHasVersion {
+				t.Errorf("kept ABBA has #VERSION = %v, want %v", got, tt.abbaHasVersion)
+			}
+			if _, err := os.Stat(filepath.Join(lib, tt.beatles, "The Beatles - Help!", "song.txt")); err != nil {
+				t.Errorf("The Beatles not in %s: %v", tt.beatles, err)
+			}
+			raw, err := os.ReadFile(filepath.Join(out, "organize_plan.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rep report
+			if err := json.Unmarshal(raw, &rep); err != nil {
+				t.Fatal(err)
+			}
+			deepNote := false
+			for _, n := range rep.Notes {
+				deepNote = deepNote || strings.Contains(n, "deep decode")
+			}
+			if rep.Priority != tt.priority || rep.IgnoreThe != tt.ignoreTh || deepNote != tt.deepNote {
+				t.Errorf("report: priority %v, ignoreThe %v, deep note %v (notes %q)", rep.Priority, rep.IgnoreThe, deepNote, rep.Notes)
+			}
+		})
+	}
+}
