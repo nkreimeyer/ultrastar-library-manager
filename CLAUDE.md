@@ -21,8 +21,9 @@ src/main/songs-sanitizer/     Go module github.com/nkreimeyer/ultrastar-songs-sa
   utils/utils.go              media type checks, cover/background detection
   fixtxt/                     dedupe song txts, decode → UTF-8, fix #MP3/#AUDIO/#VIDEO/#COVER/#BACKGROUND
   cleanup/                    move unreferenced files to extra-files/, near-empty folders to invalid/
-  fixvideos/                  ffmpeg: re-encode to H.264 mp4, downscale >1080p, strip audio, flag corrupt files
-  fixaudio/                   ffmpeg: downmix to stereo, peak-normalize to -3 dB (marked, idempotent)
+  fixvideos/                  ffmpeg: re-encode to H.264 mp4, downscale to fit 1920x1080, strip audio, flag corrupt files (tagged, idempotent)
+  fixaudio/                   ffmpeg: downmix to stereo, peak-normalize to -3 dB, originals kept (tagged, idempotent)
+  journal/                    content-fingerprint journal for media formats that cannot carry a marker tag
 old/                          legacy Python/shell (duplicate detection by folder name, fuzzy txt compare)
 test-assets/                  local fixture library (gitignored, not in the repo)
 ```
@@ -39,7 +40,7 @@ go build -o ../../../test-assets/mybin .
 cd ../../../test-assets && ./mybin -s songs -n     # dry run; outputs go to test-assets/sanitizer-output/
 ```
 
-Flags: `-s <songdir>` (required) · `-o <outdir>` (default `sanitizer-output/` next to `-s`) ·
+Flags: `-s <songdir>` (required) · `-o <outdir>` (default `sanitizer-output/` next to the resolved `-s`) ·
 `-n` dry run · `-t` fixtxt (default **on**) · `-c` cleanup (default **on**) · `-m` fixvideos ·
 `-a` fixaudio · `-v <level>`. Order is always fixtxt → cleanup → fixvideos → fixaudio. Bool
 flags are turned off with `-t=false`; leftover arguments (`-t false`) are rejected. Exit codes:
@@ -82,9 +83,15 @@ flags are turned off with `-t=false`; leftover arguments (`-t false`) are reject
   - Hidden folders, `@eaDir` and planned dry-run moves are skipped. Unreadable folders are
     logged, counted and skipped.
 - Concurrency: fixtxt and cleanup run batches of 100 goroutines, one batch after another.
-  fixvideos and fixaudio run one goroutine per batch of 100 folders, capped at 4 / 16
-  batches. Per-run state lives in a collector or processor struct with a mutex (no globals).
-  `fsops` serializes target-name reservation.
+  fixaudio uses a worker pool of min(16, NumCPU) over folders, and fixvideos one of 4 workers
+  over video files. Per-run state lives in a collector or processor struct with a mutex (no
+  globals). `fsops` serializes target-name reservation.
+- Moving a folder onto an existing target merges it in two cases: this run already moved
+  something below that target (a leftover category whose songs were just moved), or the
+  folder is empty. A song folder colliding with one from an earlier run gets ` (2)`.
+- Folders whose media or image names are not valid UTF-8 are skipped entirely by fixtxt
+  (and their files are never moved by cleanup). They are reported until renamed, because a
+  CP1252 txt may reference them byte-for-byte.
 - Cover vs. background is guessed from image shape (square = cover). JPEG, PNG and GIF
   headers are read with `image.DecodeConfig`.
 
@@ -109,10 +116,17 @@ swapped `#MP3`/`#VIDEO`, deleting every txt, the `#VIDEOGAP` overwrite, the brok
 temp files in the CWD, `log.Fatal`, bitrate loss, the extension-change handling, audio
 stripped from the only audio source, and the README.
 
-**Design decision**: fixvideos and fixaudio replace media in place, and that cannot be
-undone. This is intentional: keeping every original would make the library very large while
-the scripts run. Do not add backups of re-encoded media. Undo and journal features only
-cover moves and txt edits.
+**Design decisions:**
+- fixvideos replaces videos in place, and that cannot be undone. This is intentional:
+  keeping every original video would make the library very large while the scripts run.
+  Do not add backups of re-encoded videos.
+- fixaudio **does** keep a copy of every source file it re-encodes, in `<out>/originals/`
+  (`ops.CopyInto`, before `ops.Replace`). Each file is processed only once, thanks to the
+  marker tag or journal, so it is backed up only once.
+- Re-encoding must be idempotent. Mark processed or checked media with a tag
+  (`SANITIZER_NORMALIZED`, `SANITIZER_VIDEO`). Formats that cannot hold one go into the
+  content-fingerprint journal (`journal`, `<out>/media-journal.txt`), which survives renames
+  and moves (e.g. the A–Z reorganization).
 
 Still open (roadmap items):
 
@@ -120,14 +134,18 @@ Still open (roadmap items):
   It is ignored as media and moved to `extra-files/` by the next cleanup run, and the
   original is untouched.
 - **Dry-run is per module.** Later modules don't see txt changes that earlier modules would
-  make, so the plan can differ from a real run. Planned folder moves *are* respected
-  (`ops.WouldBeMoved`).
+  make, so the plan can differ from a real run. Planned moves *are* respected
+  (`ops.WouldBeMoved`, planned merge targets), and cleanup keeps media of songs that have no
+  `#MP3`/`#VIDEO` tag yet.
+- Peak normalization of heavily clipped material at low bitrates can miss -3 dBFS by about
+  1–2 dB on the first pass (encoder overshoot). The marker prevents repeated passes;
+  `loudnorm` would be the better fix.
 - `utils.IsFileReferenced` is a substring search (`a.mp3` matches `banana.mp3`). It errs on
   the side of keeping files. It will be replaced by the txt parser.
 - `-c:a copy` into mp4 fails for audio codecs mp4 cannot hold (PCM/WMA inside `.avi`); the
-  failure is logged and the original kept. A video whose re-encode is always larger gets re-encoded and discarded
-  on every run.
-- With fewer than 100 songs, fixvideos processes all videos one at a time (batching).
+  failure is logged and the original kept.
+- Not yet decided: whether the original of an extension-changing video conversion
+  (`.avi` → `.mp4`) should be deleted instead of kept in `extra-files/`.
 - Cover vs. background uses exact squareness (600×598 counts as a background).
 - `-t` and `-c` are on by default.
 
@@ -139,7 +157,8 @@ clean, deduplicated, working songs end up in the final library.
 
 ### 1. Improve duplicate detection
 
-Today: Go only "dedupes" multiple `.txt` files *inside one folder*, destructively by mtime.
+Today: Go only "dedupes" multiple song `.txt` files *inside one folder*: it keeps the newest
+and moves the others to `extra-files/` (by mtime only, no content comparison).
 Cross-folder detection only exists in `old/` and is folder-name based. Its `(?!DUET)` check is
 case-sensitive, it scans the top level only, picks a winner by listing order, and crashes if
 `songs.dup/<name>` already exists.
@@ -187,8 +206,7 @@ silently replaces them. Restore the fail-then-fallback behaviour, in the right o
 Also:
 
 - Honour `#ENCODING` as a hint when present. Remove it or set `#VERSION` when writing UTF-8.
-- Normalize line endings (`\r\n`, `\r`) before splitting. Drop `bufio.Scanner` (64 KB line
-  limit).
+- Normalize line endings (`\r\n`, `\r`) before splitting (done).
 - Write only when content changed, atomically (temp file in the same dir, then rename),
   with an optional `.bak`.
 - **Mojibake repair**: double-encoded text like `MÃ¤dchen` is valid UTF-8, so the steps
@@ -224,13 +242,13 @@ Today a song is "broken" only if it has ≤1 file, no txt, or no audio and no vi
   audio length if `#VIDEOGAP` is set.
 - Media integrity: decode check (`ffmpeg -v error -i f -f null -`), zero-length or
   truncated files, audio with no audio stream, unsupported codecs. Add the missing audio
-  extensions (`.opus`, `.wma`, `.mka`) so valid songs aren't sent to invalid/.
+  extension `.mka` (`.opus` and `.wma` are done) so valid songs aren't sent to invalid/.
 - Referenced files that don't exist. Matching must be case-insensitive and normalized.
 - Images: use `image.DecodeConfig` (no full decode). Support gif/bmp/webp. Use an
   aspect-ratio tolerance plus filename hints (`[CO]`, `[BG]`, `cover`) for the cover vs.
   background decision.
 - Output: one structured report (`report.json` plus a readable summary) with a reason per
-  song, instead of scattered txt logs. Moving songs to `invalid/` stays opt-in.
+  song, instead of scattered txt logs. Moving songs to `invalid/` should become opt-in.
 
 ### 4. Robustness and UX
 
@@ -248,6 +266,24 @@ Slice 1 is **done** (2026-11):
   marker;
 - [x] tests for every package, plus pipeline tests.
 
+Slice 2 is **done** (2026-11):
+- [x] fixaudio keeps originals (`originals/`), measures the true float peak (astats),
+  skips `#VOCALS`/`#INSTRUMENTAL` stems, and uses a worker pool;
+- [x] idempotent video processing (`SANITIZER_VIDEO` tag, lossless remux to tag discarded
+  results, journal for AVI/MPEG), downscaling of tall videos, a worker pool over files;
+- [x] the media journal (content fingerprints, saved after every entry, atomic writes);
+- [x] decoding, moved to `utils/decode.go` ("when in doubt, Problem"): `#ENCODING` hints for
+  all Windows/ISO/KOI8 codepages (Latin-1 is read as CP1252, unknown codecs are a Problem);
+  CP1250 via `#LANGUAGE`; CP1250 artefacts are detected; `classifyUTF8Sequences` separates
+  accidental UTF-8 (isolated sequences such as `ß…`) from real UTF-8 (runs, Latin-1 leads,
+  `’ “ –`, emoji); a stale tag is only dropped when every character fits the declared codepage;
+- [x] safer audio choice (stems excluded, name preference, report when ambiguous),
+  `#MP3` for video-only songs, and stem spelling fixes;
+- [x] folders with non-UTF-8 names skipped, unreadable txts counted once and never treated
+  as "broken", and leftover categories merged in `invalid/`;
+- [x] cleanup skips songs whose txt has a decode Problem and keeps the cover/background
+  fixtxt would use; reports and the journal are fsynced.
+
 Next slices:
 - Signal handling: `signal.NotifyContext` in main, a ctx in `Config`, `exec.CommandContext`
   for ffmpeg, and removing the temp file on cancel.
@@ -257,8 +293,7 @@ Next slices:
 - CLI: subcommands (`fixtxt`, `cleanup`, `video`, `audio`, `dedupe`, `check`, `organize`) or
   at least opt-in destructive modules, progress output (n/total, ETA), and an undo journal
   for moves and txt edits (not for re-encoded media, see "Design decision").
-- Concurrency: one worker pool sized from `runtime.NumCPU()` over files instead of batches of
-  100 folders. Remember videos not worth re-encoding (a journal in the out dir).
+- Concurrency: worker pools for fixtxt and cleanup as well (fixaudio and fixvideos are done).
 - Audio: loudness normalization (`loudnorm`, EBU R128) instead of peak normalization.
 - CI: `go vet`, `staticcheck` and `go test -race`.
 
