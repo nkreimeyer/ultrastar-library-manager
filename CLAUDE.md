@@ -100,6 +100,14 @@ Same exit codes and leftover-argument rule.
   never `test-assets/`. For ffmpeg tests, generate media with lavfi and call `t.Skip` when
   ffmpeg is missing. When fixing a bug, check that the test fails without the fix (a mutation
   check).
+- Mutation testing (`~/go/bin/gremlins`): always run it inside a memory cgroup, one package at
+  a time: `systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 -p OOMPolicy=continue
+  gremlins unleash --workers 2 --timeout-coefficient 30 ./<pkg>` (80 for fixvideos; the root
+  package with `-E '^[a-z]+/' .`). Some mutants (e.g. in `utils.utf8Sequences`) become endless
+  allocating loops that OOM the machine otherwise. Never pass `--test-cpu`: it makes every
+  mutant count as KILLED. Tokens in switch `case` expressions are always NOT COVERED (a
+  coverage-profile artifact); check those by hand. Surviving mutants that are equivalent
+  (unique sort keys, log-only arguments, buffer sizes) are expected.
 - **Never use `go run .` against a library**, and never point the tool at the real library
   while developing. Use a copy in `test-assets/`.
 
@@ -112,7 +120,22 @@ Same exit codes and leftover-argument rule.
   - A folder with a txt or media but no song below it is a broken song, returned as a whole.
   - A category of only broken songs returns them individually.
   - Hidden folders, `@eaDir` and planned dry-run moves are skipped. Unreadable folders are
-    logged, counted and skipped.
+    logged, counted and skipped. A folder holding the output marker counts as content, so
+    its parent is never returned as a broken song.
+  - Symlinks to regular txt files are song txts (`ListTxtFiles`/`FindSongTxt` and discovery
+    agree). fixtxt never rewrites a symlinked txt; it lists it in `missing_files.txt` instead.
+- Header tags (`utils.HeaderTags`, `songtxt.Parse`) are read up to the first body line
+  (note, `-`, `B`, `P`); tags after it are ignored (`IssueTagAfterNotes`). A repeated tag
+  resolves to its last header occurrence, as in UltraStar. A lone `\r` is a line break.
+- `utils.DecodeTxt`: any NUL byte is a Problem (BOM-less UTF-16 is still decoded, so the
+  header stays readable). With an `#ENCODING` tag, only "clean" UTF-8 sequences count as
+  mixed-encoding evidence, and in non-Latin codepages an isolated 2-byte sequence never does.
+  `#LANGUAGE` names are diacritic-folded (`Čeština`, `Română`).
+- fsops: a move across file systems first checks that src can be renamed (fails cleanly if
+  not), copies, then parks src under a hidden `.fsops-move-<pid>-<n>` name and deletes it.
+  If that delete fails, the move still counts as done and the leftover is logged.
+  `AppendJournal` starts a new line after a crash-truncated last line. Collision names keep
+  dotfiles intact (`.DS_Store (2)`).
 - Concurrency: fixtxt and cleanup run batches of 100 goroutines, one batch after another.
   fixaudio uses a worker pool of min(16, NumCPU) over folders, and fixvideos one of 4 workers
   over video files. Per-run state lives in a collector or processor struct with a mutex (no
@@ -156,9 +179,13 @@ Same exit codes and leftover-argument rule.
   (`TestRunDryRunMatchesRealRun`).
 - check: `analyze` is a pure function over the parsed song and probed file info, so every
   rule is table-tested without ffmpeg. Findings are not `ops.Fail`s and don't change the
-  exit code. Repeated tags resolve like UltraStar does (the last one wins; fixtxt's
-  `removeDuplicateTags` also keeps the last). Songs whose txt has a decode Problem are
-  reported but never moved by `-move-broken`.
+  exit code. Repeated tags resolve like UltraStar does (the last header occurrence wins;
+  fixtxt's `removeDuplicateTags` also keeps the last and only looks at the header). Songs
+  whose txt has a decode Problem are reported but never moved by `-move-broken`.
+  `mediaInfo.HasVideo` means a moving video stream (attached cover art does not count).
+- organize: when a keeper from another source cannot reach the library, the library's own
+  copies of that song stay in place (not moved to duplicates/). The report's duplicate and
+  invalid `Dest` is the actual target (with ` (2)`), also in dry runs.
 
 ### UltraStar format reminders
 
@@ -192,7 +219,10 @@ stripped from the only audio source, and the README.
 - Re-encoding must be idempotent. Mark processed or checked media with a tag
   (`SANITIZER_NORMALIZED`, `SANITIZER_VIDEO`). Formats that cannot hold one go into the
   content-fingerprint journal (`journal`, `<out>/media-journal.txt`), which survives renames
-  and moves (e.g. the A–Z reorganization).
+  and moves (e.g. the A–Z reorganization). `.m4a` files are journaled, not tagged: writing
+  the tag needs `-movflags +use_metadata_tags`, which drops the cover and the iTunes tags.
+- fixvideos re-encodes always output 8-bit yuv420p with even dimensions. A conversion
+  whose `.mp4` target already exists is skipped before encoding.
 
 Still open (roadmap items):
 
@@ -231,7 +261,12 @@ Still open (roadmap items):
   in that run's report and the log (an undo journal is in item 4).
 - check: an empty folder inside a category is reported as `no-song-txt` (error).
 - fixaudio drops cover attachments of `.mka` files (kept in `originals/`). Codecs it cannot
-  re-encode as themselves (DTS, TrueHD) are skipped with a warning.
+  re-encode as themselves (DTS, TrueHD, and HE-AAC/HE-AACv2, since ffmpeg's native aac
+  encoder only writes AAC-LC) are skipped with a warning, so such files are not downmixed.
+- `fsops.WriteFileAtomic` (and so `utils.ReplaceFileReference`, used by fixvideos) replaces
+  a symlinked txt with a regular file; only fixtxt guards against it.
+- fixvideos: in a dry run, a re-encode that would come out larger is still planned as
+  "re-encode + strip audio" (the real run falls back to a strip-only stream copy).
 - `-t` and `-c` are on by default.
 - organize: a keeper whose target is an existing non-song folder in the library (e.g. an
   emptied category named exactly `A/Artist - Title`) stays in place until that folder is
