@@ -54,8 +54,9 @@ the log and the summary line), `2` invalid command line.
 > moved into the output folder, mirroring the library's folder structure, so they can be
 > restored. The audio module (`-a`) keeps a copy of every file it re-encodes in
 > `originals/`. The video module (`-m`) replaces videos in place without a backup (keeping
-> them would make the library very large); only originals whose file name changes
-> (e.g. `.avi` → `.mp4`) are kept in `extra-files/`.
+> them would make the library very large). This includes conversions that change the file
+> name (e.g. `.avi` → `.mp4`): the original is deleted once the song `.txt` points to the
+> new file.
 
 In dry-run mode every module looks at the library as it is, so a later module does not
 see the changes an earlier one would make (e.g. cleanup does not know about a `#MP3` tag

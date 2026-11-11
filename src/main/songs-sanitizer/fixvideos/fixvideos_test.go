@@ -152,14 +152,15 @@ func TestReEncodeAviToMp4(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if st := ops.Stats(); st.Failed != 0 {
-		t.Errorf("Failed = %d, want 0", st.Failed)
+	if st := ops.Stats(); st.Failed != 0 || st.Removed != 1 {
+		t.Errorf("stats = %+v, want 1 removed, 0 failed", st)
 	}
 	if _, err := os.Stat(filepath.Join(song, "video.avi")); !os.IsNotExist(err) {
 		t.Errorf("original video.avi still in song folder (err=%v)", err)
 	}
-	if _, err := os.Stat(filepath.Join(outDir, "extra-files", "Artist", "Artist - Song", "video.avi")); err != nil {
-		t.Errorf("original not moved to extra-files: %v", err)
+	// The original of a conversion is deleted, not kept (design decision, see CLAUDE.md).
+	if _, err := os.Stat(filepath.Join(outDir, "extra-files")); !os.IsNotExist(err) {
+		t.Errorf("original must be deleted, not moved to extra-files (err=%v)", err)
 	}
 	mp4 := filepath.Join(song, "video.mp4")
 	if got := probeStreams(t, mp4); !slices.Equal(got, []string{"video:h264", "audio:ac3"}) {
@@ -196,8 +197,11 @@ func TestReEncodeUpdatesReferenceSpelledDifferently(t *testing.T) {
 	if got := readFile(t, filepath.Join(song, "song.txt")); got != "#TITLE:S\n#ARTIST:A\n#VIDEO:video.mp4\n" {
 		t.Errorf("txt = %q", got)
 	}
-	if _, err := os.Stat(filepath.Join(outDir, "extra-files", "A - S", "video.avi")); err != nil {
-		t.Errorf("original must be kept in extra-files: %v", err)
+	if _, err := os.Stat(filepath.Join(song, "video.avi")); !os.IsNotExist(err) {
+		t.Errorf("original must be deleted (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "extra-files")); !os.IsNotExist(err) {
+		t.Errorf("nothing must be moved to extra-files (err=%v)", err)
 	}
 	assertNoTempFiles(t, songDir)
 }

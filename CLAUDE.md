@@ -55,6 +55,8 @@ flags are turned off with `-t=false`; leftover arguments (`-t false`) are reject
 - **Never delete.** Removed files go to `cfg.ExtraFilesDir()`, and broken folders to
   `cfg.InvalidDir()`, using `ops.MoveInto(src, dir, cfg.RelPath(...))` so the library structure
   is mirrored. Reports go to `ops.WriteReport(cfg.ReportPath(name), …)` with sorted content.
+  The only exception is fixvideos (see "Design decisions"), which deletes the original of a
+  conversion with `ops.Remove`, and only after the txt references the new file.
 - **Dry-run** must leave `cfg.SongDir` byte-identical. Probes (ffprobe, volumedetect) are
   fine. Planned media changes are recorded with `ops.PlanReplace`.
 - **No `log.Fatal`/panic in modules.** Log with context and continue with the next song. Use
@@ -119,7 +121,8 @@ stripped from the only audio source, and the README.
 **Design decisions:**
 - fixvideos replaces videos in place, and that cannot be undone. This is intentional:
   keeping every original video would make the library very large while the scripts run.
-  Do not add backups of re-encoded videos.
+  Do not add backups of re-encoded videos. The same goes for conversions that change the
+  name (`.avi` → `.mp4`): the original is deleted once the txt points to the new file.
 - fixaudio **does** keep a copy of every source file it re-encodes, in `<out>/originals/`
   (`ops.CopyInto`, before `ops.Replace`). Each file is processed only once, thanks to the
   marker tag or journal, so it is backed up only once.
@@ -144,8 +147,6 @@ Still open (roadmap items):
   the side of keeping files. It will be replaced by the txt parser.
 - `-c:a copy` into mp4 fails for audio codecs mp4 cannot hold (PCM/WMA inside `.avi`); the
   failure is logged and the original kept.
-- Not yet decided: whether the original of an extension-changing video conversion
-  (`.avi` → `.mp4`) should be deleted instead of kept in `extra-files/`.
 - Cover vs. background uses exact squareness (600×598 counts as a background).
 - `-t` and `-c` are on by default.
 

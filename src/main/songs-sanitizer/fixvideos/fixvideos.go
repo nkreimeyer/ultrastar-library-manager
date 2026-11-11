@@ -347,7 +347,7 @@ func (p *processor) processVideoFile(dir, file string) {
 	if p.cfg.DryRun {
 		action := pl.describe()
 		if pl.renames(file) {
-			action += fmt.Sprintf(" (to %s, updating the song txt and moving the original to extra-files)", pl.outputExt(file))
+			action += fmt.Sprintf(" (to %s, updating the song txt and deleting the original)", pl.outputExt(file))
 		}
 		p.ops.PlanReplace(file, action)
 		return
@@ -383,8 +383,10 @@ func (p *processor) processVideoFile(dir, file string) {
 // replaceOriginal replaces file with the processed tmp file. A larger result is discarded
 // and the original marked as checked. If the extension changed (not only its case), tmp is
 // renamed to the new name, the song txt is updated to reference it and the original is
-// moved to extra-files (never deleted). If anything goes wrong, the original stays in place
-// and keeps being referenced, so the song keeps working.
+// deleted: like an in-place replacement, a conversion is not undoable (keeping originals
+// would make the library very large). If anything goes wrong before the txt points to the
+// new file, the original stays in place and keeps being referenced, so the song keeps
+// working.
 func (p *processor) replaceOriginal(dir, file, tmp string) {
 	discard := func() { os.Remove(tmp) } // our own temp file, not a library file
 
@@ -453,9 +455,9 @@ func (p *processor) replaceOriginal(dir, file, tmp string) {
 
 	p.rememberProcessed(newPath)
 
-	rel := filepath.Join(p.cfg.RelPath(dir), oldName)
-	if _, err := p.ops.MoveInto(file, p.cfg.ExtraFilesDir(), rel); err != nil {
-		log.Errorf("Moving the original video away: %v", err)
+	// If this fails, the unreferenced original is moved to extra-files by the next cleanup.
+	if err := p.ops.Remove(file); err != nil {
+		log.Errorf("Deleting the original video: %v", err)
 	}
 }
 
