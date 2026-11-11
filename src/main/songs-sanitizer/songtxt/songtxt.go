@@ -86,6 +86,9 @@ const (
 
 // Song is a parsed song txt.
 type Song struct {
+	// Tags holds the header tags in file order. A tag line after the first body line
+	// (note, break, B or P line) is not in Tags: players ignore it, and Parse reports it
+	// as IssueTagAfterNotes.
 	Tags       []Tag
 	Notes      []Note      // in file order
 	Breaks     []LineBreak // in file order
@@ -140,10 +143,14 @@ func Parse(text string) (*Song, []Issue) {
 				addIssue(lineNo, IssueMalformedTag, "tag line without a key: %q", raw)
 				continue
 			}
-			s.Tags = append(s.Tags, Tag{Key: key, Value: strings.TrimSpace(body[colon+1:]), Line: lineNo})
 			if inBody {
-				addIssue(lineNo, IssueTagAfterNotes, "tag #%s after the first note line", key)
-			} else if strings.EqualFold(key, "RELATIVE") {
+				// UltraStar reads the header only up to the first body line, so a late tag
+				// never takes effect: it is reported, not recorded.
+				addIssue(lineNo, IssueTagAfterNotes, "tag #%s after the first note line is ignored", key)
+				continue
+			}
+			s.Tags = append(s.Tags, Tag{Key: key, Value: strings.TrimSpace(body[colon+1:]), Line: lineNo})
+			if strings.EqualFold(key, "RELATIVE") {
 				s.Relative = strings.EqualFold(strings.TrimSpace(body[colon+1:]), "yes")
 			}
 
@@ -406,22 +413,31 @@ func (s *Song) BeatToMs(beat float64) (float64, error) {
 	changes := append([]BPMChange(nil), s.BPMChanges...)
 	sort.SliceStable(changes, func(i, j int) bool { return changes[i].Beat < changes[j].Beat })
 
-	ms, pos, cur := gap, 0.0, bpm
-	for _, c := range changes {
-		cb := float64(c.Beat)
-		if cb >= beat {
-			break
+	// walk adds the time from beat from to beat to (from <= to) to ms: the header BPM
+	// applies before the first change, each change from its beat on.
+	walk := func(ms, from, to float64) float64 {
+		pos, cur := from, bpm
+		for _, c := range changes {
+			cb := float64(c.Beat)
+			if cb >= to {
+				break
+			}
+			if c.BPM <= 0 || math.IsNaN(c.BPM) || math.IsInf(c.BPM, 0) {
+				continue // never produced by Parse; guards hand-built Songs
+			}
+			if cb > pos {
+				ms += (cb - pos) * 60000 / (cur * 4)
+				pos = cb
+			}
+			cur = c.BPM
 		}
-		if c.BPM <= 0 || math.IsNaN(c.BPM) || math.IsInf(c.BPM, 0) {
-			continue // never produced by Parse; guards hand-built Songs
-		}
-		if cb > pos {
-			ms += (cb - pos) * 60000 / (cur * 4)
-			pos = cb
-		}
-		cur = c.BPM
+		return ms + (to-pos)*60000/(cur*4)
 	}
-	return ms + (beat-pos)*60000/(cur*4), nil
+	// Beat 0 is at #GAP. A negative beat (possible for notes, and for BPM changes in
+	// RELATIVE files) lies before it: count from the lower of the two, so that a change
+	// at a negative beat also applies from its beat on.
+	lo := min(0, beat)
+	return walk(gap, lo, beat) - walk(0, lo, 0), nil
 }
 
 // LastNoteEndBeat returns max(Start+Length) over all notes; false if there are no notes.

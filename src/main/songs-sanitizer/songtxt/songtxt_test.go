@@ -1,6 +1,7 @@
 package songtxt
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
@@ -102,6 +103,7 @@ func TestParseNoteLines(t *testing.T) {
 		{": 10 0 -12 ~", Note{Type: Normal, Start: 10, Length: 0, Pitch: -12, Text: "~"}},
 		{": -2 2 0 pre", Note{Type: Normal, Start: -2, Length: 2, Pitch: 0, Text: "pre"}}, // signed beats, as in USDX
 		{":0 4 5 la", Note{Type: Normal, Start: 0, Length: 4, Pitch: 5, Text: "la"}},
+		{"*0 4 5 la", Note{Type: Golden, Start: 0, Length: 4, Pitch: 5, Text: "la"}},
 		{"  : 0 4 5 la", Note{Type: Normal, Start: 0, Length: 4, Pitch: 5, Text: "la"}},
 		{": 0 4 5 Mädchen’s", Note{Type: Normal, Start: 0, Length: 4, Pitch: 5, Text: "Mädchen’s"}},
 	}
@@ -127,10 +129,15 @@ func TestParseIssues(t *testing.T) {
 		{"tag after notes", "#BPM:1\n: 0 1 2 a\n#GAP:5", []string{"tag-after-notes"}, []int{3}},
 		{"non-integer note", ": a 1 2 x\n: 0 1,5 2 x\n: 0 1 2.0 x", []string{"malformed-note", "malformed-note", "malformed-note"}, []int{1, 2, 3}},
 		{"missing note field", ": 0 1\n:\n* 1", []string{"malformed-note", "malformed-note", "malformed-note"}, []int{1, 2, 3}},
+		// F, R and G need a separator ("F0" is not a note); alone they are an empty note.
+		{"letter note type alone", "F\nR \nG\t", []string{"malformed-note", "malformed-note", "malformed-note"}, []int{1, 2, 3}},
+		{"letter note type without space", "F0 1 2 x\nR0 1 2 x\nG1 2 3 x", []string{"unknown-line", "unknown-line", "unknown-line"}, []int{1, 2, 3}},
 		{"negative length", ": 0 -1 2 x\n: -1 1 2 x", []string{"malformed-note"}, []int{1}},
 		{"malformed break", "-\n- x\n- 1 y\n- 1 2 3", []string{"malformed-break", "malformed-break", "malformed-break", "malformed-break"}, []int{1, 2, 3, 4}},
-		{"malformed bpm change", "B\nB x 100\nB 10\nB 10 0\nB 10 abc", []string{"malformed-bpm", "malformed-bpm", "malformed-bpm", "malformed-bpm", "malformed-bpm"}, []int{1, 2, 3, 4, 5}},
-		{"bad player", "P0\nP4\nP 12", []string{"bad-player", "bad-player", "bad-player"}, []int{1, 2, 3}},
+		{"malformed bpm change", "B\nB x 100\nB 10\nB 10 0\nB 10 abc\nB -5 100\nB 10 -5", []string{"malformed-bpm", "malformed-bpm", "malformed-bpm", "malformed-bpm", "malformed-bpm", "malformed-bpm", "malformed-bpm"}, []int{1, 2, 3, 4, 5, 6, 7}},
+		{"B needs a separator", "B10 100\nBPM 10", []string{"unknown-line", "unknown-line"}, []int{1, 2}},
+		{"bad player", "P0\nP4\nP 12\nP9", []string{"bad-player", "bad-player", "bad-player", "bad-player"}, []int{1, 2, 3, 4}},
+		{"E needs a separator", "#BPM:1\nEnd\nE\t\n: x", []string{"unknown-line"}, []int{2}},
 		{"unknown lines", "hello\nFoo 1 2 3\nPx\nEnd\nBla", []string{"unknown-line", "unknown-line", "unknown-line", "unknown-line", "unknown-line"}, []int{1, 2, 3, 4, 5}},
 		{"blank lines are silent", "\n   \n\t\n#BPM:1\n\n: 0 1 2 a\n \nE", nil, nil},
 		{"after E is ignored", "#BPM:1\n: 0 1 2 a\nE\ngarbage\n#TITLE:x\n: x", nil, nil},
@@ -161,9 +168,33 @@ func TestParseMalformedLinesAreSkipped(t *testing.T) {
 	if len(s.Notes) != 2 || s.Notes[1].Text != "c" || len(s.Breaks) != 0 {
 		t.Errorf("notes=%+v breaks=%+v", s.Notes, s.Breaks)
 	}
-	// The late tag is still recorded.
-	if v, ok := s.Tag("GAP"); !ok || v != "3" {
-		t.Errorf("late tag not recorded: %q %v", v, ok)
+	// The late tag is reported, but not recorded: players ignore it.
+	if v, ok := s.Tag("GAP"); ok {
+		t.Errorf("late tag recorded: %q", v)
+	}
+}
+
+// UltraStar reads the header only up to the first body line, so a tag after it must not
+// override (or add to) the header: check and organize use the last occurrence of a tag.
+func TestParseLateTagDoesNotOverrideHeader(t *testing.T) {
+	s, issues := Parse("#TITLE:Real\n#BPM:300\n#GAP:100\n: 0 1 0 a\n#GAP:900\n#BPM:30\n#TITLE:Late\n#VIDEO:v.mp4\nE")
+	if got, want := issueCodes(issues), []string{"tag-after-notes", "tag-after-notes", "tag-after-notes", "tag-after-notes"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("codes = %v, want %v", got, want)
+	}
+	for i, is := range issues {
+		if is.Line != 5+i {
+			t.Errorf("issue %d line = %d, want %d", i, is.Line, 5+i)
+		}
+	}
+	want := []Tag{{Key: "TITLE", Value: "Real", Line: 1}, {Key: "BPM", Value: "300", Line: 2}, {Key: "GAP", Value: "100", Line: 3}}
+	if !reflect.DeepEqual(s.Tags, want) {
+		t.Errorf("tags = %+v, want %+v", s.Tags, want)
+	}
+	if d := s.Duplicates(); len(d) != 0 {
+		t.Errorf("Duplicates = %v, want none", d)
+	}
+	if ms, err := s.BeatToMs(10); err != nil || ms != 600 {
+		t.Errorf("BeatToMs(10) = %v %v, want 600 (header BPM and GAP)", ms, err)
 	}
 }
 
@@ -478,4 +509,166 @@ func FuzzParse(f *testing.F) {
 		_, _ = s.GapMs()
 		_, _, _ = s.StartSec()
 	})
+}
+
+func TestParseMalformedTagMessages(t *testing.T) {
+	_, issues := Parse("#NOCOLON\n#:x\n# :y")
+	want := []string{"without ':'", "without a key", "without a key"}
+	if len(issues) != len(want) {
+		t.Fatalf("issues = %+v", issues)
+	}
+	for i, is := range issues {
+		if is.Code != IssueMalformedTag || !strings.Contains(is.Msg, want[i]) {
+			t.Errorf("issue %d = %+v, want %s containing %q", i, is, IssueMalformedTag, want[i])
+		}
+	}
+}
+
+func TestParseMalformedBPMChangesAreSkipped(t *testing.T) {
+	s, _ := Parse("#BPM:100\n: 0 1 0 a\nB -5 100\nB 10 -5\nB 10 0\nB 12 200\nE")
+	if want := []BPMChange{{Beat: 12, BPM: 200, Line: 6}}; !reflect.DeepEqual(s.BPMChanges, want) {
+		t.Errorf("BPMChanges = %+v, want %+v", s.BPMChanges, want)
+	}
+}
+
+// Every body line (note, break, B line, P marker) ends the header: a tag after it is
+// reported and has no effect, and a late #RELATIVE does not switch modes.
+func TestParseBodyStartsWithAnyBodyLine(t *testing.T) {
+	for _, first := range []string{"P1", "- 4", "B 0 100", ": 0 1 0 x", "F 0 1 0 x"} {
+		t.Run(first, func(t *testing.T) {
+			s, issues := Parse(first + "\n#RELATIVE:yes\n: 0 1 0 a\n- 4\n: 1 1 0 b")
+			if got := issueCodes(issues); !reflect.DeepEqual(got, []string{IssueTagAfterNotes}) || issues[0].Line != 2 {
+				t.Fatalf("issues = %+v, want tag-after-notes on line 2", issues)
+			}
+			if s.Relative || len(s.Tags) != 0 {
+				t.Errorf("late #RELATIVE applied: Relative=%v tags=%+v", s.Relative, s.Tags)
+			}
+			last := s.Notes[len(s.Notes)-1]
+			if last.Text != "b" || last.Start != 1 {
+				t.Errorf("last note = %+v, want b at beat 1", last)
+			}
+		})
+	}
+}
+
+func TestParseRelativeLastHeaderTagWins(t *testing.T) {
+	for _, tt := range []struct {
+		tags     string
+		relative bool
+		start    int
+	}{
+		{"#RELATIVE:yes\n#RELATIVE:no", false, 1},
+		{"#RELATIVE:no\n#relative:Yes", true, 5},
+	} {
+		s := mustParse(t, tt.tags+"\n: 0 1 0 a\n- 4\n: 1 1 0 b")
+		if s.Relative != tt.relative || s.Notes[1].Start != tt.start {
+			t.Errorf("%q: Relative=%v second note at %d, want %v %d", tt.tags, s.Relative, s.Notes[1].Start, tt.relative, tt.start)
+		}
+	}
+}
+
+// RELATIVE duets: P3 has its own offset like P1 and P2, a B line uses the offset of the
+// current player, and a negative break moves the offset back.
+func TestParseRelativeDuetSections(t *testing.T) {
+	s := mustParse(t, "#BPM:100\n#RELATIVE:yes\n"+
+		"P1\n: 0 2 0 a\n- 4\n: 0 2 0 b\n"+
+		"P2\n: 1 2 0 c\n- 3\nB 2 200\n: 0 2 0 d\n"+
+		"P3\n: 2 1 0 e\n- -2\n: 0 1 0 f\n"+
+		"P1\n: 1 1 0 g\nB 1 150\nE")
+	var starts, breaks []int
+	for _, n := range s.Notes {
+		starts = append(starts, n.Start)
+	}
+	for _, b := range s.Breaks {
+		breaks = append(breaks, b.Beat)
+	}
+	if want := []int{0, 4, 1, 3, 2, -2, 5}; !reflect.DeepEqual(starts, want) {
+		t.Errorf("starts = %v, want %v", starts, want)
+	}
+	if want := []int{4, 3, -2}; !reflect.DeepEqual(breaks, want) {
+		t.Errorf("breaks = %v, want %v", breaks, want)
+	}
+	want := []BPMChange{{Beat: 5, BPM: 200, Line: 10}, {Beat: 5, BPM: 150, Line: 18}}
+	if !reflect.DeepEqual(s.BPMChanges, want) {
+		t.Errorf("BPMChanges = %+v, want %+v", s.BPMChanges, want)
+	}
+}
+
+func TestBeatToMsEdgeCases(t *testing.T) {
+	near := func(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
+
+	// Invalid changes in a hand-built Song are skipped (300 BPM = 50 ms per beat).
+	s := &Song{Tags: []Tag{{Key: "BPM", Value: "300"}}, BPMChanges: []BPMChange{
+		{Beat: 0, BPM: 0}, {Beat: 2, BPM: -100}, {Beat: 4, BPM: math.NaN()}, {Beat: 6, BPM: math.Inf(1)},
+	}}
+	if got, err := s.BeatToMs(10); err != nil || !near(got, 500) {
+		t.Errorf("invalid changes: BeatToMs(10) = %v %v, want 500", got, err)
+	}
+
+	for _, beat := range []float64{math.Inf(1), math.Inf(-1)} {
+		if got, err := mustParse(t, "#BPM:100").BeatToMs(beat); err == nil {
+			t.Errorf("BeatToMs(%v) = %v, want error", beat, got)
+		}
+	}
+
+	// Two changes at the same beat: the later line wins (stable order), so 600 BPM until
+	// beat 10 is replaced by 150 BPM (100 ms per beat).
+	s = mustParse(t, "#BPM:300\nB 10 600\nB 10 150\n: 0 1 0 a\nE")
+	if got, err := s.BeatToMs(12); err != nil || !near(got, 700) {
+		t.Errorf("same-beat changes: BeatToMs(12) = %v %v, want 700", got, err)
+	}
+	// The same with many changes in reverse beat order (more than the insertion-sort
+	// cutoff of sort.Slice, which is not stable): at every beat 1..40 the second line
+	// (200 BPM = 75 ms per beat) must win over the first (100 BPM).
+	var b strings.Builder
+	b.WriteString("#BPM:300\n: 0 1 0 a\n")
+	for beat := 40; beat >= 1; beat-- {
+		fmt.Fprintf(&b, "B %d 100\nB %d 200\n", beat, beat)
+	}
+	s = mustParse(t, b.String()+"E")
+	if got, err := s.BeatToMs(41); err != nil || !near(got, 50+40*75) {
+		t.Errorf("many same-beat changes: BeatToMs(41) = %v %v, want %v", got, err, 50+40*75)
+	}
+	// A change at exactly the requested beat does not matter yet.
+	s = mustParse(t, "#BPM:300\nB 10 600\n: 0 1 0 a\nE")
+	if got, err := s.BeatToMs(10); err != nil || !near(got, 500) {
+		t.Errorf("change at the beat: BeatToMs(10) = %v %v, want 500", got, err)
+	}
+}
+
+func TestParseNumberUpperExponent(t *testing.T) {
+	if got, err := ParseNumber("1E3"); err != nil || got != 1000 {
+		t.Errorf("ParseNumber(1E3) = %v %v, want 1000", got, err)
+	}
+}
+
+// Regression: a BPM change at a negative beat (RELATIVE: a negative line break moves the
+// next "B 0" before beat 0) was ignored for beats at or before it, so BeatToMs jumped:
+// beat -4 came out at -3000 ms and beat -2 at 0 ms, 3 s for 2 beats of 500 ms. A change
+// applies from its beat on, on both sides of beat 0.
+func TestBeatToMsNegativeBPMChange(t *testing.T) {
+	// 15 BPM: 1000 ms per beat; 30 BPM from beat -4 on: 500 ms per beat.
+	s := mustParse(t, "#BPM:15\n#GAP:1000\n#RELATIVE:yes\n: 0 1 1 a\n- -4\nB 0 30\n: 2 1 1 b\nE")
+	if len(s.BPMChanges) != 1 || s.BPMChanges[0].Beat != -4 {
+		t.Fatalf("BPMChanges = %+v, want one change at beat -4", s.BPMChanges)
+	}
+	for _, tc := range []struct{ beat, want float64 }{
+		{-8, -5000}, // 4 beats at 1000 ms before the change, 4 at 500 ms after it
+		{-6, -3000},
+		{-4, -1000},
+		{-2, 0},
+		{0, 1000},
+		{4, 3000},
+	} {
+		if got, err := s.BeatToMs(tc.beat); err != nil || math.Abs(got-tc.want) > 1e-9 {
+			t.Errorf("BeatToMs(%v) = %v %v, want %v", tc.beat, got, err, tc.want)
+		}
+	}
+	// A change at a positive beat does not affect negative beats.
+	s = mustParse(t, "#BPM:15\n#GAP:1000\n: 0 1 1 a\nB 4 30\n: 8 1 1 b\nE")
+	for _, tc := range []struct{ beat, want float64 }{{-2, -1000}, {6, 6000}} {
+		if got, err := s.BeatToMs(tc.beat); err != nil || math.Abs(got-tc.want) > 1e-9 {
+			t.Errorf("change at 4: BeatToMs(%v) = %v %v, want %v", tc.beat, got, err, tc.want)
+		}
+	}
 }
