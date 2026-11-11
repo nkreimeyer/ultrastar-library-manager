@@ -1,143 +1,206 @@
+// Package cleanup removes clutter from song folders: files that the song txt does not
+// reference are moved to <out>/extra-files/, folders with at most one visible entry are
+// moved to <out>/invalid/. Both targets mirror the folder's path relative to the library
+// root.
 package cleanup
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
+	"github.com/nkreimeyer/ultrastar-songs-sanitizer/config"
+	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fsops"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/utils"
 
 	log "github.com/sirupsen/logrus"
 )
 
-// Run performs the cleanup operations on the given song directory.
-func Run(songDir, logLevel string) {
-	// Set log level
-	level, _ := log.ParseLevel(logLevel)
-	log.SetLevel(level)
+// batchSize is the number of song folders cleaned up concurrently.
+const batchSize = 100
 
-	// Create invalid directory
-	exePath, err := os.Executable()
+// Run performs the cleanup on every song folder below cfg.SongDir. It only returns an
+// error if the library cannot be read at all; per-song problems are logged and counted
+// by ops.
+func Run(cfg config.Config, ops *fsops.Ops) error {
+	entries, err := utils.GetAllSongFolders(ops, cfg.SongDir)
 	if err != nil {
-		log.Errorf("getting executable path: %v\n", err)
-		return
-	}
-	invalidDir := filepath.Join(exePath, "invalid")
-	if _, err := os.Stat(invalidDir); os.IsNotExist(err) {
-		err := os.Mkdir(invalidDir, 0755)
-		if err != nil {
-			log.Errorf("creating invalid directory: %v\n", err)
-			return
-		}
-	}
-	extraFilesTargetDir := filepath.Join(exePath, "extra-files")
-	// Create the extra files directory if it doesn't exist
-	if _, err := os.Stat(extraFilesTargetDir); os.IsNotExist(err) {
-		err := os.Mkdir(extraFilesTargetDir, 0755)
-		if err != nil {
-			log.Errorf("creating cleanup directory %q: %v\n", extraFilesTargetDir, err)
-			return
-		}
+		return fmt.Errorf("listing song folders: %w", err)
 	}
 
-	entries, err := utils.GetAllSongFolders(songDir)
-	if err != nil {
-		log.Fatalf("reading song directory: %v\n", err)
-		return
-	}
-	// Loop over all directories, build batches of songs and process them concurrently
-	batchSize := 100
+	validEntries := filterEntries(cfg, ops, entries)
 
-	validEntries := filterEntries(entries, songDir, invalidDir)
-
-	batches := utils.SplitIntoBatches(validEntries, batchSize)
-	for _, batch := range batches { // now run cleanup on each batch concurrently
+	for _, batch := range utils.SplitIntoBatches(validEntries, batchSize) {
 		var wg sync.WaitGroup
-		handleBatch(batch, songDir, &wg)
+		for _, entry := range batch {
+			wg.Add(1)
+			go func(entry string) {
+				defer wg.Done()
+				cleanupDirectory(cfg, ops, entry)
+			}(entry)
+		}
 		wg.Wait()
 	}
+	return nil
 }
 
-func filterEntries(entries []string, songDir, invalidDir string) []string {
+// filterEntries moves folders with at most one visible entry to the invalid folder and
+// returns the remaining folders. Moved (or, in dry-run mode, to-be-moved) folders and
+// unreadable folders are excluded from further cleanup. An empty folder whose counterpart
+// already exists in invalid/ (a category whose songs fixtxt moved there) is merged into it
+// by ops.MoveInto.
+func filterEntries(cfg config.Config, ops *fsops.Ops, entries []string) []string {
 	validEntries := make([]string, 0, len(entries))
 	for _, entry := range entries {
-
-		// get all files in the directory. check if folder is empty or only contains one file, then delete it from list
 		files, err := os.ReadDir(entry)
 		if err != nil {
-			log.Errorf("reading directory %q: %v\n", entry, err)
+			reportUnreadable(ops, entry, err)
 			continue
 		}
-		if len(files) <= 1 {
-			// move the folder to invalid directory when empty or only contains one file
-			fileName := filepath.Base(entry)
-			err = os.Rename(entry, filepath.Join(invalidDir, fileName))
-			if err != nil {
-				log.Errorf("moving broken song: %v\n", err)
+		if n := countEntries(ops, entry, files); n <= 1 {
+			log.Infof("Song folder %q has %d entries, moving it to invalid", entry, n)
+			if _, err := ops.MoveInto(entry, cfg.InvalidDir(), cfg.RelPath(entry)); err != nil {
+				log.Errorf("moving broken song folder: %v", err)
 			}
-		} else {
-			validEntries = append(validEntries, entry)
+			continue
 		}
+		validEntries = append(validEntries, entry)
 	}
 	return validEntries
 }
 
-func handleBatch(batch []string, songDir string, wg *sync.WaitGroup) {
-	for _, entry := range batch {
-		wg.Add(1)
-		go func(entry string) {
-			defer wg.Done()
-			cleanupDirectory(entry)
-		}(entry)
+// countEntries counts the entries of dir that make up a song. Hidden files (leftovers of
+// interrupted runs, macOS "._*" files) and Synology "@eaDir" folders are no song content,
+// so a lone audio file next to "._song.mp3" still counts as a broken song; otherwise it
+// would only be detected on the next run, after cleanup moved the hidden file away. In
+// dry-run mode, entries an earlier module would have moved away (ops.WouldBeMoved) are not
+// counted either, so the plan matches a real run.
+func countEntries(ops *fsops.Ops, dir string, files []os.DirEntry) int {
+	n := 0
+	for _, f := range files {
+		name := f.Name()
+		if utils.IsHidden(name) || name == "@eaDir" || ops.WouldBeMoved(filepath.Join(dir, name)) {
+			continue
+		}
+		n++
 	}
+	return n
 }
 
-func cleanupDirectory(dirPath string) {
-	dirPath = filepath.Clean(dirPath)
-	// set the target directory for extra files to be moved to
-	// this is one level up from the song directory, thus 2 levels up from dirpath
-	parentPath := filepath.Dir(filepath.Dir(dirPath))
-	// set the target directory for extra files to be moved to
-	extraFilesTargetDir := filepath.Join(parentPath, "extra-files")
-	// Get all files in the directory
-	files, err := os.ReadDir(filepath.Clean(dirPath))
+// cleanupDirectory moves all files of songFolder that its song txt does not reference to
+// extra-files/<relative song path>/. Folders without a readable song txt are left alone:
+// without the txt, nothing can be known to be unreferenced.
+func cleanupDirectory(cfg config.Config, ops *fsops.Ops, songFolder string) {
+	songFolder = filepath.Clean(songFolder)
+	txt, err := utils.FindSongTxt(ops, songFolder)
 	if err != nil {
-		log.Errorf("reading directory %q: %v\n", dirPath, err)
+		if errors.Is(err, fs.ErrNotExist) {
+			log.Debugf("Song folder %q has no song txt, leaving its files alone", songFolder)
+		} else {
+			reportUnreadable(ops, songFolder, err)
+		}
 		return
 	}
-
+	// fixtxt leaves txts it cannot decode unambiguously untouched (and reports them); their
+	// references may be stale or byte-encoded differently, so cleanup leaves the song alone
+	// too until the txt is fixed.
+	if raw, err := ops.ReadFile(txt); err != nil {
+		reportUnreadable(ops, txt, err)
+		return
+	} else if d := utils.DecodeTxt(raw); d.Problem != "" {
+		log.Infof("Not cleaning up %q: its song txt has an encoding issue (%s)", songFolder, d.Problem)
+		return
+	}
+	files, err := os.ReadDir(songFolder)
+	if err != nil {
+		reportUnreadable(ops, songFolder, err)
+		return
+	}
 	for _, file := range files {
-		handleFileCleanup(file, dirPath, extraFilesTargetDir)
+		handleFileCleanup(cfg, ops, songFolder, file)
 	}
 }
 
-func handleFileCleanup(file os.DirEntry, dirPath, extraFilesTargetDir string) {
-	if file.IsDir() {
+// handleFileCleanup moves a single file to the extra-files folder unless it must be kept.
+func handleFileCleanup(cfg config.Config, ops *fsops.Ops, songFolder string, file os.DirEntry) {
+	name := file.Name()
+	src := filepath.Join(songFolder, name)
+	if !shouldConsider(songFolder, file) || ops.WouldBeMoved(src) {
 		return
 	}
-	// skip usdb files by checking if the file name ends with .usdb
-	if strings.HasSuffix(file.Name(), ".usdb") {
+	if !utf8.ValidString(name) {
+		// A CP1252 txt may reference this name byte-exactly, and once fixtxt converted the
+		// txt to UTF-8 the reference no longer matches. fixtxt lists the name in its
+		// encoding report; the user has to rename the file first.
+		log.Warnf("Not moving %q: its name is not valid UTF-8, rename it first", src)
 		return
 	}
-	// Move files that are not referenced in the txt file.
-	if !utils.IsFileReferenced(dirPath, file.Name()) && !strings.Contains(file.Name(), ".txt") {
-		// Create a directory that matches the song directory name
-		songDirName := filepath.Base(dirPath)
-		cleanupSongDir := filepath.Join(extraFilesTargetDir, songDirName)
-		if _, err := os.Stat(cleanupSongDir); os.IsNotExist(err) {
-			err := os.MkdirAll(cleanupSongDir, 0755)
-			if err != nil {
-				log.Errorf("creating cleanup directory %q: %v\n", cleanupSongDir, err)
-				return
-			}
-		}
-		// Move the file to the cleanup directory
-		srcPath := filepath.Join(dirPath, file.Name())
-		dstPath := filepath.Join(cleanupSongDir, file.Name())
-		err := os.Rename(srcPath, dstPath)
-		if err != nil {
-			log.Errorf("moving file %q to cleanup directory: %v\n", file.Name(), err)
-		}
+	if utils.IsFileReferenced(ops, songFolder, name) || isUntaggedMedia(ops, songFolder, name) {
+		return
 	}
+	rel := filepath.Join(cfg.RelPath(songFolder), name)
+	if _, err := ops.MoveInto(src, cfg.ExtraFilesDir(), rel); err != nil {
+		log.Errorf("moving unreferenced file to extra-files: %v", err)
+	}
+}
+
+// shouldConsider reports whether file is a candidate for removal at all. Only regular files
+// (or symlinks to them) are; folders, symlinks to folders, broken symlinks and special
+// files are left alone. usdb files and txt files (any case) are always kept. Temp files
+// left behind by an interrupted run are not referenced, so they are moved to extra-files
+// like any other clutter; modules run one after another, so no temp file is in use while
+// cleanup runs.
+func shouldConsider(dir string, file os.DirEntry) bool {
+	name := file.Name()
+	switch {
+	case !utils.IsRegularFile(dir, file):
+		return false
+	case strings.EqualFold(filepath.Ext(name), ".usdb"):
+		return false
+	case utils.IsTxtFile(name):
+		return false
+	}
+	return true
+}
+
+// reportUnreadable logs an unreadable folder or song txt and counts it once per run. The
+// key matches the one used by song folder discovery, so a path every module runs into is
+// counted only once.
+func reportUnreadable(ops *fsops.Ops, path string, err error) {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		path = pathErr.Path
+	}
+	log.Errorf("Skipping unreadable %s: %v", path, err)
+	ops.FailOnce("unreadable:" + path)
+}
+
+// isUntaggedMedia reports whether name is an audio file of a song whose txt has no
+// #MP3/#AUDIO tag yet, a video file of a song without #VIDEO tag, or the image fixtxt
+// would use as cover (background) of a song without #COVER (#BACKGROUND) tag. fixtxt
+// inserts that tag, unless it cannot choose between several files or does not run (-t=false);
+// either way the file is the song's media, not clutter. The txt is read through ops, so in
+// a dry run the tags fixtxt would insert count.
+func isUntaggedMedia(ops *fsops.Ops, songFolder, name string) bool {
+	isAudio, isVideo, isImage := utils.IsAudioFile(name), utils.IsVideoFile(name), utils.IsImageFile(name)
+	if !isAudio && !isVideo && !isImage {
+		return false
+	}
+	tags, err := utils.ReadSongTags(ops, songFolder)
+	if err != nil {
+		return true // no readable song txt: never move media
+	}
+	if isImage {
+		return (tags["COVER"] == "" && utils.FindCoverImage(ops, songFolder) == name) ||
+			(tags["BACKGROUND"] == "" && utils.FindBackgroundImage(ops, songFolder) == name)
+	}
+	if isAudio && tags["MP3"] == "" && tags["AUDIO"] == "" {
+		return true
+	}
+	return isVideo && tags["VIDEO"] == ""
 }
