@@ -20,10 +20,11 @@ src/main/songs-sanitizer/     Go module github.com/nkreimeyer/ultrastar-songs-sa
   utils/decode.go             txt decoding (DecodeTxt): UTF-16/UTF-8/#ENCODING/CP1250/CP1252, "when in doubt, Problem"
   utils/txt.go                header tags, song-txt lookup, file references
   utils/folders.go            song folder discovery (GetAllSongFolders)
-  utils/utils.go              media type checks
+  utils/utils.go              media type checks, non-UTF-8 media names
+  utils/songname.go           TagsFromFolderName: obvious #ARTIST/#TITLE fills from "Artist - Title" folder names
   utils/image.go              image headers (JPEG/PNG/GIF via stdlib, own BMP/WebP readers), cover/background choice
   songtxt/                    UltraStar txt parser (tags, notes, breaks, duets, RELATIVE, B lines, BeatToMs); pure
-  fixtxt/                     dedupe song txts, decode → UTF-8, fix #MP3/#AUDIO/#VIDEO/#COVER/#BACKGROUND
+  fixtxt/                     dedupe song txts, decode → UTF-8, fix #MP3/#AUDIO/#VIDEO/#COVER/#BACKGROUND, fill #ARTIST/#TITLE from the folder name
   cleanup/                    move unreferenced files to extra-files/, near-empty folders to invalid/
   check/                      broken-song detection: analyze.go (pure), probe.go (ffprobe/ffmpeg), report.go
   fixvideos/                  ffmpeg: re-encode to H.264 mp4, downscale to fit 1920x1080, strip audio, flag corrupt files (tagged, idempotent)
@@ -161,8 +162,15 @@ Still open (roadmap items):
   the side of keeping files. It will be replaced by the txt parser.
 - `-c:a copy` into mp4 fails for audio codecs mp4 cannot hold (PCM/WMA inside `.avi`); the
   failure is logged and the original kept.
-- check: `#ARTIST`/`#TITLE` missing is an error (UltraStar Deluxe refuses such songs), so
-  `-move-broken` would move them. fixtxt does not fill them in from the folder name yet.
+- `#ARTIST`/`#TITLE` missing is a check error (UltraStar Deluxe refuses such songs). fixtxt
+  fills them from an obvious `Artist - Title` folder name (`utils.TagsFromFolderName`, shared
+  with check; fills are merged into `filled_tags.txt`, which keeps the written fills of all
+  runs and replaces a dry run's planned lines). fixtxt finds the tag lines the way songtxt
+  does (`nameTagLine`: leading blanks and blanks around the key ignored, last occurrence),
+  so `#ARTIST :x` counts as present. check names the fill in its message and, in a dry run
+  with fixtxt enabled (`Options.FixTxt`), downgrades it to a warning. Songs whose folder
+  name is not obvious (no or several ` - `, reversed naming, a prefix before the artist,
+  a track-number artist) still need a manual fix.
 - check: without `-xerror`, ffmpeg exits 0 on truncated/damaged files, so `-deep` reports
   them as `decode-warning`; `decode-error` only fires when ffmpeg cannot open the file.
 - check: `check_report.*` is regenerated each run, so moves done by `-move-broken` are only

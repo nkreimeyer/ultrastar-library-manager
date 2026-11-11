@@ -85,8 +85,21 @@ that fixtxt would fix). Folders an earlier module would move away are skipped, t
     `background`, `bg`, unless they are part of the song's name) and then by shape (square
     within 5 % = cover); JPEG, PNG, GIF, BMP and WebP headers are read
   - removes repeated header tags, keeping the last one (the one UltraStar uses)
+  - fills a missing or empty `#ARTIST`/`#TITLE` from the folder name when it is obvious:
+    the folder is named `Artist - Title` (separated by ` - ` with spaces; `AC-DC` or an en
+    dash do not count), and a tag that is still present must match its side of the name
+    (ignoring case, extra spaces, trailing dots, typographic apostrophes, characters file
+    names cannot hold such as `?` or `/` in `AC/DC` vs. `AC-DC`, and trailing
+    `[DUET]`/`(Live)` qualifiers on the folder). Several possible splits, a reversed
+    `Title - Artist` name, no match, an artist that would contain ` - ` (a prefix such as
+    `SingStar - Artist - Song`) or an artist of only digits (a track number like
+    `01 - Song`) fill nothing. Existing values are never changed; a tag written as
+    `#ARTIST :x` or indented counts as present. The filled lines go to the top of the
+    header, after a leading `#VERSION`. Every fill is added to `filled_tags.txt` for review;
+    tags that stay missing are listed in `missing_files.txt` with the reason
   - moves songs without an UltraStar song `.txt` or without any audio/video to `invalid/`
-  - writes `missing_files.txt` (songs without cover / background)
+  - writes `missing_files.txt` (songs without cover / background, ambiguous `#MP3`, a
+    missing `#ARTIST`/`#TITLE` that cannot be filled)
 - **cleanup**
   - moves files not referenced by the song's `.txt` to `extra-files/`
   - moves folders with at most one file to `invalid/`
@@ -98,7 +111,10 @@ that fixtxt would fix). Folders an earlier module would move away are skipped, t
   - txt: missing `#TITLE`/`#ARTIST`/`#MP3` (or `#AUDIO`), invalid `#BPM`/`#GAP`
     (decimal comma allowed), malformed note lines, no notes (fewer than 10 is a warning),
     no `E`, beats going backwards (error) or overlapping notes (warning), inconsistent duet
-    sections, repeated tags (the last one counts, as in UltraStar)
+    sections, repeated tags (the last one counts, as in UltraStar). A missing
+    `#ARTIST`/`#TITLE` that fixtxt can fill from the folder name says so in the message;
+    in a dry run with fixtxt enabled it is only a warning, so `-n -k -move-broken` does
+    not plan to move a song the real run would keep
   - referenced files: missing or zero-length files (an error for the audio source, a
     warning for video, cover, background and stems), unreadable media, an audio source
     without an audio stream, unreadable cover/background images
@@ -131,8 +147,12 @@ that fixtxt would fix). Folders an earlier module would move away are skipped, t
 <out>/extra-files/<relative song path>/      files removed from song folders
 <out>/originals/<relative song path>/        originals of re-encoded audio files (-a)
 <out>/media-journal.txt                      media already processed that cannot carry a tag
-<out>/missing_files.txt                      songs without cover / background, ambiguous #MP3
+<out>/missing_files.txt                      songs without cover / background, ambiguous #MP3,
+                                             #ARTIST/#TITLE that cannot be filled (with the reason)
 <out>/encoding_issues.txt                    txts left untouched or needing manual repair
+<out>/filled_tags.txt                        #ARTIST/#TITLE values fixtxt took from the folder name;
+                                             kept across runs, a dry run's planned fills are
+                                             marked "dry run: not written yet" and replaced next run
 <out>/potentiallyCorruptedFiles.txt          videos ffmpeg cannot read (-m)
 <out>/check_report.json, check_report.txt    broken and suspicious songs with reasons (-k), regenerated each run
 ```

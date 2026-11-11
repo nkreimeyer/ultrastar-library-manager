@@ -34,6 +34,11 @@ type Options struct {
 	Deep bool
 	// MoveBroken moves songs with at least one error to invalid/.
 	MoveBroken bool
+	// FixTxt tells that the fixtxt module runs in this run (before check). In a dry run,
+	// a missing #ARTIST/#TITLE that fixtxt would fill from the folder name is then only a
+	// warning, so that MoveBroken does not plan to move a song the real run keeps. In a
+	// real run fixtxt has already written the tag.
+	FixTxt bool
 }
 
 const maxWorkers = 16
@@ -76,9 +81,12 @@ type checker struct {
 	media   bool // ffprobe is available
 	deep    bool // Deep requested and ffmpeg is available
 	deepSem chan struct{}
-	mu      sync.Mutex
-	results []songResult // songs with findings
-	checked int
+	// fillWarns: a missing #ARTIST/#TITLE that fixtxt fills is a warning (dry run with
+	// fixtxt, see Options.FixTxt).
+	fillWarns bool
+	mu        sync.Mutex
+	results   []songResult // songs with findings
+	checked   int
 }
 
 // Run checks every song folder below cfg.SongDir and writes the reports. It returns an
@@ -90,7 +98,7 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 		return fmt.Errorf("finding song folders in %q: %w", cfg.SongDir, err)
 	}
 
-	c := &checker{cfg: cfg, ops: ops, deepSem: make(chan struct{}, maxDeepDecodes)}
+	c := &checker{cfg: cfg, ops: ops, deepSem: make(chan struct{}, maxDeepDecodes), fillWarns: opts.FixTxt && cfg.DryRun}
 	var notes []string
 	if _, err := exec.LookPath("ffprobe"); err != nil {
 		log.Warnf("ffprobe not found on PATH: media files are not checked")
@@ -205,12 +213,26 @@ func (c *checker) checkFolder(folder string) {
 	}
 
 	d := utils.DecodeTxt(raw)
-	in := songInput{EncodingProblem: d.Problem, Damaged: d.Damaged}
+	in := songInput{EncodingProblem: d.Problem, Damaged: d.Damaged, FillWarns: c.fillWarns}
+	if c.fixTxtWouldChange(folder, d) {
+		in.FolderName = filepath.Base(folder)
+	}
 	if d.Text != "" {
 		in.Song, in.Issues = songtxt.Parse(d.Text)
 		in.Files = c.observeFiles(folder, refCandidates(in.Song), rawHeaderValues(raw, d.Encoding))
 	}
 	c.record(songResult{folder: folder, txt: filepath.Base(txt), findings: analyze(in), encodingProblem: d.Problem != ""})
+}
+
+// fixTxtWouldChange reports whether fixtxt rewrites the song txt of folder, so that it
+// fills a missing #ARTIST/#TITLE from the folder name: it never rewrites a txt with a
+// decode Problem, nor any txt of a folder with a media file name that is not valid UTF-8.
+func (c *checker) fixTxtWouldChange(folder string, d utils.DecodedTxt) bool {
+	if d.Problem != "" {
+		return false
+	}
+	entries, err := os.ReadDir(folder)
+	return err == nil && len(utils.NonUTF8MediaNames(entries)) == 0
 }
 
 // observeFiles gathers the file system and media observations for the file tags. Of a

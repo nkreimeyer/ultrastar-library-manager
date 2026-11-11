@@ -573,3 +573,79 @@ func TestReportJSONIsNotHTMLEscaped(t *testing.T) {
 		t.Errorf("json = %s", data)
 	}
 }
+
+// TestRunMissingNameTagsFixTxt: in a dry run with fixtxt, a song whose missing #ARTIST
+// fixtxt would fill from the folder name is only suspicious and not planned to be moved. In
+// a real run (or without fixtxt) it stays broken. fixtxt never fills a txt with a decode
+// problem or in a folder with a non-UTF-8 media file name, so those stay errors.
+func TestRunMissingNameTagsFixTxt(t *testing.T) {
+	withoutFFmpeg(t)
+	lib := filepath.Join(t.TempDir(), "songs")
+	noArtist := "#TITLE:Hypa Hypa\n#MP3:song.mp3\n#BPM:300\n" + notes(10)
+	writeFiles(t, lib, map[string]string{
+		"Electric Callboy - Hypa Hypa/song.txt":  noArtist,
+		"Electric Callboy - Hypa Hypa/song.mp3":  "x",
+		"Hypa Hypa - Electric Callboy/song.txt":  noArtist,
+		"Hypa Hypa - Electric Callboy/song.mp3":  "x",
+		"Undecodable - Hypa Hypa/song.txt":       "#TITLE:Hypa Hypa\n#MP3:song.mp3\n#BPM:300\n#GENRE:\xe4\x81\n" + notes(10),
+		"Undecodable - Hypa Hypa/song.mp3":       "x",
+		"Latin1 Name - Hypa Hypa/song.txt":       noArtist,
+		"Latin1 Name - Hypa Hypa/song.mp3":       "x",
+		"Latin1 Name - Hypa Hypa/M\xe4dchen.jpg": "x",
+	})
+	fillable := "Electric Callboy - Hypa Hypa"
+	wantMsg := "#ARTIST is missing or empty; fixtxt fills it from the folder name: Electric Callboy"
+	severity := func(t *testing.T, r report, path string) Severity {
+		t.Helper()
+		for _, f := range findSong(t, r, path).Findings {
+			if f.Code == codeMissingTag {
+				return f.Severity
+			}
+		}
+		t.Fatalf("%s has no missing-tag finding", path)
+		return ""
+	}
+
+	for _, tc := range []struct {
+		name         string
+		dry, fixTxt  bool
+		wantFillable Severity
+	}{
+		{"dry run with fixtxt", true, true, SevWarning},
+		{"dry run without fixtxt", true, false, SevError},
+		{"real run with fixtxt", false, true, SevError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := snapshot(t, lib)
+			ops, r := run(t, newConfig(t, lib, tc.dry), Options{MoveBroken: tc.dry, FixTxt: tc.fixTxt})
+			if got := severity(t, r, fillable); got != tc.wantFillable {
+				t.Errorf("fillable song: severity %s, want %s", got, tc.wantFillable)
+			}
+			s := findSong(t, r, fillable)
+			if s.Findings[0].Message != wantMsg {
+				t.Errorf("message = %q, want %q", s.Findings[0].Message, wantMsg)
+			}
+			if wantMoved := tc.dry && tc.wantFillable == SevError; s.Moved != wantMoved {
+				t.Errorf("fillable song moved = %v, want %v", s.Moved, wantMoved)
+			}
+			for _, p := range []string{"Hypa Hypa - Electric Callboy", "Undecodable - Hypa Hypa", "Latin1 Name - Hypa Hypa"} {
+				if got := severity(t, r, p); got != SevError {
+					t.Errorf("%s: severity %s, want error", p, got)
+				}
+				for _, f := range findSong(t, r, p).Findings {
+					if strings.Contains(f.Message, "fixtxt fills") {
+						t.Errorf("%s: unexpected fill hint %q", p, f.Message)
+					}
+				}
+			}
+			if tc.dry {
+				if after := snapshot(t, lib); after != before {
+					t.Error("dry run modified the library")
+				}
+				if ops.Stats().Moved == 0 {
+					t.Error("dry run planned no moves")
+				}
+			}
+		})
+	}
+}

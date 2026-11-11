@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -44,6 +45,23 @@ func mediaEntries(dir string, keep func(string) bool) []string {
 		}
 	}
 	return names
+}
+
+// NonUTF8MediaNames returns the names of the visible audio, video and image files among
+// entries that are not valid UTF-8 (e.g. Latin-1 names from old archives). fixtxt leaves
+// folders containing such files untouched.
+func NonUTF8MediaNames(entries []os.DirEntry) []string {
+	var bad []string
+	for _, e := range entries {
+		n := e.Name()
+		if utf8.ValidString(n) || IsHidden(n) || e.IsDir() {
+			continue
+		}
+		if IsAudioFile(n) || IsVideoFile(n) || IsImageFile(n) {
+			bad = append(bad, n)
+		}
+	}
+	return bad
 }
 
 // AudioFiles returns the visible audio files directly inside dir, sorted by name.

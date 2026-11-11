@@ -907,3 +907,267 @@ func writeTestPNG(t *testing.T, path string, w, h int) {
 		t.Fatal(err)
 	}
 }
+
+// notesBody is the body of a minimal song txt.
+const notesBody = "#BPM:300\n: 0 4 0 La\nE\n"
+
+func TestRunFillsNameTagsFromFolderName(t *testing.T) {
+	tests := []struct {
+		name       string
+		folder     string
+		txt        string
+		want       string // whole txt after the run
+		wantFilled []string
+		wantNote   string // substring of a missing_files.txt line, "" for none
+	}{
+		{
+			name:       "both absent are inserted at the top",
+			folder:     "Electric Callboy - Hypa Hypa",
+			txt:        "#MP3:song.mp3\n" + notesBody,
+			want:       "#TITLE:Hypa Hypa\n#ARTIST:Electric Callboy\n#MP3:song.mp3\n" + notesBody,
+			wantFilled: []string{"#ARTIST:Electric Callboy", "#TITLE:Hypa Hypa"},
+		},
+		{
+			name:       "absent artist, title present",
+			folder:     "Electric Callboy - Hypa Hypa",
+			txt:        "#TITLE:Hypa Hypa\n#MP3:song.mp3\n" + notesBody,
+			want:       "#ARTIST:Electric Callboy\n#TITLE:Hypa Hypa\n#MP3:song.mp3\n" + notesBody,
+			wantFilled: []string{"#ARTIST:Electric Callboy"},
+		},
+		{
+			name:       "empty tag lines are filled in place, keeping the spelling",
+			folder:     "Electric Callboy - Hypa Hypa",
+			txt:        "#title:\n#Artist: \n#MP3:song.mp3\n" + notesBody,
+			want:       "#title:Hypa Hypa\n#Artist:Electric Callboy\n#MP3:song.mp3\n" + notesBody,
+			wantFilled: []string{"#ARTIST:Electric Callboy", "#TITLE:Hypa Hypa"},
+		},
+		{
+			name:       "title with a folder qualifier",
+			folder:     "Artist - Song [DUET]",
+			txt:        "#TITLE:Song\n#ARTIST:\n#MP3:song.mp3\n" + notesBody,
+			want:       "#TITLE:Song\n#ARTIST:Artist\n#MP3:song.mp3\n" + notesBody,
+			wantFilled: []string{"#ARTIST:Artist"},
+		},
+		{
+			name:       "empty repeated tag: the last (empty) one is filled",
+			folder:     "Artist - Song",
+			txt:        "#TITLE:Old\n#ARTIST:Artist\n#TITLE:\n#MP3:song.mp3\n" + notesBody,
+			want:       "#ARTIST:Artist\n#TITLE:Song\n#MP3:song.mp3\n" + notesBody,
+			wantFilled: []string{"#TITLE:Song"},
+		},
+		{
+			name:     "reversed folder name is not used",
+			folder:   "Hypa Hypa - Electric Callboy",
+			txt:      "#TITLE:Hypa Hypa\n#MP3:song.mp3\n" + notesBody,
+			want:     "#TITLE:Hypa Hypa\n#MP3:song.mp3\n" + notesBody,
+			wantNote: "Missing #ARTIST in ",
+		},
+		{
+			name:     "ambiguous folder name is not used",
+			folder:   "Artist - Song - Live",
+			txt:      "#MP3:song.mp3\n" + notesBody,
+			want:     "#MP3:song.mp3\n" + notesBody,
+			wantNote: "Missing #ARTIST and #TITLE in ",
+		},
+		{
+			name:       "filled after a leading #VERSION",
+			folder:     "Electric Callboy - Hypa Hypa",
+			txt:        "#VERSION:1.1.0\n#TITLE:Hypa Hypa\n#AUDIO:song.mp3\n" + notesBody,
+			want:       "#VERSION:1.1.0\n#ARTIST:Electric Callboy\n#TITLE:Hypa Hypa\n#AUDIO:song.mp3\n" + notesBody,
+			wantFilled: []string{"#ARTIST:Electric Callboy"},
+		},
+		{
+			name:   "tag with a blank before the colon counts as present",
+			folder: "Electric Callboy - Hypa Hypa",
+			txt:    "#TITLE:Hypa Hypa\n#ARTIST :Real Artist\n#MP3:song.mp3\n" + notesBody,
+			want:   "#TITLE:Hypa Hypa\n#ARTIST :Real Artist\n#MP3:song.mp3\n" + notesBody,
+		},
+		{
+			name:   "indented tag counts as present",
+			folder: "Foo - Hypa Hypa",
+			txt:    "#TITLE:Hypa Hypa\n  #ARTIST:Real Artist\n#MP3:song.mp3\n" + notesBody,
+			want:   "#TITLE:Hypa Hypa\n  #ARTIST:Real Artist\n#MP3:song.mp3\n" + notesBody,
+		},
+		{
+			name:       "empty tag with a blank before the colon is filled in place",
+			folder:     "Electric Callboy - Hypa Hypa",
+			txt:        "#TITLE:Hypa Hypa\n#ARTIST :\n#MP3:song.mp3\n" + notesBody,
+			want:       "#TITLE:Hypa Hypa\n#ARTIST :Electric Callboy\n#MP3:song.mp3\n" + notesBody,
+			wantFilled: []string{"#ARTIST:Electric Callboy"},
+		},
+		{
+			name:       "empty indented tag is filled in place",
+			folder:     "Electric Callboy - Hypa Hypa",
+			txt:        "#TITLE:Hypa Hypa\n #artist:\n#MP3:song.mp3\n" + notesBody,
+			want:       "#TITLE:Hypa Hypa\n #artist:Electric Callboy\n#MP3:song.mp3\n" + notesBody,
+			wantFilled: []string{"#ARTIST:Electric Callboy"},
+		},
+		{
+			name:     "prefix before the artist is not used",
+			folder:   "SingStar - Electric Callboy - Hypa Hypa",
+			txt:      "#TITLE:Hypa Hypa\n#MP3:song.mp3\n" + notesBody,
+			want:     "#TITLE:Hypa Hypa\n#MP3:song.mp3\n" + notesBody,
+			wantNote: "Missing #ARTIST in ",
+		},
+		{
+			name:   "present tags are never changed",
+			folder: "Other - Name",
+			txt:    "#TITLE:T\n#ARTIST:A\n#MP3:song.mp3\n" + notesBody,
+			want:   "#TITLE:T\n#ARTIST:A\n#MP3:song.mp3\n" + notesBody,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := newLibrary(t, false)
+			writeFiles(t, cfg.SongDir, map[string]string{
+				filepath.Join(tc.folder, "song.txt"):  tc.txt,
+				filepath.Join(tc.folder, "song.mp3"):  "audio",
+				filepath.Join(tc.folder, "cover.jpg"): "x",
+			})
+			run(t, cfg)
+			txt := filepath.Join(cfg.SongDir, tc.folder, "song.txt")
+			if got := readFile(t, txt); got != tc.want {
+				t.Errorf("txt = %q, want %q", got, tc.want)
+			}
+			var wantReport string
+			for _, f := range tc.wantFilled {
+				wantReport += txt + ": " + f + " (from the folder name)\n"
+			}
+			if got := readFile(t, cfg.ReportPath(filledTagsReport)); got != wantReport {
+				t.Errorf("%s = %q, want %q", filledTagsReport, got, wantReport)
+			}
+			missing := readFile(t, cfg.ReportPath(missingFilesReport))
+			if tc.wantNote != "" && !strings.Contains(missing, tc.wantNote+filepath.Join(cfg.SongDir, tc.folder)+", cannot fill it from the folder name: ") {
+				t.Errorf("%s has no note %q:\n%s", missingFilesReport, tc.wantNote, missing)
+			}
+			if tc.wantNote == "" && strings.Contains(missing, "cannot fill") {
+				t.Errorf("unexpected note in %s:\n%s", missingFilesReport, missing)
+			}
+		})
+	}
+}
+
+// TestRunFillsNameTagsDryRunAndIdempotent: the dry run plans the fill without touching the
+// library, the real run fills, and a second run changes nothing.
+func TestRunFillsNameTagsDryRunAndIdempotent(t *testing.T) {
+	lib, out := t.TempDir(), t.TempDir()
+	writeFiles(t, lib, map[string]string{
+		"Cat/Electric Callboy - Hypa Hypa/song.txt": "#MP3:song.mp3\n" + notesBody,
+		"Cat/Electric Callboy - Hypa Hypa/song.mp3": "audio",
+	})
+	txt := filepath.Join(lib, "Cat/Electric Callboy - Hypa Hypa/song.txt")
+	wantReport := txt + ": #ARTIST:Electric Callboy (from the folder name)\n" + txt + ": #TITLE:Hypa Hypa (from the folder name)\n"
+	newCfg := func(dry bool) config.Config {
+		cfg, err := config.New(lib, out, dry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+
+	dry := newCfg(true)
+	before := hashTree(t, lib)
+	ops := run(t, dry)
+	if after := hashTree(t, lib); !maps.Equal(before, after) {
+		t.Errorf("dry run changed the library:\nbefore %v\nafter  %v", before, after)
+	}
+	if ops.Stats().Written != 1 {
+		t.Errorf("dry run planned %d writes, want 1", ops.Stats().Written)
+	}
+	wantPlanned := strings.ReplaceAll(wantReport, filledSuffix, plannedSuffix)
+	if got := readFile(t, dry.ReportPath(filledTagsReport)); got != wantPlanned {
+		t.Errorf("dry-run %s = %q, want %q", filledTagsReport, got, wantPlanned)
+	}
+
+	cfg := newCfg(false)
+	run(t, cfg)
+	want := "#TITLE:Hypa Hypa\n#ARTIST:Electric Callboy\n#MP3:song.mp3\n" + notesBody
+	if got := readFile(t, txt); got != want {
+		t.Errorf("txt = %q, want %q", got, want)
+	}
+	if got := readFile(t, cfg.ReportPath(filledTagsReport)); got != wantReport {
+		t.Errorf("%s = %q, want %q", filledTagsReport, got, wantReport)
+	}
+
+	if ops := run(t, cfg); ops.Stats().Written != 0 {
+		t.Errorf("second run wrote %d files, want 0", ops.Stats().Written)
+	}
+	if got := readFile(t, txt); got != want {
+		t.Errorf("second run changed the txt to %q", got)
+	}
+	// The report keeps the fills of earlier runs, also through a later dry run.
+	if got := readFile(t, cfg.ReportPath(filledTagsReport)); got != wantReport {
+		t.Errorf("second run %s = %q, want %q", filledTagsReport, got, wantReport)
+	}
+	run(t, dry)
+	if got := readFile(t, cfg.ReportPath(filledTagsReport)); got != wantReport {
+		t.Errorf("later dry run %s = %q, want %q", filledTagsReport, got, wantReport)
+	}
+}
+
+// TestFilledReportMerge: filled_tags.txt keeps written fills of earlier runs, drops the
+// lines an earlier dry run only planned, and has no duplicates.
+func TestFilledReportMerge(t *testing.T) {
+	cfg := newLibrary(t, false)
+	old := "/a.txt: #ARTIST:A" + filledSuffix + "\n/b.txt: #TITLE:B" + plannedSuffix + "\n"
+	if err := os.WriteFile(cfg.ReportPath(filledTagsReport), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ops := fsops.New(false)
+	writeFilledReport(cfg, ops, []string{"/c.txt: #TITLE:C" + filledSuffix, "/a.txt: #ARTIST:A" + filledSuffix})
+	want := "/a.txt: #ARTIST:A" + filledSuffix + "\n/c.txt: #TITLE:C" + filledSuffix + "\n"
+	if got := readFile(t, cfg.ReportPath(filledTagsReport)); got != want {
+		t.Errorf("%s = %q, want %q", filledTagsReport, got, want)
+	}
+}
+
+// TestRunDoesNotFillNameTagsOfUndecodableTxt: a txt with a decode Problem is never rewritten.
+func TestRunDoesNotFillNameTagsOfUndecodableTxt(t *testing.T) {
+	cfg := newLibrary(t, false)
+	raw := "#TITLE:\xe4\x81\n#MP3:song.mp3\n" + notesBody
+	writeFiles(t, cfg.SongDir, map[string]string{
+		"Artist - Song/song.txt": raw,
+		"Artist - Song/song.mp3": "audio",
+	})
+	run(t, cfg)
+	if got := readFile(t, filepath.Join(cfg.SongDir, "Artist - Song/song.txt")); got != raw {
+		t.Errorf("undecodable txt was rewritten: %q", got)
+	}
+	if got := readFile(t, cfg.ReportPath(filledTagsReport)); got != "" {
+		t.Errorf("%s = %q, want empty", filledTagsReport, got)
+	}
+}
+
+// TestRunChoosesAudioByFilledNameTags: the "<#ARTIST> - <#TITLE>" audio preference uses the
+// filled artist. Neither the txt nor the folder name ("[DUET]") matches the audio file.
+func TestRunChoosesAudioByFilledNameTags(t *testing.T) {
+	cfg := newLibrary(t, false)
+	folder := "Electric Callboy - Hypa Hypa [DUET]"
+	writeFiles(t, cfg.SongDir, map[string]string{
+		filepath.Join(folder, "song.txt"):                         "#TITLE:Hypa Hypa\n" + notesBody,
+		filepath.Join(folder, "Electric Callboy - Hypa Hypa.mp3"): "audio",
+		filepath.Join(folder, "other.mp3"):                        "audio",
+	})
+	run(t, cfg)
+	got := readFile(t, filepath.Join(cfg.SongDir, folder, "song.txt"))
+	if !strings.Contains(got, "#MP3:Electric Callboy - Hypa Hypa.mp3\n") || !strings.Contains(got, "#ARTIST:Electric Callboy\n") {
+		t.Errorf("txt = %q, want the filled artist and the matching audio file", got)
+	}
+}
+
+// TestRunChoosesAudioByFilledTitle: the same for a filled title. The folder's artist part
+// carries a qualifier, so the folder name does not match the audio file either.
+func TestRunChoosesAudioByFilledTitle(t *testing.T) {
+	cfg := newLibrary(t, false)
+	folder := "Electric Callboy [DE] - Hypa Hypa"
+	writeFiles(t, cfg.SongDir, map[string]string{
+		filepath.Join(folder, "song.txt"):                         "#ARTIST:Electric Callboy\n" + notesBody,
+		filepath.Join(folder, "Electric Callboy - Hypa Hypa.mp3"): "audio",
+		filepath.Join(folder, "other.mp3"):                        "audio",
+	})
+	run(t, cfg)
+	got := readFile(t, filepath.Join(cfg.SongDir, folder, "song.txt"))
+	if !strings.Contains(got, "#MP3:Electric Callboy - Hypa Hypa.mp3\n") || !strings.Contains(got, "#TITLE:Hypa Hypa\n") {
+		t.Errorf("txt = %q, want the filled title and the matching audio file", got)
+	}
+}

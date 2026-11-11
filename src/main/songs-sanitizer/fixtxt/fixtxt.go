@@ -1,6 +1,7 @@
 // Package fixtxt sanitizes the UltraStar song txt files of a library: it removes duplicate
-// song txts from song folders, converts the txts to UTF-8 and fixes the #MP3/#AUDIO,
-// #VIDEO, #COVER and #BACKGROUND tags so that they point to files that actually exist.
+// song txts from song folders, converts the txts to UTF-8, fixes the #MP3/#AUDIO,
+// #VIDEO, #COVER and #BACKGROUND tags so that they point to files that actually exist, and
+// fills a missing #ARTIST/#TITLE from an obvious "Artist - Title" folder name.
 package fixtxt
 
 import (
@@ -45,6 +46,15 @@ const batchSize = 100
 const (
 	missingFilesReport   = "missing_files.txt"
 	encodingIssuesReport = "encoding_issues.txt"
+	filledTagsReport     = "filled_tags.txt"
+)
+
+// Endings of the filled_tags.txt lines: a fill written by a real run, and one a dry run
+// only planned. The report accumulates the written fills of all runs; planned lines are
+// replaced by every run.
+const (
+	filledSuffix  = " (from the folder name)"
+	plannedSuffix = " (from the folder name, dry run: not written yet)"
 )
 
 // songFiles are the media files found in a song folder.
@@ -66,6 +76,7 @@ type collector struct {
 	mu             sync.Mutex
 	missingFiles   []string
 	encodingIssues []string
+	filledTags     []string
 	unchanged      int // songs left untouched because of an encoding issue
 }
 
@@ -78,6 +89,12 @@ func (c *collector) addMissing(entries ...string) {
 func (c *collector) addEncodingIssue(path, problem string) {
 	c.mu.Lock()
 	c.encodingIssues = append(c.encodingIssues, path+": "+problem)
+	c.mu.Unlock()
+}
+
+func (c *collector) addFilled(entries ...string) {
+	c.mu.Lock()
+	c.filledTags = append(c.filledTags, entries...)
 	c.mu.Unlock()
 }
 
@@ -98,8 +115,11 @@ func (c *collector) leftUnchanged() {
 //
 // The song txt of every remaining folder is decoded, converted to UTF-8 and its file tags
 // are fixed. Txts that cannot be decoded unambiguously are left untouched and listed in
-// encoding_issues.txt. Songs without a cover or background, or with several audio files
-// to choose #MP3 from, are listed in missing_files.txt. Folders are processed
+// encoding_issues.txt. A missing or empty #ARTIST/#TITLE is filled from the folder name if
+// that is obvious (utils.TagsFromFolderName). Every fill is added to filled_tags.txt for
+// review (the report keeps the fills of earlier runs), and a tag that cannot be filled is
+// noted in missing_files.txt. Songs without a cover or background, or with several audio
+// files to choose #MP3 from, are listed in missing_files.txt. Folders are processed
 // concurrently, in batches.
 func Run(cfg config.Config, ops *fsops.Ops) error {
 	folders, err := utils.GetAllSongFolders(ops, cfg.SongDir)
@@ -122,6 +142,7 @@ func Run(cfg config.Config, ops *fsops.Ops) error {
 
 	writeReport(cfg, ops, missingFilesReport, col.missingFiles)
 	writeReport(cfg, ops, encodingIssuesReport, col.encodingIssues)
+	writeFilledReport(cfg, ops, col.filledTags)
 	if n := col.unchanged; n > 0 {
 		log.Warnf("%d song(s) have encoding issues and were not changed, see %s", n, cfg.ReportPath(encodingIssuesReport))
 	}
@@ -142,6 +163,26 @@ func writeReport(cfg config.Config, ops *fsops.Ops, name string, lines []string)
 		return
 	}
 	log.Infof("Wrote %s", path)
+}
+
+// writeFilledReport writes filled_tags.txt: the fills of this run merged with the fills
+// written by earlier runs, so that a later run (also a dry run) does not erase the list
+// of guessed values before it was reviewed. Lines a dry run only planned are dropped.
+func writeFilledReport(cfg config.Config, ops *fsops.Ops, lines []string) {
+	path := cfg.ReportPath(filledTagsReport)
+	old, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Errorf("Could not read %s, not updating it: %v", path, err)
+		ops.Fail()
+		return
+	}
+	for _, line := range strings.Split(string(old), "\n") {
+		if line != "" && !strings.HasSuffix(line, plannedSuffix) {
+			lines = append(lines, line)
+		}
+	}
+	slices.Sort(lines)
+	writeReport(cfg, ops, filledTagsReport, slices.Compact(lines))
 }
 
 // failUnreadable logs a folder or txt that cannot be read and counts it as a failure.
@@ -170,7 +211,7 @@ func handleFolder(cfg config.Config, ops *fsops.Ops, col *collector, folder stri
 	// A txt references media byte-for-byte. Converting a CP1252 txt to UTF-8 would break
 	// its reference to a Latin-1 file name, and a UTF-8 txt cannot reference it at all, so
 	// such a folder must be renamed by hand first.
-	if bad := nonUTF8MediaNames(entries); len(bad) > 0 {
+	if bad := utils.NonUTF8MediaNames(entries); len(bad) > 0 {
 		for _, n := range bad {
 			col.addEncodingIssue(filepath.Join(folder, n), "file name is not valid UTF-8, rename it")
 		}
@@ -230,22 +271,6 @@ func handleFolder(cfg config.Config, ops *fsops.Ops, col *collector, folder stri
 	if len(missing) > 0 {
 		col.addMissing(missing...)
 	}
-}
-
-// nonUTF8MediaNames returns the names of the visible audio, video and image files among
-// entries that are not valid UTF-8 (e.g. Latin-1 names from old archives).
-func nonUTF8MediaNames(entries []os.DirEntry) []string {
-	var bad []string
-	for _, e := range entries {
-		n := e.Name()
-		if utf8.ValidString(n) || utils.IsHidden(n) || e.IsDir() {
-			continue
-		}
-		if utils.IsAudioFile(n) || utils.IsVideoFile(n) || utils.IsImageFile(n) {
-			bad = append(bad, n)
-		}
-	}
-	return bad
 }
 
 // keepNewestSongTxt makes sure folder keeps only one of its song txts: the most recently
@@ -308,7 +333,7 @@ func updateTxtFile(cfg config.Config, ops *fsops.Ops, col *collector, rootDir, t
 		log.Debugf("Decoded %s as %s", txtFile, decoded.Encoding)
 	}
 
-	updatedLines, notes := fixTxtLines(splitLines(decoded.Text), rootDir, files)
+	updatedLines, notes, filled := fixTxtLines(splitLines(decoded.Text), rootDir, files)
 	if len(notes) > 0 {
 		col.addMissing(notes...)
 	}
@@ -316,8 +341,17 @@ func updateTxtFile(cfg config.Config, ops *fsops.Ops, col *collector, rootDir, t
 	switch {
 	case err != nil:
 		log.Errorf("Could not write %s: %v", txtFile, err)
+		return
 	case changed && !cfg.DryRun: // in dry-run mode ops already logged the planned write
 		log.Infof("Rewrote %s (read as %s)", txtFile, decoded.Encoding)
+	}
+	verb, suffix := "Filled", filledSuffix
+	if cfg.DryRun {
+		verb, suffix = "Would fill", plannedSuffix
+	}
+	for _, f := range filled {
+		log.Infof("%s %s in %s from the folder name", verb, f, txtFile)
+		col.addFilled(txtFile + ": " + f + suffix)
 	}
 }
 
@@ -336,19 +370,22 @@ func splitLines(text string) []string {
 	return lines
 }
 
-// fixTxtLines removes duplicate tags and a stale #ENCODING tag, and updates or inserts the
-// #MP3/#AUDIO, #VIDEO, #COVER and #BACKGROUND tags. Tags that already point to an existing
-// file of the right kind are left alone (cleanup takes care of unreferenced files later).
-// It also returns notes for missing_files.txt (an audio file that cannot be chosen).
-func fixTxtLines(lines []string, rootDir string, files songFiles) ([]string, []string) {
+// fixTxtLines removes duplicate tags and a stale #ENCODING tag, fills a missing #ARTIST or
+// #TITLE from the folder name (see fillNameTags), and updates or inserts the #MP3/#AUDIO,
+// #VIDEO, #COVER and #BACKGROUND tags. Tags that already point to an existing file of the
+// right kind are left alone (cleanup takes care of unreferenced files later). It also
+// returns notes for missing_files.txt (an audio file that cannot be chosen, a name tag that
+// cannot be filled) and the filled tags ("#ARTIST:value").
+func fixTxtLines(lines []string, rootDir string, files songFiles) ([]string, []string, []string) {
 	// With fewer than 3 lines it's not a valid song txt, so return the lines unchanged.
 	if len(lines) < 3 {
-		return lines, nil
+		return lines, nil, nil
 	}
 
 	lines = dropEncodingTag(removeDuplicateTags(lines))
 
 	info := getSongInfoFromTxtFile(lines)
+	nameLines, filled, notes := fillNameTags(lines, rootDir, &info)
 	audio := chooseAudio(rootDir, lines, files, info)
 	video := fileChoice{candidates: len(files.video)}
 	if len(files.video) > 0 {
@@ -374,14 +411,13 @@ func fixTxtLines(lines []string, rootDir string, files songFiles) ([]string, []s
 	updatedLines := make([]string, len(lines))
 	foundTagFlags, audioUnresolved := updateTagsInLines(rootDir, lines, updatedLines, files, audio, video, upd)
 
-	var notes []string
 	if (audioUnresolved || !isFlagSet(foundTagFlags, flagAudio)) && len(audio.ambiguous) > 0 {
 		log.Warnf("Several audio files in %s, cannot choose #MP3: %q", rootDir, audio.ambiguous)
 		notes = append(notes, fmt.Sprintf("Several audio files, cannot choose #MP3 in %s: %s",
 			rootDir, strings.Join(audio.ambiguous, ", ")))
 	}
 
-	// Add the missing tags, inserting them as line 2.
+	// Add the missing file tags, inserting them as line 2.
 	var linesToInsert []string
 	if !isFlagSet(foundTagFlags, flagAudio) && audio.name != "" {
 		linesToInsert = append(linesToInsert, "#MP3:"+audio.name+"\n")
@@ -395,10 +431,62 @@ func fixTxtLines(lines []string, rootDir string, files songFiles) ([]string, []s
 	if !isFlagSet(foundTagFlags, flagBackground) && files.background != "" {
 		linesToInsert = append(linesToInsert, "#BACKGROUND:"+files.background+"\n")
 	}
-	if len(linesToInsert) > 0 {
-		log.Debugf("Inserting the following lines: %q", linesToInsert)
+	// A filled #TITLE/#ARTIST goes to the top of the header, as players write it, but
+	// after a leading #VERSION: format 1.x wants it as the first line.
+	if len(nameLines)+len(linesToInsert) > 0 {
+		log.Debugf("Inserting the following lines: %q", append(slices.Clone(nameLines), linesToInsert...))
 	}
-	return slices.Insert(updatedLines, 1, linesToInsert...), notes
+	updatedLines = slices.Insert(updatedLines, 1, linesToInsert...)
+	at := 0
+	if hasTag(updatedLines[0], "#VERSION") {
+		at = 1
+	}
+	return slices.Insert(updatedLines, at, nameLines...), notes, filled
+}
+
+// fillNameTags fills a missing or empty #TITLE and #ARTIST from the folder name of the
+// song, if utils.TagsFromFolderName finds it obvious. An empty tag line gets the value in
+// place (lines is modified, the tag keeps its spelling); an absent tag is returned as a
+// line to insert (#TITLE before #ARTIST). Tag lines are found the way players and check
+// read them (see nameTagLine). info is updated with the filled values, so that
+// the audio choice can use them. lines must not contain repeated tags. It also returns the
+// filled tags ("#ARTIST:value") and a note for missing_files.txt if a missing tag cannot be
+// filled.
+func fillNameTags(lines []string, rootDir string, info *SongInfo) (insert, filled, notes []string) {
+	fill := utils.TagsFromFolderName(filepath.Base(rootDir), info.Artist, info.Title)
+	if fill.Reason != "" {
+		var missing []string
+		for _, m := range []struct{ tag, value string }{{"#ARTIST", info.Artist}, {"#TITLE", info.Title}} {
+			if m.value == "" {
+				missing = append(missing, m.tag)
+			}
+		}
+		what := strings.Join(missing, " and ")
+		log.Warnf("%s missing in %s, cannot fill it from the folder name: %s", what, rootDir, fill.Reason)
+		notes = append(notes, fmt.Sprintf("Missing %s in %s, cannot fill it from the folder name: %s", what, rootDir, fill.Reason))
+	}
+	for _, f := range []struct {
+		tag   string
+		ok    bool
+		value string
+		dst   *string
+	}{
+		{"#TITLE", fill.FillTitle, fill.Title, &info.Title},
+		{"#ARTIST", fill.FillArtist, fill.Artist, &info.Artist},
+	} {
+		if !f.ok {
+			continue
+		}
+		*f.dst = f.value
+		filled = append(filled, f.tag+":"+f.value)
+		if i, _ := nameTagLine(lines, f.tag); i >= 0 {
+			colon := strings.IndexByte(lines[i], ':')
+			lines[i] = lines[i][:colon+1] + f.value + "\n"
+			continue
+		}
+		insert = append(insert, f.tag+":"+f.value+"\n")
+	}
+	return insert, filled, notes
 }
 
 // fileChoice is the value to use for a missing or wrong file tag.
@@ -662,10 +750,31 @@ func setFlag(flags, flag int) int { return flags | flag }
 
 func isFlagSet(flags, flag int) bool { return flags&flag != 0 }
 
+// nameTagLine finds the line of tag (e.g. "#ARTIST") the way players and the songtxt
+// parser read it: leading blanks and blanks around the key are ignored ("  #Artist :X"),
+// and of repeated lines the last one wins. It returns the line index and the trimmed
+// value, or -1 and "" if there is no such line.
+func nameTagLine(lines []string, tag string) (int, string) {
+	idx, value := -1, ""
+	for i, line := range lines {
+		body, ok := strings.CutPrefix(strings.TrimLeft(line, " \t"), "#")
+		if !ok {
+			continue
+		}
+		key, v, ok := strings.Cut(body, ":")
+		if ok && strings.EqualFold(strings.TrimSpace(key), tag[1:]) {
+			idx, value = i, strings.TrimSpace(v)
+		}
+	}
+	return idx, value
+}
+
 func getSongInfoFromTxtFile(lines []string) SongInfo {
+	_, artist := nameTagLine(lines, "#ARTIST")
+	_, title := nameTagLine(lines, "#TITLE")
 	return SongInfo{
-		Artist:     getTagValue(lines, "#ARTIST"),
-		Title:      getTagValue(lines, "#TITLE"),
+		Artist:     artist,
+		Title:      title,
 		Cover:      getTagValue(lines, "#COVER"),
 		Background: getTagValue(lines, "#BACKGROUND"),
 	}

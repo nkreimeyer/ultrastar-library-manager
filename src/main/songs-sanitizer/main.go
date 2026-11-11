@@ -109,7 +109,7 @@ func run() int {
 	log.Infof("Output dir: %s", cfg.OutDir)
 
 	modules := moduleList(*runFixTxt, *runCleanup, *runCheck, *runFixVideos, *runFixAudio,
-		check.Options{Deep: *deepCheck, MoveBroken: *moveBroken})
+		check.Options{Deep: *deepCheck, MoveBroken: *moveBroken, FixTxt: *runFixTxt})
 
 	moduleErrors := 0
 	for _, m := range modules {

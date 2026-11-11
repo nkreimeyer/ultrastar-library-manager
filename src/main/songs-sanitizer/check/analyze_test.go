@@ -440,3 +440,49 @@ func TestFindingsDedupe(t *testing.T) {
 		t.Errorf("findings = %+v", got)
 	}
 }
+
+func TestAnalyzeMissingNameTagsFillableFromFolder(t *testing.T) {
+	const body = "#MP3:a.mp3\n#BPM:300\n"
+	tests := []struct {
+		name      string
+		txt       string
+		folder    string
+		fillWarns bool
+		want      []string // "severity:message"
+	}{
+		{"not fillable", "#TITLE:T\n" + body + notes(10), "No separator", false,
+			[]string{"error:#ARTIST is missing or empty"}},
+		{"fixtxt leaves the txt alone", "#TITLE:Hypa Hypa\n" + body + notes(10), "", false,
+			[]string{"error:#ARTIST is missing or empty"}},
+		{"fillable: still an error", "#TITLE:Hypa Hypa\n" + body + notes(10), "Electric Callboy - Hypa Hypa", false,
+			[]string{"error:#ARTIST is missing or empty; fixtxt fills it from the folder name: Electric Callboy"}},
+		{"fillable in a dry run with fixtxt: warning", "#TITLE:Hypa Hypa\n" + body + notes(10), "Electric Callboy - Hypa Hypa", true,
+			[]string{"warning:#ARTIST is missing or empty; fixtxt fills it from the folder name: Electric Callboy"}},
+		{"both fillable", "#TITLE:\n" + body + notes(10), "Electric Callboy - Hypa Hypa", true, []string{
+			"warning:#ARTIST is missing or empty; fixtxt fills it from the folder name: Electric Callboy",
+			"warning:#TITLE is missing or empty; fixtxt fills it from the folder name: Hypa Hypa",
+		}},
+		{"reversed folder name is not fillable", "#TITLE:Hypa Hypa\n" + body + notes(10), "Hypa Hypa - Electric Callboy", true,
+			[]string{"error:#ARTIST is missing or empty"}},
+		{"title from the artist", "#ARTIST:Wham!\n" + body + notes(10), "Wham! - Last Christmas - Live", false,
+			[]string{"error:#TITLE is missing or empty; fixtxt fills it from the folder name: Last Christmas - Live"}},
+		{"last of a repeated title is used", "#TITLE:Hypa Hypa\n#TITLE:Other\n" + body + notes(10), "Electric Callboy - Hypa Hypa", true,
+			[]string{"error:#ARTIST is missing or empty"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := input(tt.txt, healthyFiles())
+			in.FolderName, in.FillWarns = tt.folder, tt.fillWarns
+			var got []string
+			for _, f := range analyze(in) {
+				if f.Code == codeMissingTag {
+					got = append(got, string(f.Severity)+":"+f.Message)
+				}
+			}
+			sort.Strings(got)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("missing-tag findings = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
