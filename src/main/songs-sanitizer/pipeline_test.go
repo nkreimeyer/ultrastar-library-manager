@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nkreimeyer/ultrastar-songs-sanitizer/check"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/cleanup"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/config"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fixtxt"
@@ -191,5 +193,43 @@ func TestPipelineMergesLeftoverCategory(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(songs, "Cat")); !os.IsNotExist(err) {
 		t.Errorf("category must be gone from the library (err=%v)", err)
+	}
+}
+
+// fixtxt -> cleanup -> check: check runs on the result of the earlier modules, so the
+// stale #MP3 fixtxt corrects is not reported, and the songs fixtxt moved to invalid/ are
+// not checked. ffprobe is hidden: the fixture's media files are placeholders.
+func TestPipelineWithCheck(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	cfg := writeLibrary(t)
+	ops := runPipeline(t, cfg)
+	if err := check.Run(cfg, ops, check.Options{MoveBroken: true}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(cfg.ReportPath("check_report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rep struct {
+		Checked int
+		Songs   []struct {
+			Path, Status string
+			Moved        bool
+			Findings     []struct{ Severity, Code string }
+		}
+	}
+	if err := json.Unmarshal(data, &rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep.Checked != 1 || len(rep.Songs) != 1 {
+		t.Fatalf("report = %s", data)
+	}
+	s := rep.Songs[0]
+	// The fixture song has a single note: suspicious, not broken, and therefore not moved.
+	if s.Path != "Cat/A - Song" || s.Status != "suspicious" || s.Moved || len(s.Findings) != 1 || s.Findings[0].Code != "few-notes" {
+		t.Errorf("report = %s", data)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.SongDir, "Cat", "A - Song", "song.txt")); err != nil {
+		t.Errorf("song moved: %v", err)
 	}
 }

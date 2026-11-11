@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/nkreimeyer/ultrastar-songs-sanitizer/check"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/cleanup"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/config"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fixaudio"
@@ -28,6 +29,19 @@ type module struct {
 	run     func(config.Config, *fsops.Ops) error
 }
 
+// moduleList returns the modules in the order they run: fixtxt, cleanup, check,
+// fixvideos, fixaudio. check reports on the songs as fixtxt and cleanup left them, and
+// with -move-broken removes broken songs before the slow re-encoding modules run.
+func moduleList(fixTxt, cleanupOn, checkOn, videos, audio bool, checkOpts check.Options) []module {
+	return []module{
+		{"fixtxt", fixTxt, fixtxt.Run},
+		{"cleanup", cleanupOn, cleanup.Run},
+		{"check", checkOn, func(cfg config.Config, ops *fsops.Ops) error { return check.Run(cfg, ops, checkOpts) }},
+		{"fixvideos", videos, fixvideos.Run},
+		{"fixaudio", audio, fixaudio.Run},
+	}
+}
+
 func main() {
 	os.Exit(run())
 }
@@ -38,11 +52,14 @@ func run() int {
 	dryRun := flag.Bool("n", false, "Dry run: log planned changes without modifying the library")
 	runFixTxt := flag.Bool("t", true, "Run the text-file sanitization module (disable with -t=false)")
 	runCleanup := flag.Bool("c", true, "Run the cleanup module (disable with -c=false)")
+	runCheck := flag.Bool("k", false, "Run the check module: report broken and suspicious songs (read-only unless -move-broken)")
+	deepCheck := flag.Bool("deep", false, "With -k: fully decode every referenced audio/video file with ffmpeg (slow)")
+	moveBroken := flag.Bool("move-broken", false, "With -k: move songs with errors to invalid/")
 	runFixVideos := flag.Bool("m", false, "Run the video-fixing and re-encoding module")
 	runFixAudio := flag.Bool("a", false, "Run the audio-fixing and re-encoding module")
 	logLevel := flag.String("v", "info", "Log level (debug, info, warn, error)")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s -s <song-dir> [flags]\n\nFlags:\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s -s <song-dir> [flags]\n\nModules run in this order: fixtxt (-t), cleanup (-c), check (-k), fixvideos (-m), fixaudio (-a).\n\nFlags:\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -56,6 +73,12 @@ func run() int {
 	}
 	if *songDir == "" {
 		fmt.Fprintf(flag.CommandLine.Output(), "Error: -s <song-dir> is required.\n\n")
+		flag.Usage()
+		return exitUsage
+	}
+
+	if (*deepCheck || *moveBroken) && !*runCheck {
+		fmt.Fprintf(flag.CommandLine.Output(), "Error: -deep and -move-broken only apply to the check module; add -k to run it.\n\n")
 		flag.Usage()
 		return exitUsage
 	}
@@ -85,12 +108,8 @@ func run() int {
 	log.Infof("Song dir: %s", cfg.SongDir)
 	log.Infof("Output dir: %s", cfg.OutDir)
 
-	modules := []module{
-		{"fixtxt", *runFixTxt, fixtxt.Run},
-		{"cleanup", *runCleanup, cleanup.Run},
-		{"fixvideos", *runFixVideos, fixvideos.Run},
-		{"fixaudio", *runFixAudio, fixaudio.Run},
-	}
+	modules := moduleList(*runFixTxt, *runCleanup, *runCheck, *runFixVideos, *runFixAudio,
+		check.Options{Deep: *deepCheck, MoveBroken: *moveBroken})
 
 	moduleErrors := 0
 	for _, m := range modules {
