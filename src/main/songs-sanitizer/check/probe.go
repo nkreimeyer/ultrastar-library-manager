@@ -136,8 +136,11 @@ func parseProbe(data []byte) (mediaInfo, error) {
 			}
 			info.HasAudio = true
 		case "video":
+			if s.Disposition.AttachedPic != 0 {
+				continue // cover art of an audio file, not a video
+			}
 			info.HasVideo = true
-			if s.Disposition.AttachedPic == 0 && info.VideoHeight == 0 && s.Width > 0 && s.Height > 0 {
+			if info.VideoHeight == 0 && s.Width > 0 && s.Height > 0 {
 				info.VideoWidth, info.VideoHeight = s.Width, s.Height
 			}
 		}

@@ -221,7 +221,7 @@ type mediaInfo struct {
 	// without Xing/VBRI header) and measuring it failed, so it may be far off.
 	DurationEstimated bool
 	HasAudio          bool
-	HasVideo          bool // any video stream, including an attached picture (cover art)
+	HasVideo          bool // a video stream that is not an attached picture (cover art)
 	// AudioBitrate in bit/s: of the first audio stream, else of the container if the
 	// file has no moving video stream (the container rate would include the video); 0 if
 	// unknown.
@@ -534,12 +534,14 @@ func checkNotes(fs *findings, s *songtxt.Song) {
 }
 
 // checkNoteTimes flags notes before the start of the audio. Beats may be negative (a
-// note at beat -2 plays 2 beats before #GAP), but not before song time 0.
+// note at beat -2 plays 2 beats before #GAP), and so may #GAP, but no note may start
+// before song time 0.
 func checkNoteTimes(fs *findings, s *songtxt.Song) {
 	first, ok := s.FirstNoteStartBeat()
-	if !ok || first >= 0 {
+	if !ok {
 		return
 	}
+	// A negative #GAP moves even a note at beat 0 before the audio: decide on song time.
 	ms, err := s.BeatToMs(float64(first))
 	if err != nil || ms >= 0 {
 		return
@@ -551,7 +553,7 @@ func checkNoteTimes(fs *findings, s *songtxt.Song) {
 			break
 		}
 	}
-	fs.add(SevWarning, codeNoteBeforeAudio, line, "", "the first note starts at %s, before the audio begins (beat %d; #GAP too small)", fmtMs(ms), first)
+	fs.add(SevWarning, codeNoteBeforeAudio, line, "", "the first note starts at %s, before the audio begins (beat %d; #GAP too small or negative)", fmtMs(ms), first)
 }
 
 func sortedKeys[V any](m map[int]V) []int {

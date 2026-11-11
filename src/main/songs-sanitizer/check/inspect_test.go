@@ -18,7 +18,7 @@ func TestParseProbeBitrateAndSize(t *testing.T) {
 			`{"streams":[{"codec_type":"audio","bit_rate":"192000","disposition":{"attached_pic":0}},
 			{"codec_type":"video","width":500,"height":500,"disposition":{"attached_pic":1}}],
 			"format":{"duration":"2.0","bit_rate":"199332"}}`,
-			mediaInfo{DurationSec: 2, HasDuration: true, HasAudio: true, HasVideo: true, AudioBitrate: 192000}},
+			mediaInfo{DurationSec: 2, HasDuration: true, HasAudio: true, AudioBitrate: 192000}},
 		{"ogg: no stream rate, the container rate is used",
 			`{"streams":[{"codec_type":"audio","disposition":{"attached_pic":0}}],"format":{"duration":"2.0","bit_rate":"73540"}}`,
 			mediaInfo{DurationSec: 2, HasDuration: true, HasAudio: true, AudioBitrate: 73540}},
