@@ -5,18 +5,23 @@ one `.txt` (UltraStar format: `#TAG:value` header lines plus note lines), an aud
 and optionally a video, a cover and a background image.
 
 The active code is a Go CLI in `src/main/songs-sanitizer/`. The `old/` directory holds the
-earlier Python and shell scripts. They are kept for reference only; `old/` is the only place
-duplicate-folder detection exists today.
+earlier Python and shell scripts. They are kept for reference only. Cross-source duplicate
+detection exists in the Go `organize` subcommand; the folder-name based detection in `old/`
+is superseded.
 
 ## Layout
 
 ```
 src/main/songs-sanitizer/     Go module github.com/nkreimeyer/ultrastar-songs-sanitizer (go 1.24)
-  main.go                     flags, validation, runs the modules in fixed order, summary + exit code
-  main_test.go                flag validation (-deep/-move-broken need -k), module order
+  main.go                     flags, validation, runs the modules in fixed order, summary + exit code;
+                              os.Args[1] == "organize" dispatches to the subcommand
+  organize_cmd.go             the organize subcommand: own FlagSet, -s tier lists, -undo, validation
+  main_test.go                flag validation (-deep/-move-broken need -k), module order, organize usage
   pipeline_test.go            fixtxt → cleanup (→ check) integration tests (real run, dry-run = real-run plan, idempotence)
-  config/                     Config{SongDir, OutDir, DryRun}: path validation, output layout, marker file
-  fsops/                      the ONLY place that modifies files: dry-run (planned writes/moves visible via ReadFile), atomic writes, moves, stats
+  config/                     Config{SongDir, OutDir, DryRun}: path validation, output layout, marker file;
+                              organize.go: OrganizeConfig{Sources (tier, label), Library, OutDir}
+  fsops/                      the ONLY place that modifies files: dry-run (planned writes/moves visible via ReadFile), atomic writes, moves, stats;
+                              MoveTo (exact target, ordered dry-run moves), AppendJournal, RemoveEmptyDir (undo)
   utils/decode.go             txt decoding (DecodeTxt): UTF-16/UTF-8/#ENCODING/CP1250/CP1252, "when in doubt, Problem"
   utils/txt.go                header tags, song-txt lookup, file references
   utils/folders.go            song folder discovery (GetAllSongFolders)
@@ -26,10 +31,14 @@ src/main/songs-sanitizer/     Go module github.com/nkreimeyer/ultrastar-songs-sa
   songtxt/                    UltraStar txt parser (tags, notes, breaks, duets, RELATIVE, B lines, BeatToMs); pure
   fixtxt/                     dedupe song txts, decode → UTF-8, fix #MP3/#AUDIO/#VIDEO/#COVER/#BACKGROUND, fill #ARTIST/#TITLE from the folder name
   cleanup/                    move unreferenced files to extra-files/, near-empty folders to invalid/
-  check/                      broken-song detection: analyze.go (pure), probe.go (ffprobe/ffmpeg), report.go
+  check/                      broken-song detection: analyze.go (pure), probe.go (ffprobe/ffmpeg), report.go;
+                              inspect.go: Inspector (one folder -> findings, broken, MediaSummary), used by Run and organize
   fixvideos/                  ffmpeg: re-encode to H.264 mp4, downscale to fit 1920x1080, strip audio, flag corrupt files (tagged, idempotent)
   fixaudio/                   ffmpeg: downmix to stereo, peak-normalize to -3 dB, originals kept (tagged, idempotent)
   journal/                    content-fingerprint journal for media formats that cannot carry a marker tag
+  organize/                   organize subcommand: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey),
+                              quality.go (keeper order), plan.go (MakePlan, orderMoves; pure), organize.go (Run, Undo),
+                              journal.go (organize-journal.jsonl), report.go (organize_plan.json/.txt)
 old/                          legacy Python/shell (duplicate detection by folder name, fuzzy txt compare)
 test-assets/                  local fixture library (gitignored, not in the repo)
 ```
@@ -53,17 +62,24 @@ Order is always fixtxt → cleanup → check → fixvideos → fixaudio. Bool
 flags are turned off with `-t=false`; leftover arguments (`-t false`) are rejected. Exit codes:
 0 ok, 1 some operation failed, 2 usage error. See README.md for user-facing details.
 
+Subcommand: `organize -s <dir>[:<dir>…] [-s …] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n]`
+and `organize -undo [-o <out> | -l <library>] [-n]`. Each `-s` is one priority tier (folders in
+it split with `filepath.SplitList`); `-o` defaults to `organize-output/` next to the library.
+Same exit codes and leftover-argument rule.
+
 ### Rules for working on the code
 
 - **All library modifications go through `fsops.Ops`** (`WriteFileAtomic`, `MoveInto`,
-  `Rename`, `Replace`, `Remove`, `PlanReplace`). Never call `os.Rename/Remove/WriteFile/Create`
+  `MoveTo`, `Rename`, `Replace`, `Remove`, `RemoveEmptyDir`, `PlanReplace`). Never call `os.Rename/Remove/WriteFile/Create`
   on library paths. The only exception is removing your own `fsops.TempFileNear` file after
   a failure. This is what makes dry-run, atomic writes and the summary/exit code work.
 - **Never delete.** Removed files go to `cfg.ExtraFilesDir()`, and broken folders to
   `cfg.InvalidDir()`, using `ops.MoveInto(src, dir, cfg.RelPath(...))` so the library structure
   is mirrored. Reports go to `ops.WriteReport(cfg.ReportPath(name), …)` with sorted content.
   The only exception is fixvideos (see "Design decisions"), which deletes the original of a
-  conversion with `ops.Remove`, and only after the txt references the new file.
+  conversion with `ops.Remove`, and only after the txt references the new file. organize
+  moves only (`<out>/duplicates/<label>/`, `<out>/invalid/<label>/`, the library), journals
+  every move, and its undo removes only the empty folders its run created.
 - **Dry-run** must leave `cfg.SongDir` byte-identical. Probes (ffprobe, volumedetect) are
   fine. Planned media changes are recorded with `ops.PlanReplace`.
 - **Read txts through `ops.ReadFile`** (and the ops-aware `utils.IsSongTxt`, `SongTxtFiles`,
@@ -112,6 +128,32 @@ flags are turned off with `-t=false`; leftover arguments (`-t false`) are reject
   part of the folder name, `#ARTIST` or `#TITLE`), then shape (`utils.IsSquareImage`:
   within 5 %). An image is never both. Image headers come from `utils.ReadImageHeader`;
   errors wrap `ErrUnsupportedImage` (TIFF, HEIF, …) or `ErrInvalidImage`.
+- organize: discovery per source, `check.Inspector` in a worker pool (min(16, NumCPU)), then
+  `MakePlan` (pure, table-tested): encoding problems and unreadable folders stay, broken songs
+  go to invalid/, working songs are grouped by `SongKey` (duet flag from P1/P2 or a `[DUET]`
+  title) and the keeper is chosen by `chooseKeeper`: the criteria (tier with `-priority`, song
+  warnings, video, height, bitrate within 10 % of the group's best, cover, background,
+  `#VERSION`, source order, path) are filters over the whole group, never pairwise
+  comparisons, because the bitrate tolerance is not transitive. Each loser's reason is the
+  filter that dropped it. Without ffprobe, `MediaSummary.HasVideo` only means `#VIDEO`
+  names an existing, non-empty file (height and bitrate unknown = 0). `SongKey` folds diacritics only on Latin/Greek letters (marks of
+  other scripts make different letters), drops invisible format characters like FolderName,
+  and never lets a `feat.` part or a duet qualifier swallow a version word (`Live`, `Remix`,
+  …). Target `<Bucket>/<FolderName>`; NameKey collisions of different songs get ` (2)`,
+  ` (3)` from one run-wide claimed set (a number never takes another song's plain name;
+  keepers already in place keep their number). A target taken by a non-candidate or a
+  staying song, or a bucket that is a file, a song folder (song txt or media directly in
+  it) or unreadable (`ops.FailOnce`), leaves the keeper in place. Apply: out-dir moves
+  first (`MoveInto`), then library moves with `MoveTo` in `orderMoves` order (targets freed
+  first, cycles and self-nesting through a hidden `.organize-tmp-*` name); right before each
+  library move the bucket is checked again (an earlier move away of a song folder named like
+  the bucket may have failed). The journal (`organize-journal.jsonl`: `run`, `mkdir`,
+  `move`, `undone`) is appended and fsynced per entry, only in real runs; a journal write
+  failure stops all further moves, and a song parked under the temporary name is moved back
+  (or, if its place is taken, to its target) so it never stays hidden. `-undo` walks the
+  newest not-undone run backwards. A dry run executes the same steps through ops (MoveTo
+  simulates the ordered moves), so its plan and move count match the real run
+  (`TestRunDryRunMatchesRealRun`).
 - check: `analyze` is a pure function over the parsed song and probed file info, so every
   rule is table-tested without ffmpeg. Findings are not `ops.Fail`s and don't change the
   exit code. Repeated tags resolve like UltraStar does (the last one wins; fixtxt's
@@ -191,6 +233,15 @@ Still open (roadmap items):
 - fixaudio drops cover attachments of `.mka` files (kept in `originals/`). Codecs it cannot
   re-encode as themselves (DTS, TrueHD) are skipped with a warning.
 - `-t` and `-c` are on by default.
+- organize: a keeper whose target is an existing non-song folder in the library (e.g. an
+  emptied category named exactly `A/Artist - Title`) stays in place until that folder is
+  removed by hand. Empty category folders left in the sources are counted, not removed.
+  A song parked under `.organize-tmp-*` whose final move and move-back both fail stays
+  hidden until `-undo` (if the journal failed too, it must be moved by hand; the log names
+  it). A completed move whose journal append fails cannot be undone (the journal records
+  moves after they happen).
+- organize: in the plain text of a title, `ft.` is not a feat marker in `SongKey` (it may
+  be `Ft. Lauderdale`); `Song ft. X` and `Song` are only listed as possible duplicates.
 
 ## Roadmap
 
@@ -200,8 +251,16 @@ clean, deduplicated, working songs end up in the final library.
 
 ### 1. Improve duplicate detection
 
-Today: Go only "dedupes" multiple song `.txt` files *inside one folder*: it keeps the newest
-and moves the others to `extra-files/` (by mtime only, no content comparison).
+**Partly done** (2026-11) inside `organize`: cross-source duplicates are grouped by a key from
+the parsed `#ARTIST`/`#TITLE` (`organize.SongKey`: NFC, casefold, diacritics, punctuation,
+`feat.`, known-noise qualifiers stripped, other qualifiers kept, duets as variants), the keeper
+is chosen on quality (`organize.chooseKeeper`), the losers are moved to `<out>/duplicates/`, and
+`LooseKey` lists possible duplicates for review. **Still open:** a standalone report-only
+`dedupe` (without reorganizing), fuzzy title matching, note-line similarity (BPM + note count)
+and audio fingerprints, and choosing between several song txts *inside one folder* by content.
+
+Before organize: Go only "dedupes" multiple song `.txt` files *inside one folder*: it keeps the
+newest and moves the others to `extra-files/` (by mtime only, no content comparison).
 Cross-folder detection only exists in `old/` and is folder-name based. Its `(?!DUET)` check is
 case-sensitive, it scans the top level only, picks a winner by listing order, and crashes if
 `songs.dup/<name>` already exists.
@@ -359,8 +418,19 @@ Next slices:
 
 ### 5. Final library structure: one folder per starting character
 
-Goal: one consolidated library sorted into a subfolder per starting character, the way
-UltraStar Manager organizes songs:
+**Done** (2026-11) as the `organize` subcommand: any number of sources in priority tiers
+(`-s a -s b:c`, `-priority`), songs always moved (keepers into `<library>/<bucket>/<Artist -
+Title>`, losers to `<out>/duplicates/<label>/`, broken songs to `<out>/invalid/<label>/`),
+`Bucket` (0-9, A–Z, #; `-ignore-the`), safe `FolderName`, collisions ` (2)`, the library as a
+source for idempotent re-runs and re-bucketing, `-n` writing `organize_plan.json/.txt`, and a
+journal with `-undo`. **Still open:** renaming the files inside song folders
+(`Artist - Title.mp3`, with the txt updated in the same step), applying an edited plan
+(`--plan` file as input: today a real run re-plans, which gives the same plan for unchanged
+sources), merging into an existing song folder (never done: such keepers stay in place), and
+undoing more than the journal knows (re-encoded media, see "Design decisions").
+
+Original plan. Goal: one consolidated library sorted into a subfolder per starting
+character, the way UltraStar Manager organizes songs:
 
 ```
 <library>/

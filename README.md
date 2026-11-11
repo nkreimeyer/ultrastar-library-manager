@@ -12,7 +12,8 @@ detection) and is kept for reference only.
 
 - Go 1.24+ to build
 - `ffmpeg` and `ffprobe` on `PATH` (only for the video `-m` and audio `-a` modules and the
-  media checks of `-k`; without ffprobe, `-k` checks only the txt files)
+  media checks of `-k` and `organize`; without ffprobe, `-k` checks only the txt files and
+  `organize` cannot compare video and audio quality)
 
 ## Build
 
@@ -32,6 +33,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -tags netgo -ldflags '-w -extl
 
 ```bash
 songs-sanitizer -s <song-dir> [flags]
+songs-sanitizer organize -s <dir> [-s ...] -l <library> [flags]   # see "Organizing the library"
 ```
 
 | Flag | Default | Description |
@@ -165,6 +167,139 @@ after the video module, handles audio files and the `#VOCALS`/`#INSTRUMENTAL` ta
 
 If a target already exists (e.g. from an earlier run), a suffix like ` (2)` is appended;
 empty folders are merged into an existing target instead.
+
+## Organizing the library (`organize`)
+
+`songs-sanitizer organize` builds one consolidated library from any number of source
+folders, sorted into one folder per starting character, and removes duplicates across the
+sources:
+
+```
+<library>/
+  0-9/   2 Unlimited - No Limit/
+  A/     ABBA - Dancing Queen/
+  …
+  Z/
+  #/     everything else (symbols, non-Latin scripts)
+```
+
+```bash
+songs-sanitizer organize -s <dir>[:<dir>...] [-s ...] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n] [-v level]
+songs-sanitizer organize -undo [-o <out> | -l <library>] [-n] [-v level]
+```
+
+Songs are always **moved**, never copied or deleted: the best version of every song goes
+into the library, the other versions to `<out>/duplicates/<source>/…`, broken songs to
+`<out>/invalid/<source>/…` (mirroring the source's folder structure). Every move is
+recorded in a journal and can be undone with `-undo`.
+
+**Recommended workflow:**
+
+1. Run the sanitizer on every source first (`songs-sanitizer -s <source> -n`, then without
+   `-n`; add `-k` to see what check reports). fixtxt repairs encodings, file references and
+   missing `#ARTIST`/`#TITLE` tags, so fixable songs are not sent to `invalid/` by organize.
+2. `songs-sanitizer organize … -n` and review `organize_plan.txt` in the output folder: what
+   goes where, which version of each duplicate is kept and why, which songs are invalid or
+   left in place, and possible duplicates that were *not* merged.
+3. Run the same command without `-n`. If something went wrong, `organize -undo` restores
+   the previous state.
+
+| Flag | Default | Description |
+|---|---|---|
+| `-s <dir>[:<dir>…]` | – | **Required** (unless `-undo`). Source folder(s). Repeat `-s` for every priority tier; one `-s` may list several folders separated by `:` (`;` on Windows) |
+| `-l <dir>` | – | **Required** (unless `-undo -o`). The library to build. It may not exist yet, and it may also be given as a source |
+| `-o <dir>` | `organize-output/` next to `-l` | Output folder for `duplicates/`, `invalid/`, the journal and the reports. Must not be inside the library or a source |
+| `-priority` | off | The order of the `-s` flags counts: a working song from an earlier `-s` always beats one from a later `-s` |
+| `-ignore-the` | off | Sort "The Beatles" under `B` (the folder name keeps "The") |
+| `-deep` | off | Fully decode every referenced audio/video file while checking the songs (slow) |
+| `-n` | off | Dry run: write the plan report only; nothing is moved and no journal entry is written |
+| `-undo` | off | Undo the most recent organize run that was not undone yet |
+| `-v <level>` | `info` | Log level |
+
+**Tiers.** With three sources, one high quality and two low quality ones:
+
+```bash
+songs-sanitizer organize -s /m/hq -s /m/low1:/m/low2 -l /m/library -priority
+```
+
+A song from `hq` is always kept over the same song from `low1` or `low2`; between `low1`
+and `low2` the better quality wins. Without `-priority` all sources are equal and quality
+decides. A working version always beats a broken one: if the `hq` version is broken, it
+goes to `invalid/` and the report names the version used instead.
+
+**Which songs are the same.** Songs are compared by their `#ARTIST` and `#TITLE` tags, not
+by folder names: case, accents of Latin and Greek letters (`Beyoncé` = `Beyonce`; in other
+scripts such marks make different letters, so `Мой` ≠ `Мои`), invisible characters (soft
+hyphens, zero-width spaces), punctuation, `&`/`and`, a leading "The" of the artist and
+`feat.` parts are ignored, and so are qualifiers that do not change the song
+(`(Remastered 2011)`, `(Official Video)`, `[HD]`, `(Karaoke)`, a year). Every other
+qualifier keeps songs apart (`(Live)`, `(Acoustic)`, `(Remix)`, `(German Version)`, …),
+also next to a `feat.` part (`Song (feat. X Live)` ≠ `Song`) or inside a duet qualifier
+(`[Duet - Acoustic]` ≠ `[Duet]`). A duet (P1/P2 in the txt, or `[DUET]` in the title) is a
+variant of the solo version, not a duplicate. When in doubt nothing is merged: songs that
+only differ by such qualifiers, or by an `ft.` in the title (it may also be an
+abbreviation, as in `Ft. Lauderdale`), are listed as *possible duplicates* for manual review.
+
+**Which version is kept.** The criteria are applied in this order; at each step only the
+versions with the best value stay in the running:
+
+1. with `-priority`: the earlier `-s` tier;
+2. fewer warnings about the txt, the timing or the audio (problems with video, cover,
+   background, `#VIDEOGAP` or stems do not count here);
+3. has a readable video; 4. higher video height (e.g. 1080p over 720p);
+5. an audio bitrate within 10 % of the best version's (unknown loses);
+6. has a cover; 7. has a background; 8. the txt has `#VERSION`;
+9. otherwise the earlier source (in the order given), then the path.
+
+The report gives the deciding reason for every duplicate, e.g. `lower priority tier`,
+`no video` or `lower audio bitrate (128 vs 320 kbit/s)`. Without `ffprobe` on `PATH` the
+video height and the bitrate are unknown (the report says so): a version whose `#VIDEO`
+names an existing file still beats one without a video, and the other criteria decide.
+
+**Folder names** are `Artist - Title` from the tags, made safe for Windows, macOS and
+Linux (`AC/DC` → `AC-DC`, `?*<>` removed, `"` → `'`, trailing dots removed, reserved names
+like `CON` changed, at most 180 bytes). A duet without a duet qualifier in its title gets
+` [DUET]`. Two different songs with the same name (ignoring case) get ` (2)`, ` (3)`, ….
+The bucket is the first letter or digit of `#ARTIST` with accents removed (`Ä` → `A`,
+`Ø` → `O`); leading punctuation is skipped (`'Til Tuesday` → `T`, `.38 Special` → `0-9`).
+
+**Left in place** (reported with the reason, never moved): songs whose txt has an encoding
+problem (fix them with fixtxt first), unreadable folders, songs whose target folder
+already exists in the library but is not part of this run, and songs whose bucket folder
+cannot take them: a file, an unreadable folder (counted as a failure), or a song folder
+itself (for example an old song folder named `A` with a txt or media files in it; a song
+moved into it would be hidden inside that song). To deduplicate against an
+existing library, give the library as a source too:
+
+```bash
+songs-sanitizer organize -s /m/library -s /m/new -l /m/library -priority
+```
+
+Its songs then compete like all others; songs already at their target stay where they are,
+and songs in the wrong place are moved to the right bucket. With `-priority` the tier order
+counts here too: in the example the library outranks `/m/new`, which suits a new source
+of lower quality. For a better source put it first (`-s /m/new -s /m/library`), or leave
+out `-priority` (or give both in one tier, `-s /m/library:/m/new`) to let quality decide. Running
+`organize -s /m/library -l /m/library` on a finished library moves nothing. Empty folders
+(for example category folders emptied by an earlier run) are ignored and left alone.
+
+**Undo.** `organize -undo -o <out>` (or `-l <library>` for the default output folder)
+reverts the most recent run that was not undone yet: every move in reverse order, and the
+library folders the run created are removed again if they are empty. A move whose target
+is gone or whose original place is taken again is skipped and counted as failed. Run
+`-undo` again to revert the run before that.
+
+**Output folder** (`organize-output/` next to the library by default):
+
+```
+<out>/duplicates/<source>/<relative path>/    versions that lost against a better one
+<out>/invalid/<source>/<relative path>/       broken songs
+<out>/organize_plan.json, organize_plan.txt   the plan (and, for real runs, the outcome of every move)
+<out>/organize-journal.jsonl                  every completed move, used by -undo
+```
+
+`<source>` is the base name of the source folder (`low1`, …; ` (2)` is added if two
+sources have the same name).
 
 ## Development
 
