@@ -1,13 +1,21 @@
 // Package fixvideos re-encodes song videos with ffmpeg: inefficient codecs and high-bitrate
-// videos are converted to H.264 MP4, videos above Full HD are downscaled, and the audio
-// track is stripped when the song has a separate audio file. Videos ffmpeg cannot read are
-// listed in potentiallyCorruptedFiles.txt in the output folder.
+// videos are converted to H.264 MP4, videos larger than Full HD (wider than 1920 or taller
+// than 1080 px) are downscaled, and the audio track is stripped when the song has a separate
+// audio file. Videos ffmpeg cannot read are listed in potentiallyCorruptedFiles.txt in the
+// output folder.
+//
+// Every video written gets the metadata tag SANITIZER_VIDEO=processed, and tagged videos are
+// skipped on later runs. A video whose re-encode would be larger than the original is
+// tagged by a lossless remux, so it is not re-encoded on every run. Containers that cannot
+// carry the tag (AVI, MPEG) are remembered in the media journal instead.
 package fixvideos
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +26,7 @@ import (
 
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/config"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/fsops"
+	"github.com/nkreimeyer/ultrastar-songs-sanitizer/journal"
 	"github.com/nkreimeyer/ultrastar-songs-sanitizer/utils"
 
 	log "github.com/sirupsen/logrus"
@@ -25,8 +34,18 @@ import (
 
 const (
 	bitrateThreshold = 3000000 // 3 Mbit/s
-	fullHDWidth      = 1920
-	targetHeight     = 1080
+
+	// markerTag is written into every video fixvideos writes; tagged videos are skipped.
+	markerTag   = "SANITIZER_VIDEO"
+	markerValue = "processed"
+
+	// Media journal kinds for videos whose container cannot carry markerTag.
+	journalChecked   = "video-checked"   // processing would not help (result was larger)
+	journalProcessed = "video-processed" // written by fixvideos
+
+	// durationTolerance is the maximum duration difference (in seconds) between an
+	// original and its tagged remux.
+	durationTolerance = 0.5
 
 	// corruptedReportName is the report listing videos ffmpeg could not read.
 	corruptedReportName = "potentiallyCorruptedFiles.txt"
@@ -39,21 +58,41 @@ const (
 	selectStreams = "-select_streams"
 )
 
+// Videos larger than maxWidth x maxHeight are downscaled to fit within it. They are
+// variables so tests can lower them.
+var maxWidth, maxHeight = 1920, 1080
+
+// workers is the number of videos processed in parallel (each ffmpeg is multi-threaded).
+var workers = 4
+
+// markerExts are the containers verified to keep markerTag through "-c copy" (ffmpeg 5.1+);
+// mp4Exts additionally need "-movflags +use_metadata_tags" for custom tags. AVI and MPEG
+// program/elementary streams silently drop it.
+var (
+	markerExts = map[string]bool{".mp4": true, ".m4v": true, ".mov": true, ".mkv": true, ".webm": true, ".flv": true, ".wmv": true}
+	mp4Exts    = map[string]bool{".mp4": true, ".m4v": true, ".mov": true}
+)
+
 // codecsNeedReencode lists video codecs worth converting to H.264: vp9, av1 and hevc are
 // too new for some players, everything older than H.264 is inefficient.
 var codecsNeedReencode = []string{"vp9", "av1", "hevc", "mpeg4", "mpeg2video", "msmpeg4v2", "msmpeg4v3", "flv1", "h263", "h263p"}
 
 // processor holds the per-run state shared by all workers.
 type processor struct {
-	cfg config.Config
-	ops *fsops.Ops
+	cfg     config.Config
+	ops     *fsops.Ops
+	journal *journal.Journal
+
+	// renameMu serializes the extension-change step (rename, txt update, moving the
+	// original), so two videos of one song folder never update its txt concurrently.
+	renameMu sync.Mutex
 
 	mu        sync.Mutex
 	corrupted map[string]struct{} // videos ffmpeg could not read
 }
 
-// Run processes the videos of all song folders below cfg.SongDir, at most 4 batches in
-// parallel, and writes the corrupted-files report at the end.
+// Run processes the videos of all song folders below cfg.SongDir with a pool of workers,
+// then writes the corrupted-files report and the media journal.
 func Run(cfg config.Config, ops *fsops.Ops) error {
 	for _, tool := range []string{"ffmpeg", "ffprobe"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -66,34 +105,53 @@ func Run(cfg config.Config, ops *fsops.Ops) error {
 		return fmt.Errorf("reading song dir %q: %w", cfg.SongDir, err)
 	}
 
-	p := &processor{cfg: cfg, ops: ops, corrupted: map[string]struct{}{}}
-
-	// Process batches with a maximum of 4 running in parallel
-	semaphore := make(chan struct{}, 4)
-	var batchWg sync.WaitGroup
-	for _, batch := range utils.SplitIntoBatches(entries, 100) {
-		batchWg.Add(1)
-		go func(batch []string) {
-			defer batchWg.Done()
-			semaphore <- struct{}{}        // Acquire semaphore
-			defer func() { <-semaphore }() // Release semaphore
-			p.handleBatch(batch)
-		}(batch)
+	// Without the journal, videos recorded there would be re-encoded and discarded again,
+	// and saving it would drop the entries that could not be read.
+	j, err := journal.Open(cfg.JournalPath())
+	if err != nil {
+		return fmt.Errorf("reading media journal %q: %w", cfg.JournalPath(), err)
 	}
-	batchWg.Wait()
+
+	p := &processor{cfg: cfg, ops: ops, journal: j, corrupted: map[string]struct{}{}}
+
+	videos := p.collectVideos(entries)
+	queue := make(chan string)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for file := range queue {
+				p.processVideoFile(filepath.Dir(file), file)
+			}
+		}()
+	}
+	for _, file := range videos {
+		queue <- file
+	}
+	close(queue)
+	wg.Wait()
 
 	p.writeCorruptedReport()
+	// Nothing is added in dry-run mode; the check only makes sure the out dir stays empty.
+	if !cfg.DryRun {
+		if err := j.Save(ops); err != nil {
+			log.Errorf("%v", err) // counted as a failure by ops
+		}
+	}
 	log.Infof("All video files have been processed.")
 	return nil
 }
 
-// handleBatch processes all video files of the song folders in batch, one after another.
-func (p *processor) handleBatch(batch []string) {
-	for _, dir := range batch {
+// collectVideos returns the paths of the visible video files directly inside the song
+// folders dirs.
+func (p *processor) collectVideos(dirs []string) []string {
+	var videos []string
+	for _, dir := range dirs {
 		files, err := os.ReadDir(dir)
 		if err != nil {
 			log.Errorf("reading directory %q: %v", dir, err)
-			p.ops.Fail()
+			p.ops.FailOnce("unreadable:" + dir) // same key as the song folder discovery
 			continue
 		}
 		for _, file := range files {
@@ -101,9 +159,10 @@ func (p *processor) handleBatch(batch []string) {
 			if utils.IsHidden(file.Name()) || !utils.IsVideoFile(file.Name()) || !utils.IsRegularFile(dir, file) {
 				continue
 			}
-			p.processVideoFile(dir, filepath.Join(dir, file.Name()))
+			videos = append(videos, filepath.Join(dir, file.Name()))
 		}
 	}
+	return videos
 }
 
 // encodePlan describes what ffmpeg has to do with a video.
@@ -121,6 +180,13 @@ func (pl encodePlan) outputExt(input string) string {
 		return ".mp4"
 	}
 	return filepath.Ext(input)
+}
+
+// renames reports whether the processed file gets a different name than input. An
+// extension that only changes its case (v.MP4 -> .mp4) does not count: the original is
+// replaced in place, because on case-insensitive file systems both names are the same file.
+func (pl encodePlan) renames(input string) bool {
+	return !strings.EqualFold(pl.outputExt(input), filepath.Ext(input))
 }
 
 // describe returns a human-readable summary of the planned actions.
@@ -169,12 +235,49 @@ func buildFFmpegArgs(input, output string, pl encodePlan) []string {
 	}
 
 	if pl.resize {
-		// -2 keeps the aspect ratio with an even width, which libx264 requires.
-		args = append(args, "-vf", fmt.Sprintf("scale=-2:%d", targetHeight))
+		args = append(args, "-vf", scaleFilter())
 	}
 
+	args = append(args, markerArgs(output)...)
 	// The output file already exists (created by fsops.TempFileNear), hence -y.
 	return append(args, "-y", filepath.Clean(output))
+}
+
+// scaleFilter fits the video within maxWidth x maxHeight keeping its aspect ratio (it is
+// only applied to videos exceeding either limit) with even dimensions, which libx264
+// requires. fitWithin mirrors it for the size estimate.
+func scaleFilter() string {
+	return fmt.Sprintf("scale=w=%d:h=%d:force_original_aspect_ratio=decrease:force_divisible_by=2", maxWidth, maxHeight)
+}
+
+// needsResize reports whether a width x height video exceeds the size limits.
+func needsResize(width, height int) bool {
+	return width > maxWidth || height > maxHeight
+}
+
+// fitWithin returns the size of a width x height video after scaleFilter.
+func fitWithin(width, height int) (int, int) {
+	if !needsResize(width, height) {
+		return width, height
+	}
+	f := min(float64(maxWidth)/float64(width), float64(maxHeight)/float64(height))
+	even := func(v float64) int { return max(2, int(v)&^1) }
+	return even(float64(width) * f), even(float64(height) * f)
+}
+
+// markerArgs returns the ffmpeg output arguments that write markerTag into output. It is
+// harmless for containers that cannot store it (see markerExts).
+func markerArgs(output string) []string {
+	args := []string{"-metadata", markerTag + "=" + markerValue}
+	if mp4Exts[strings.ToLower(filepath.Ext(output))] {
+		args = append(args, "-movflags", "+use_metadata_tags") // custom tags in MP4/MOV
+	}
+	return args
+}
+
+// canCarryMarker reports whether the container of file keeps markerTag.
+func canCarryMarker(file string) bool {
+	return markerExts[strings.ToLower(filepath.Ext(file))]
 }
 
 // plan probes file and decides what has to be done with it. ok is false if the file
@@ -196,11 +299,11 @@ func (p *processor) plan(dir, file string) (pl encodePlan, ok bool) {
 
 	pl.removeAudio = needsRemoveAudio(dir, file)
 
-	width, _, err := getVideoResolution(file)
+	width, height, err := getVideoResolution(file)
 	if err != nil {
 		log.Debugf("Error getting resolution for %s: %v", file, err)
 	}
-	pl.resize = width > fullHDWidth
+	pl.resize = needsResize(width, height)
 	pl.reEncode = pl.reEncode || pl.resize
 
 	// set crf based on resolution
@@ -216,22 +319,35 @@ func (p *processor) plan(dir, file string) (pl encodePlan, ok bool) {
 // processVideoFile processes a video by potentially removing audio, resizing and
 // re-encoding it with ffmpeg into a temp file next to it, which then replaces the original.
 func (p *processor) processVideoFile(dir, file string) {
+	if p.ops.WouldBeMoved(file) {
+		log.Debugf("Skipping %s: an earlier module would move it", file)
+		return
+	}
+	if p.journal.Has(journalChecked, file) || p.journal.Has(journalProcessed, file) {
+		log.Debugf("Skipping %s: recorded in the media journal", file)
+		return
+	}
+	if m, err := probeMarker(file); err == nil && m.tagged {
+		log.Debugf("Skipping %s: it carries the %s tag", file, markerTag)
+		return
+	}
+
 	pl, ok := p.plan(dir, file)
 	if !ok {
 		log.Debugf("No processing needed for: %s", file)
 		return
 	}
 
-	if ext := pl.outputExt(file); ext != filepath.Ext(file) && !isVideoReferenced(dir, file) {
+	if pl.renames(file) && !isVideoReferenced(dir, file) {
 		// Converting changes the file name, which only works if the txt references it.
-		log.Warnf("Not converting %s to %s: the song txt's #VIDEO tag does not reference it", file, ext)
+		log.Warnf("Not converting %s to %s: the song txt's #VIDEO tag does not reference it", file, pl.outputExt(file))
 		return
 	}
 
 	if p.cfg.DryRun {
 		action := pl.describe()
-		if ext := pl.outputExt(file); ext != filepath.Ext(file) {
-			action += fmt.Sprintf(" (to %s, updating the song txt and moving the original to extra-files)", ext)
+		if pl.renames(file) {
+			action += fmt.Sprintf(" (to %s, updating the song txt and moving the original to extra-files)", pl.outputExt(file))
 		}
 		p.ops.PlanReplace(file, action)
 		return
@@ -264,10 +380,11 @@ func (p *processor) processVideoFile(dir, file string) {
 	p.replaceOriginal(dir, file, tmp)
 }
 
-// replaceOriginal replaces file with the processed tmp file. A larger result is discarded.
-// If the extension changed, tmp is renamed to the new name, the song txt is updated to
-// reference it and the original is moved to extra-files (never deleted). If anything goes
-// wrong, the original stays in place and keeps being referenced, so the song keeps working.
+// replaceOriginal replaces file with the processed tmp file. A larger result is discarded
+// and the original marked as checked. If the extension changed (not only its case), tmp is
+// renamed to the new name, the song txt is updated to reference it and the original is
+// moved to extra-files (never deleted). If anything goes wrong, the original stays in place
+// and keeps being referenced, so the song keeps working.
 func (p *processor) replaceOriginal(dir, file, tmp string) {
 	discard := func() { os.Remove(tmp) } // our own temp file, not a library file
 
@@ -288,18 +405,26 @@ func (p *processor) replaceOriginal(dir, file, tmp string) {
 	if outInfo.Size() > inInfo.Size() {
 		log.Infof("Processed video is larger than the original (%d > %d bytes), keeping %s", outInfo.Size(), inInfo.Size(), file)
 		discard()
+		p.markChecked(file)
 		return
 	}
 
-	newPath := strings.TrimSuffix(file, filepath.Ext(file)) + filepath.Ext(tmp)
-	if newPath == file {
+	// Same extension, or one that only differs in case (v.MP4 -> v.mp4): replace in place.
+	// On case-insensitive file systems (SMB, NTFS, macOS) the new name would be the
+	// original itself, so the rename path below would discard the result on every run.
+	if strings.EqualFold(filepath.Ext(tmp), filepath.Ext(file)) {
 		if err := p.ops.Replace(tmp, file); err != nil {
 			log.Errorf("%v", err)
+			return
 		}
+		p.rememberProcessed(file)
 		return
 	}
 
-	// The extension changed (possibly only its case), so the txt must follow.
+	// The extension changed, so the txt must follow.
+	p.renameMu.Lock()
+	defer p.renameMu.Unlock()
+	newPath := strings.TrimSuffix(file, filepath.Ext(file)) + filepath.Ext(tmp)
 	if _, err := os.Lstat(newPath); err == nil {
 		log.Warnf("Cannot convert %s: %s already exists, keeping the original", file, newPath)
 		discard()
@@ -326,10 +451,80 @@ func (p *processor) replaceOriginal(dir, file, tmp string) {
 		return
 	}
 
+	p.rememberProcessed(newPath)
+
 	rel := filepath.Join(p.cfg.RelPath(dir), oldName)
 	if _, err := p.ops.MoveInto(file, p.cfg.ExtraFilesDir(), rel); err != nil {
 		log.Errorf("Moving the original video away: %v", err)
 	}
+}
+
+// rememberProcessed records a video written by fixvideos in the media journal if its
+// container cannot carry markerTag (e.g. audio stripped from an AVI by stream copy).
+func (p *processor) rememberProcessed(file string) {
+	if canCarryMarker(file) {
+		return
+	}
+	if err := p.journal.AddAndSave(journalProcessed, file, p.ops); err != nil {
+		log.Errorf("Recording %s in the media journal: %v", file, err)
+		p.ops.Fail()
+	}
+}
+
+// markChecked makes sure file, whose processed version was discarded, is not processed
+// again on later runs: containers that can carry markerTag get it by a lossless remux,
+// all others (and failed remuxes) are recorded in the media journal.
+func (p *processor) markChecked(file string) {
+	if canCarryMarker(file) {
+		err := p.tagByRemux(file)
+		if err == nil {
+			log.Infof("Tagged %s as checked (lossless remux)", file)
+			return
+		}
+		log.Infof("Could not tag %s (%v), recording it in the media journal instead", file, err)
+	}
+	if err := p.journal.AddAndSave(journalChecked, file, p.ops); err != nil {
+		log.Errorf("Recording %s in the media journal: %v", file, err)
+		p.ops.Fail()
+	}
+}
+
+// tagByRemux replaces file with a stream copy of all its streams that carries markerTag.
+// The copy is only used if it has the tag and the same duration as file.
+func (p *processor) tagByRemux(file string) error {
+	orig, err := probeMarker(file)
+	if err != nil {
+		return err
+	}
+	if orig.duration <= 0 {
+		return errors.New("unknown duration")
+	}
+	tmp, err := fsops.TempFileNear(file, filepath.Ext(file))
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	args := slices.Concat([]string{
+		"-hide_banner", "-nostdin", "-loglevel", "error",
+		"-i", filepath.Clean(file),
+		"-map", "0", "-c", "copy",
+	}, markerArgs(tmp), []string{"-y", filepath.Clean(tmp)})
+	if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
+		os.Remove(tmp) // our own temp file, not a library file
+		return fmt.Errorf("ffmpeg remux: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	got, err := probeMarker(tmp)
+	switch {
+	case err != nil:
+	case !got.tagged:
+		err = errors.New("the remux does not carry the tag")
+	case math.Abs(got.duration-orig.duration) > durationTolerance:
+		err = fmt.Errorf("the remux is %.3f s long instead of %.3f s", got.duration, orig.duration)
+	}
+	if err != nil {
+		os.Remove(tmp) // our own temp file, not a library file
+		return err
+	}
+	return p.ops.Replace(tmp, file) // removes tmp on failure
 }
 
 // isVideoReferenced reports whether the #VIDEO tag of the song txt in dir names file
@@ -345,8 +540,9 @@ func isVideoReferenced(dir, file string) bool {
 
 // needsRemoveAudio reports whether the audio stream of the video should be removed: only
 // if the video has an audio stream and the song's #AUDIO/#MP3 tag names a separate,
-// existing audio file. A song whose #MP3 points to the video itself (or to nothing) keeps
-// the video's audio, because it may be the only audio track of the song.
+// existing, visible audio file. A song whose #MP3 points to the video itself, to a hidden
+// file (e.g. "._v.mp3" left by old versions) or to nothing keeps the video's audio,
+// because it may be the only audio track of the song.
 func needsRemoveAudio(dir, file string) bool {
 	tags, err := utils.ReadSongTags(dir)
 	if err != nil {
@@ -356,8 +552,12 @@ func needsRemoveAudio(dir, file string) bool {
 	if audioRef == "" {
 		audioRef = tags["MP3"]
 	}
+	// utils.ResolveFileName ignores hidden files too; this guard does not rely on it.
+	if utils.IsHidden(filepath.Base(audioRef)) {
+		return false
+	}
 	onDisk, _, found := utils.ResolveFileName(dir, audioRef)
-	if !found || !utils.IsAudioFile(onDisk) || onDisk == filepath.Base(file) {
+	if !found || utils.IsHidden(onDisk) || !utils.IsAudioFile(onDisk) || onDisk == filepath.Base(file) {
 		return false
 	}
 
@@ -415,19 +615,8 @@ func estimatedSizeOfReEncodedVideo(file string) (int64, error) {
 	if width <= 0 || height <= 0 {
 		return 0, fmt.Errorf("invalid resolution %dx%d", width, height)
 	}
-	// Scale down the resolution if it's too large
-	// Preserve aspect ratio
-	if width > 1920 || height > 1080 {
-		aspectRatio := float64(width) / float64(height)
-		if width > 1920 {
-			width = 1920
-			height = int(float64(width) / aspectRatio)
-		}
-		if height > 1080 {
-			height = 1080
-			width = int(float64(height) * aspectRatio)
-		}
-	}
+	// The size the video is scaled down to, if it is too large.
+	width, height = fitWithin(width, height)
 
 	// Get video framerate
 	framerate, err := getVideoFramerate(file)
@@ -484,6 +673,57 @@ func (p *processor) writeCorruptedReport() {
 }
 
 // Internal Utility Functions -------------------------------------------------------------------------------
+
+// markerProbe is the result of probeMarker.
+type markerProbe struct {
+	tagged   bool    // the container or a stream carries markerTag
+	duration float64 // container duration in seconds, 0 if unknown
+}
+
+// probeMarker reads the format and stream tags and the duration of file.
+func probeMarker(file string) (markerProbe, error) {
+	out, err := exec.Command("ffprobe", "-v", "error",
+		showEntries, "format=duration:format_tags:stream_tags",
+		"-of", "json", "--", filepath.Clean(file)).Output()
+	if err != nil {
+		return markerProbe{}, fmt.Errorf("ffprobe: %w", err)
+	}
+	return parseMarkerProbe(out)
+}
+
+func parseMarkerProbe(data []byte) (markerProbe, error) {
+	var probe struct {
+		Streams []struct {
+			Tags map[string]string `json:"tags"`
+		} `json:"streams"`
+		Format struct {
+			Duration string            `json:"duration"`
+			Tags     map[string]string `json:"tags"`
+		} `json:"format"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return markerProbe{}, fmt.Errorf("parsing ffprobe output: %w", err)
+	}
+	m := markerProbe{tagged: hasMarker(probe.Format.Tags)}
+	for _, s := range probe.Streams {
+		m.tagged = m.tagged || hasMarker(s.Tags)
+	}
+	if d, err := strconv.ParseFloat(probe.Format.Duration, 64); err == nil && d > 0 {
+		m.duration = d
+	}
+	return m, nil
+}
+
+// hasMarker reports whether tags contain markerTag, whatever its value (tag names are
+// case-insensitive, and some muxers change their case).
+func hasMarker(tags map[string]string) bool {
+	for k := range tags {
+		if strings.EqualFold(k, markerTag) {
+			return true
+		}
+	}
+	return false
+}
 
 func getVideoCodec(file string) (string, error) {
 	cmd := exec.Command("ffprobe", "-v", "error", selectStreams, "v:0", showEntries, "stream=codec_name", "-of", "csv=p=0", "--", filepath.Clean(file))
