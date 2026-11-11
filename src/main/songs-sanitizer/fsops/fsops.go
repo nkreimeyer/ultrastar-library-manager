@@ -327,7 +327,8 @@ func (o *Ops) exists(path string) bool {
 // path, creating the file and its folder if needed, and fsyncs it, so a completed step is
 // on disk before the next one starts. It is meant for journals in the output dir, never
 // for library files. In dry-run mode it does nothing: a dry run must leave no journal
-// entries behind. A crash can leave a truncated last line, which readers must skip.
+// entries behind. A crash can leave a truncated last line, which readers must skip; the
+// next append starts a new line after it, so its own entry is not merged into it.
 func (o *Ops) AppendJournal(path string, line []byte) error {
 	if o.DryRun {
 		return nil
@@ -338,9 +339,26 @@ func (o *Ops) AppendJournal(path string, line []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return o.fail(fmt.Errorf("creating journal dir for %s: %w", path, err))
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0o644)
 	if err != nil {
 		return o.fail(fmt.Errorf("opening journal %s: %w", path, err))
+	}
+	// After a crash the last line may be truncated: start a new line, so the truncated
+	// garbage stays alone on its line (which readers skip) and this entry is kept.
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return o.fail(fmt.Errorf("reading journal %s: %w", path, err))
+	}
+	if st.Size() > 0 {
+		last := make([]byte, 1)
+		if _, err := f.ReadAt(last, st.Size()-1); err != nil {
+			f.Close()
+			return o.fail(fmt.Errorf("reading journal %s: %w", path, err))
+		}
+		if last[0] != '\n' {
+			line = append([]byte{'\n'}, line...)
+		}
 	}
 	_, werr := f.Write(line)
 	if err := errors.Join(werr, f.Sync(), f.Close()); err != nil {
@@ -353,7 +371,8 @@ func (o *Ops) AppendJournal(path string, line []byte) error {
 // in dry-run mode, would). It is meant for undoing a run: removing the folders a MoveTo
 // of that run created as parents. It never removes data: os.Remove refuses a folder that
 // is not empty, and a folder with any entry (hidden ones included) is left alone and not
-// counted as a failure. A missing path is no error. In dry-run mode the folder counts as
+// counted as a failure. A missing path, a file and a symlink are left alone, no error; a
+// folder that cannot be read is a counted failure. In dry-run mode the folder counts as
 // empty if every entry on disk was planned to be moved away and no planned move put
 // anything below it or the folder itself in place; it then counts as gone for later
 // MoveTo calls. Removed folders are
@@ -363,7 +382,8 @@ func (o *Ops) RemoveEmptyDir(path string) (bool, error) {
 	if !o.exists(path) {
 		return false, nil
 	}
-	if !isDir(path) {
+	// Lstat: a symlink to a folder is no folder of the run; removing it would delete it.
+	if st, err := os.Lstat(path); err != nil || !st.IsDir() {
 		return false, nil
 	}
 	if o.DryRun {
@@ -390,7 +410,9 @@ func (o *Ops) RemoveEmptyDir(path string) (bool, error) {
 		log.Infof("[dry-run] would remove the empty folder %s", path)
 		return true, nil
 	}
-	if !isEmptyDir(path) {
+	if empty, err := dirIsEmpty(path); err != nil {
+		return false, o.fail(fmt.Errorf("reading %s: %w", path, err))
+	} else if !empty {
 		return false, nil
 	}
 	if err := os.Remove(path); err != nil {
@@ -509,13 +531,21 @@ func isDir(path string) bool {
 }
 
 func isEmptyDir(dir string) bool {
+	empty, err := dirIsEmpty(dir)
+	return err == nil && empty
+}
+
+// dirIsEmpty reports whether the folder dir has no entries; an error if it cannot be read.
+func dirIsEmpty(dir string) (bool, error) {
 	f, err := os.Open(dir)
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer f.Close()
-	_, err = f.Readdirnames(1)
-	return errors.Is(err, io.EOF)
+	if _, err = f.Readdirnames(1); errors.Is(err, io.EOF) {
+		return true, nil
+	}
+	return false, err
 }
 
 // mergeInto moves every entry of the folder src into dstDir/relPath (recursively merging
@@ -630,8 +660,11 @@ func (o *Ops) reserveTarget(want string, isDir bool) (string, error) {
 	o.reserveMu.Lock()
 	defer o.reserveMu.Unlock()
 	ext := ""
-	if !isDir {
-		ext = filepath.Ext(want)
+	if name := filepath.Base(want); !isDir {
+		// A leading dot belongs to the name: ".DS_Store" -> ".DS_Store (2)".
+		if ext = filepath.Ext(name); ext == name {
+			ext = ""
+		}
 	}
 	base := strings.TrimSuffix(want, ext)
 	candidate := want
@@ -655,17 +688,79 @@ func (o *Ops) release(path string) {
 	o.reserveMu.Unlock()
 }
 
+// rename is os.Rename; tests replace it to simulate a move across file systems (EXDEV).
+var rename = os.Rename
+
+// copyAcross is copyTree; tests wrap it to look at the source while it is copied.
+var copyAcross = copyTree
+
 // move renames src to dst, falling back to copy + delete across file systems.
 func move(src, dst string) error {
-	err := os.Rename(src, dst)
+	err := rename(src, dst)
 	if err == nil || !errors.Is(err, syscall.EXDEV) {
 		return err
 	}
-	if err := copyTree(src, dst); err != nil {
+	return moveAcross(src, dst)
+}
+
+// moveAcross copies src to dst on another file system and then deletes src. It either
+// fails with nothing changed (no copy at dst, src in place) or succeeds with the complete
+// copy at dst; it never reports a failure while dst holds the complete copy.
+//
+// src keeps its name while it is copied, which can take minutes for a video: an
+// interrupted copy (Ctrl-C, crash) leaves src visible and intact, plus a partial copy at
+// dst, as a plain copy + delete would. Before the copy, src is renamed to a hidden name
+// and straight back: that fails cleanly (EACCES, nothing touched) where a rename on the
+// same file system would fail too, e.g. a folder that is not writable, so no time is spent
+// on a copy that would be thrown away. After the complete copy, src is parked under the
+// hidden name and deleted from there. If parking fails after all, the copy is removed
+// again and the move fails. If deleting the parked source fails (a read-only subfolder),
+// the move counts as done and the hidden leftover is logged, so the half-deleted source
+// is not found as a song again.
+func moveAcross(src, dst string) error {
+	parked, err := parkName(src)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(src, parked); err != nil {
+		return fmt.Errorf("preparing the copy across file systems: %w", err)
+	}
+	if err := os.Rename(parked, src); err != nil {
+		return fmt.Errorf("preparing the copy across file systems: moving %s back to %s: %w", parked, src, err)
+	}
+	if err := copyAcross(src, dst); err != nil {
 		os.RemoveAll(dst) // do not leave a partial copy behind; src is untouched
 		return fmt.Errorf("copy across file systems: %w", err)
 	}
-	return os.RemoveAll(src)
+	if err := os.Rename(src, parked); err != nil {
+		if rerr := os.RemoveAll(dst); rerr != nil {
+			return fmt.Errorf("deleting the source after the copy across file systems: %w (and removing the copy %s failed: %v)", err, dst, rerr)
+		}
+		return fmt.Errorf("deleting the source after the copy across file systems: %w", err)
+	}
+	if err := os.RemoveAll(parked); err != nil {
+		log.Warnf("Copied %s -> %s across file systems, but could not delete the source; its leftover is %s: %v", src, dst, parked, err)
+	}
+	return nil
+}
+
+// parkSeq numbers the hidden names of parkName, so concurrent moves in one folder never
+// pick the same name (os.Rename would replace a file parked there by another move).
+var parkSeq atomic.Uint64
+
+// parkName returns an unused hidden name next to path. The name does not contain the
+// base name of path, so it is short even when that name is close to NAME_MAX.
+func parkName(path string) (string, error) {
+	dir := filepath.Dir(path)
+	for i := 0; i < 10000; i++ {
+		p := filepath.Join(dir, fmt.Sprintf(".fsops-move-%d-%d", os.Getpid(), parkSeq.Add(1)))
+		if _, err := os.Lstat(p); errors.Is(err, os.ErrNotExist) {
+			return p, nil
+		} else if err != nil {
+			return "", fmt.Errorf("checking %s: %w", p, err)
+		}
+	}
+	return "", fmt.Errorf("no free temporary name next to %s", path)
 }
 
 // copyTree copies a file or directory tree, preserving permissions and modification times

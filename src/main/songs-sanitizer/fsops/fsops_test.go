@@ -289,6 +289,10 @@ func TestMoveIntoCollisions(t *testing.T) {
 	}{
 		{"file", false, "cover.jpg", []string{"cover.jpg", "cover (2).jpg", "cover (3).jpg"}},
 		{"file without extension", false, "README", []string{"README", "README (2)", "README (3)"}},
+		{"dotfile", false, ".DS_Store", []string{".DS_Store", ".DS_Store (2)", ".DS_Store (3)"}},
+		{"hidden file with extension", false, "._song.mp3", []string{"._song.mp3", "._song (2).mp3", "._song (3).mp3"}},
+		{"double extension", false, "archive.tar.gz", []string{"archive.tar.gz", "archive.tar (2).gz", "archive.tar (3).gz"}},
+		{"hidden folder", true, ".Song", []string{".Song", ".Song (2)", ".Song (3)"}},
 		{"folder with dots", true, "Mr. Brightside", []string{"Mr. Brightside", "Mr. Brightside (2)", "Mr. Brightside (3)"}},
 		{"folder with extension-like name", true, "Song.v2", []string{"Song.v2", "Song.v2 (2)", "Song.v2 (3)"}},
 	}
