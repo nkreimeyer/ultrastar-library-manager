@@ -14,12 +14,12 @@ is superseded.
 ```
 src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (go 1.24)
   main.go                     flags, validation, runs the modules in fixed order, summary + exit code;
-                              os.Args[1] == "organize" dispatches to the subcommand
-  organize_cmd.go             the organize subcommand: own FlagSet, -s tier lists, -undo, validation
+                              os.Args[1] == "organize"/"dedupe"/"add" dispatches to the subcommand
+  organize_cmd.go             the organize, dedupe and add subcommands (organize.Mode): own FlagSet, -s tier lists, -undo, validation
   main_test.go                flag validation (-deep/-move-broken need -k), module order, organize usage
   pipeline_test.go            fixtxt → cleanup (→ check) integration tests (real run, dry-run = real-run plan, idempotence)
   config/                     Config{SongDir, OutDir, DryRun}: path validation, output layout, marker file;
-                              organize.go: OrganizeConfig{Sources (tier, label), Library, OutDir}
+                              organize.go: OrganizeConfig{Sources (tier, label), Library, OutDir}; NewDedupe, NewAdd
   fsops/                      the ONLY place that modifies files: dry-run (planned writes/moves visible via ReadFile), atomic writes, moves, stats;
                               MoveTo (exact target, ordered dry-run moves), AppendJournal, RemoveEmptyDir (undo)
   utils/decode.go             txt decoding (DecodeTxt): UTF-16/UTF-8/#ENCODING/CP1250/CP1252, "when in doubt, Problem"
@@ -36,7 +36,7 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   fixvideos/                  ffmpeg: re-encode to H.264 mp4, downscale to fit 1920x1080, strip audio, flag corrupt files (tagged, idempotent)
   fixaudio/                   ffmpeg: downmix to stereo, peak-normalize to -3 dB, originals kept (tagged, idempotent)
   journal/                    content-fingerprint journal for media formats that cannot carry a marker tag
-  organize/                   organize subcommand: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey),
+  organize/                   organize/dedupe/add: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey, StripCopySuffix),
                               quality.go (keeper order), plan.go (MakePlan, orderMoves; pure), organize.go (Run, Undo),
                               journal.go (organize-journal.jsonl), report.go (organize_plan.json/.txt)
 old/                          legacy Python/shell (duplicate detection by folder name, fuzzy txt compare)
@@ -62,8 +62,12 @@ Order is always fixtxt → cleanup → check → fixvideos → fixaudio. Bool
 flags are turned off with `-t=false`; leftover arguments (`-t false`) are rejected. Exit codes:
 0 ok, 1 some operation failed, 2 usage error. See README.md for user-facing details.
 
-Subcommand: `organize -s <dir>[:<dir>…] [-s …] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n]`
-and `organize -undo [-o <out> | -l <library>] [-n]`. Each `-s` is one priority tier (folders in
+Subcommands: `organize -s <dir>[:<dir>…] [-s …] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n]`,
+`dedupe -l <library> [-o <out>] [-deep] [-n]` (in place: the library is the only source, keepers stay),
+`add -s … -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n]` (the library is always the first
+source of the first tier, library keepers stay, new keepers go to their bucket),
+and `<cmd> -undo [-o <out> | -l <library>] [-n]`
+(one journal for all three). Each `-s` is one priority tier (folders in
 it split with `filepath.SplitList`); `-o` defaults to `organize-output/` next to the library.
 Same exit codes and leftover-argument rule.
 
@@ -158,8 +162,8 @@ Same exit codes and leftover-argument rule.
 - organize: discovery per source, `check.Inspector` in a worker pool (min(16, NumCPU)), then
   `MakePlan` (pure, table-tested): encoding problems and unreadable folders stay, broken songs
   go to invalid/, working songs are grouped by `SongKey` (duet flag from P1/P2 or a `[DUET]`
-  title) and the keeper is chosen by `chooseKeeper`: the criteria (tier with `-priority`, song
-  warnings, video, video bitrate ≤ `fixvideos.BitrateThreshold`, height capped at
+  title) and the keeper is chosen by `chooseKeeper`: the criteria (not a `_dupl<n>` copy, tier
+  with `-priority`, song warnings, video, video bitrate ≤ `fixvideos.BitrateThreshold`, height capped at
   `fixvideos.MaxHeight`, audio bitrate within 10 % of the group's best, cover, background,
   `#VERSION`, source order, path) are filters over the whole group, never pairwise
   comparisons, because the bitrate tolerance is not transitive. Each loser's reason is the
@@ -195,6 +199,18 @@ Same exit codes and leftover-argument rule.
 - organize: when a keeper from another source cannot reach the library, the library's own
   copies of that song stay in place (not moved to duplicates/). The report's duplicate and
   invalid `Dest` is the actual target (with ` (2)`), also in dry runs.
+- organize `_dupl<n>` copies (`StripCopySuffix`, case-insensitive, at the end): `newCandidate`
+  strips it from `#ARTIST`/`#TITLE` (so keys and folder names ignore it) and sets
+  `MarkedCopy` if the folder, the song txt, `#AUDIO`/`#MP3`/`#VIDEO` (extension ignored) or
+  a tag carries it. A marked copy loses first, before the tier; a lone copy is kept.
+- dedupe/add plan with `PlanOptions.LibraryInPlace`: a library keeper's target is its own
+  `Rel` (ActInPlace) and its NameKey is claimed before other targets are numbered (a family
+  whose plain name a staying library song holds is numbered from ` (2)`); a non-candidate at
+  a target is never a song (`reasonNotASong`); a broken library song without a working
+  version stays (`reasonBrokenStays`), and one whose replacement input is left stays too
+  (`keepLibraryLosers`). Broken inputs always go to invalid/. `NewAdd` prepends the library
+  (if it exists) to the first tier, so it is source 0 and wins ties; giving it as `-s` is an
+  error. `NewDedupe` requires an existing library.
 
 ### UltraStar format reminders
 
@@ -299,8 +315,9 @@ clean, deduplicated, working songs end up in the final library.
 the parsed `#ARTIST`/`#TITLE` (`organize.SongKey`: NFC, casefold, diacritics, punctuation,
 `feat.`, known-noise qualifiers stripped, other qualifiers kept, duets as variants), the keeper
 is chosen on quality (`organize.chooseKeeper`), the losers are moved to `<out>/duplicates/`, and
-`LooseKey` lists possible duplicates for review. **Still open:** a standalone report-only
-`dedupe` (without reorganizing), fuzzy title matching, note-line similarity (BPM + note count)
+`LooseKey` lists possible duplicates for review. `dedupe` removes duplicates of one library in
+place (`-n` is the report-only mode), `add` adds sources to a library without re-bucketing it, and
+`_dupl<n>` copies always lose. **Still open:** fuzzy title matching, note-line similarity (BPM + note count)
 and audio fingerprints, and choosing between several song txts *inside one folder* by content.
 
 Before organize: Go only "dedupes" multiple song `.txt` files *inside one folder*: it keeps the

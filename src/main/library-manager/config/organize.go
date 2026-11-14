@@ -193,3 +193,44 @@ func (c OrganizeConfig) RelPath(src Source, path string) string {
 // Config.PrepareOutDir). This happens in dry-run mode too, because reports are written
 // there.
 func (c OrganizeConfig) PrepareOutDir() error { return Config{OutDir: c.OutDir}.PrepareOutDir() }
+
+// NewDedupe returns the configuration of the dedupe subcommand: the library is the only
+// source, so it must be an existing folder. outDir as for NewOrganize.
+func NewDedupe(library, outDir string, dryRun bool) (OrganizeConfig, error) {
+	if library == "" {
+		return OrganizeConfig{}, fmt.Errorf("a library dir is required")
+	}
+	if st, err := os.Stat(library); err != nil || !st.IsDir() {
+		return OrganizeConfig{}, fmt.Errorf("library dir %q must be an existing directory", library)
+	}
+	return NewOrganize([][]string{{library}}, library, outDir, dryRun)
+}
+
+// NewAdd returns the configuration of the add subcommand: the sources of tiers (as for
+// NewOrganize, at least one) are added to the library. If the library exists, it becomes
+// the first source of the first tier, so it is compared with the sources and wins a tie
+// (source order). No source may be the library itself.
+func NewAdd(tiers [][]string, library, outDir string, dryRun bool) (OrganizeConfig, error) {
+	if len(tiers) == 0 {
+		return OrganizeConfig{}, fmt.Errorf("at least one source dir is required")
+	}
+	if library == "" {
+		return OrganizeConfig{}, fmt.Errorf("a library dir is required")
+	}
+	cfg, err := NewOrganize(tiers, library, outDir, dryRun)
+	if err != nil {
+		return OrganizeConfig{}, err
+	}
+	for _, s := range cfg.Sources {
+		if s.Path == cfg.Library {
+			return OrganizeConfig{}, fmt.Errorf("source dir %q is the library; add always compares the sources with the library, so do not give it as -s", s.Path)
+		}
+	}
+	if st, err := os.Stat(cfg.Library); err != nil || !st.IsDir() {
+		return cfg, nil // a new library: nothing to compare with
+	}
+	withLib := make([][]string, len(tiers))
+	copy(withLib, tiers)
+	withLib[0] = append([]string{cfg.Library}, tiers[0]...)
+	return NewOrganize(withLib, cfg.Library, cfg.OutDir, dryRun)
+}

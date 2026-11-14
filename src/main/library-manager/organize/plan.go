@@ -22,6 +22,10 @@ type Candidate struct {
 	Artist, Title string // #ARTIST / #TITLE as the player reads them (last occurrence)
 	// Duet: the txt has duet player markers (P1/P2) or the title a duet qualifier.
 	Duet bool
+	// MarkedCopy: the folder, the song txt, a media file or #ARTIST/#TITLE ends in
+	// "_dupl<n>" (StripCopySuffix), so it is a copy of another version; it loses against
+	// every version without the mark. Artist and Title are without the suffix.
+	MarkedCopy bool
 
 	// Unreadable: the folder or its txt cannot be read (already logged and counted).
 	Unreadable bool
@@ -69,6 +73,8 @@ const (
 	reasonTargetOccupied = "target is occupied by %s, which stays in place"
 	reasonBucketOccupied = "bucket folder %s is the song folder %s, which stays in place"
 	reasonKeeperLeft     = "the better version %s cannot be moved into the library, so this copy stays"
+	reasonNotASong       = "target %s exists in the library and is not a song folder (an empty or category folder, or a file); it is never overwritten"
+	reasonBrokenStays    = "broken (errors: %s), but no working version replaces it, so it stays; check -k -move-broken moves broken songs"
 )
 
 // PlanOptions configure Plan.
@@ -77,6 +83,12 @@ type PlanOptions struct {
 	Priority bool
 	// IgnoreThe: bucket by the word after a leading "The ".
 	IgnoreThe bool
+	// LibraryInPlace (dedupe, add): the library is not reorganized. A keeper from the
+	// library stays where it is (ActInPlace at its own path, whatever the bucket layout),
+	// and its name is taken for the numbering of the other targets; only keepers from
+	// other sources move to <Bucket>/<FolderName>. A broken library song stays unless a
+	// working version of the same song replaces it (then it goes to invalid/).
+	LibraryInPlace bool
 	// Occupied reports whether the library-relative path rel ("A/Artist - Title") is
 	// taken in the library as it is before the run: by an entry with the same NameKey in
 	// the bucket folder, or by a bucket that cannot take songs (not a folder, a song
@@ -206,10 +218,13 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 		if key := SongKey(c.Artist, c.Title, c.Duet); key != "" && groups[key] != nil {
 			d.Other = groups[key].keeper
 		}
+		if opts.LibraryInPlace && c.InLibrary && d.Other < 0 {
+			d = Decision{Action: ActLeft, Reason: fmt.Sprintf(reasonBrokenStays, strings.Join(c.Errors, ", ")), Other: -1}
+		}
 		p.Decisions[i] = d
 	}
 
-	assignTargets(cands, groups, groupKeys, opts.IgnoreThe)
+	assignTargets(cands, groups, groupKeys, opts.IgnoreThe, opts.LibraryInPlace)
 	for _, k := range groupKeys {
 		g := groups[k]
 		c := &cands[g.keeper]
@@ -221,20 +236,32 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 	}
 	// A keeper left outside the library must not cost the library its own copies: they
 	// stay, which may in turn block other targets.
-	for resolveOccupied(cands, p.Decisions, opts.Occupied); keepLibraryLosers(cands, p.Decisions, groups, groupKeys); {
-		resolveOccupied(cands, p.Decisions, opts.Occupied)
+	for resolveOccupied(cands, p.Decisions, opts.Occupied, opts.LibraryInPlace); keepLibraryLosers(cands, p.Decisions, groups, groupKeys, opts.LibraryInPlace); {
+		resolveOccupied(cands, p.Decisions, opts.Occupied, opts.LibraryInPlace)
 	}
 	p.PossibleDuplicates = possibleDuplicates(cands, groups, groupKeys)
 	return p
 }
 
-// assignTargets sets the bucket, name and collision-free target of every group.
-func assignTargets(cands []Candidate, groups map[string]*group, keys []string, ignoreThe bool) {
+// assignTargets sets the bucket, name and collision-free target of every group. With
+// libraryInPlace, a keeper from the library keeps its own path as target, and no other
+// group gets a name with the same NameKey.
+func assignTargets(cands []Candidate, groups map[string]*group, keys []string, ignoreThe, libraryInPlace bool) {
 	families := map[string][]*group{} // NameKey(bucket/name) -> groups, in SongKey order
 	var familyKeys []string
+	// claimed holds the NameKey of every bucket/name that is taken, across all families:
+	// a numbered name must not be another song's plain name ("X (2)" titled so), nor the
+	// numbered name of another family, nor the path of a library song that stays.
+	claimed := map[string]bool{}
+	staying := map[string]bool{} // NameKeys of the library keepers that stay
 	for _, k := range keys {
 		g := groups[k]
 		c := &cands[g.keeper]
+		if libraryInPlace && c.InLibrary {
+			g.target = c.Rel
+			claimed[NameKey(c.Rel)], staying[NameKey(c.Rel)] = true, true
+			continue
+		}
 		g.bucket = Bucket(c.Artist, ignoreThe)
 		g.name = FolderName(c.Artist, c.Title)
 		if c.Duet && !IsDuetTitle(c.Title) {
@@ -246,10 +273,6 @@ func assignTargets(cands []Candidate, groups map[string]*group, keys []string, i
 		}
 		families[fk] = append(families[fk], g)
 	}
-	// claimed holds the NameKey of every bucket/name that is taken, across all families:
-	// a numbered name must not be another song's plain name ("X (2)" titled so), nor the
-	// numbered name of another family.
-	claimed := map[string]bool{}
 	for _, fk := range familyKeys {
 		claimed[fk] = true // the plain name belongs to its family
 	}
@@ -277,6 +300,9 @@ func assignTargets(cands []Candidate, groups map[string]*group, keys []string, i
 		// The plain name goes to the first group without a target (in SongKey order, or
 		// the keeper already in place at it).
 		plain := -1
+		if staying[fk] {
+			plain = len(fam) // taken by a library song that stays: every group is numbered
+		}
 		for j, g := range fam {
 			c := &cands[g.keeper]
 			if g.target == "" && c.InLibrary && NameKey(c.Rel) == fk {
@@ -289,7 +315,7 @@ func assignTargets(cands []Candidate, groups map[string]*group, keys []string, i
 				plain = j
 			}
 		}
-		if plain >= 0 {
+		if plain >= 0 && plain < len(fam) {
 			fam[plain].target = fam[plain].bucket + "/" + fam[plain].name
 		}
 		for _, g := range fam {
@@ -327,7 +353,9 @@ func isFamilyName(folder, name string) bool {
 // that stays in the library into ActLeft. A target taken by a candidate that moves away
 // is fine: the moves are ordered so it is free in time. Leaving a keeper in place can
 // make the target of another keeper unavailable, so this repeats until nothing changes.
-func resolveOccupied(cands []Candidate, ds []Decision, occupied func(string) (string, string, bool)) {
+// With libraryInPlace every library song is a candidate, so a target taken by a
+// non-candidate is never a song.
+func resolveOccupied(cands []Candidate, ds []Decision, occupied func(string) (string, string, bool), libraryInPlace bool) {
 	libCand := map[string]int{} // NameKey of the library-relative path -> candidate
 	for i := range cands {
 		if cands[i].InLibrary {
@@ -362,6 +390,9 @@ func resolveOccupied(cands []Candidate, ds []Decision, occupied func(string) (st
 			case note != "":
 				ds[i] = Decision{Action: ActLeft, Reason: fmt.Sprintf("target %s cannot be used: %s", ds[i].Target, note), Other: -1}
 				changed = true
+			case !isCand && libraryInPlace:
+				ds[i] = Decision{Action: ActLeft, Reason: fmt.Sprintf(reasonNotASong, occ), Other: -1}
+				changed = true
 			case !isCand:
 				reason := reasonTargetExists
 				if occ != ds[i].Target {
@@ -379,10 +410,20 @@ func resolveOccupied(cands []Candidate, ds []Decision, occupied func(string) (st
 
 // keepLibraryLosers leaves the library members of a group in place when the group's
 // keeper comes from another source and is left there (its target cannot be used): moving
-// them to duplicates/ would leave the library without the song. It reports whether it
-// changed a decision.
-func keepLibraryLosers(cands []Candidate, ds []Decision, groups map[string]*group, keys []string) bool {
+// them to duplicates/ would leave the library without the song. With libraryInPlace, a
+// broken library song whose replacement is left outside stays as well (a library keeper
+// is never left in that mode, so the replacement is from another source). It reports whether
+// it changed a decision.
+func keepLibraryLosers(cands []Candidate, ds []Decision, groups map[string]*group, keys []string, libraryInPlace bool) bool {
 	changed := false
+	if libraryInPlace {
+		for i := range ds {
+			if o := ds[i].Other; ds[i].Action == ActInvalid && cands[i].InLibrary && o >= 0 && ds[o].Action == ActLeft {
+				ds[i] = Decision{Action: ActLeft, Reason: fmt.Sprintf(reasonKeeperLeft, cands[o].Ref()), Other: -1}
+				changed = true
+			}
+		}
+	}
 	for _, k := range keys {
 		g := groups[k]
 		if ds[g.keeper].Action != ActLeft || cands[g.keeper].InLibrary {

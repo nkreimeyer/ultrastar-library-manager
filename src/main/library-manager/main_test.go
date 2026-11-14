@@ -303,3 +303,90 @@ func TestRunOrganizeFlags(t *testing.T) {
 		})
 	}
 }
+
+// TestRunDedupeAndAddUsage: the dedupe and add subcommands, their flag sets and a real run
+// of each with -undo.
+func TestRunDedupeAndAddUsage(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no ffprobe: placeholder media are enough
+	base := t.TempDir()
+	lib, src, out := filepath.Join(base, "lib"), filepath.Join(base, "src"), filepath.Join(base, "out")
+	songTxt := func(title string) string {
+		s := "#ARTIST:ABBA\n#TITLE:" + title + "\n#MP3:a.mp3\n#BPM:300\n"
+		for i := range 10 {
+			s += fmt.Sprintf(": %d 2 0 %s\n", i*4, title) // other songs, other notes
+		}
+		return s + "E\n"
+	}
+	write := func(dir, title string) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, content := range map[string]string{"song.txt": songTxt(title), "a.mp3": "x"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write(filepath.Join(lib, "Pop", "ABBA - SOS"), "SOS")
+	write(filepath.Join(lib, "Pop", "ABBA - SOS_dupl1"), "SOS")
+	write(filepath.Join(src, "ABBA - Waterloo"), "Waterloo")
+	write(filepath.Join(src, "ABBA - SOS"), "SOS")
+
+	tests := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"dedupe without library", []string{"dedupe"}, exitUsage},
+		{"dedupe with a source", []string{"dedupe", "-s", src, "-l", lib}, exitUsage},
+		{"dedupe with -priority", []string{"dedupe", "-l", lib, "-priority"}, exitUsage},
+		{"dedupe of a missing library", []string{"dedupe", "-l", filepath.Join(base, "missing")}, exitUsage},
+		{"dedupe leftover argument", []string{"dedupe", "-l", lib, "-n", "false"}, exitUsage},
+		{"add without source", []string{"add", "-l", lib}, exitUsage},
+		{"add without library", []string{"add", "-s", src}, exitUsage},
+		{"add with the library as source", []string{"add", "-s", src, "-s", lib, "-l", lib}, exitUsage},
+		{"undo with a source", []string{"add", "-undo", "-s", src, "-o", out}, exitUsage},
+		{"dedupe dry run", []string{"dedupe", "-l", lib, "-o", out, "-n"}, exitOK},
+		{"add dry run", []string{"add", "-s", src, "-l", lib, "-o", out, "-n", "-priority", "-ignore-the"}, exitOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := runWithArgs(t, tt.args...); got != tt.want {
+				t.Errorf("run(%q) = %d, want %d", tt.args, got, tt.want)
+			}
+		})
+	}
+	exists := func(p ...string) bool {
+		_, err := os.Stat(filepath.Join(append([]string{base}, p...)...))
+		return err == nil
+	}
+	if !exists("lib", "Pop", "ABBA - SOS_dupl1", "song.txt") {
+		t.Fatal("a dry run moved the copy")
+	}
+
+	// dedupe moves the _dupl copy out and leaves the keeper in Pop/.
+	if got := runWithArgs(t, "dedupe", "-l", lib); got != exitOK {
+		t.Fatalf("dedupe = %d", got)
+	}
+	if exists("lib", "Pop", "ABBA - SOS_dupl1") || !exists("lib", "Pop", "ABBA - SOS", "song.txt") ||
+		!exists("organize-output", "duplicates", "lib", "Pop", "ABBA - SOS_dupl1", "song.txt") {
+		t.Error("dedupe did not move the copy out of the library")
+	}
+	// add adds Waterloo to its bucket; the SOS input is a tie, so the library copy stays.
+	if got := runWithArgs(t, "add", "-s", src, "-l", lib); got != exitOK {
+		t.Fatalf("add = %d", got)
+	}
+	if !exists("lib", "A", "ABBA - Waterloo", "song.txt") || !exists("lib", "Pop", "ABBA - SOS", "song.txt") ||
+		!exists("organize-output", "duplicates", "src", "ABBA - SOS", "song.txt") {
+		t.Error("add did not add Waterloo and keep the library's SOS")
+	}
+	// -undo reverts the newest run (add), then dedupe.
+	for _, cmd := range []string{"add", "dedupe"} {
+		if got := runWithArgs(t, cmd, "-undo", "-l", lib); got != exitOK {
+			t.Fatalf("%s -undo = %d", cmd, got)
+		}
+	}
+	if !exists("src", "ABBA - Waterloo", "song.txt") || !exists("src", "ABBA - SOS", "song.txt") || !exists("lib", "Pop", "ABBA - SOS_dupl1", "song.txt") {
+		t.Error("undo did not restore the sources and the library")
+	}
+}

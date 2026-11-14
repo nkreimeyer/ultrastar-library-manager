@@ -35,17 +35,18 @@ const bitrateTolerance = 0.10
 // filters over the whole group: at each step only the versions with the best value stay,
 // and the reason of a dropped version names the criterion that dropped it:
 //
-//  1. with priority: the lowest tier (earliest -s flag);
-//  2. the fewest song warnings (txt, timing, audio source);
-//  3. a readable video, if any version has one;
-//  4. a video bitrate at or below fixvideos.BitrateThreshold (unknown counts as below):
+//  1. not marked as a copy (a "_dupl<n>" suffix, see Candidate.MarkedCopy);
+//  2. with priority: the lowest tier (earliest -s flag);
+//  3. the fewest song warnings (txt, timing, audio source);
+//  4. a readable video, if any version has one;
+//  5. a video bitrate at or below fixvideos.BitrateThreshold (unknown counts as below):
 //     a higher one only bloats the library until fixvideos re-encodes it;
-//  5. the highest video height, counted up to fixvideos.MaxHeight (fixvideos downscales
+//  6. the highest video height, counted up to fixvideos.MaxHeight (fixvideos downscales
 //     taller videos, so 2160p is no better than 1080p);
-//  6. an audio bitrate within 10 % of the highest one (0 = unknown loses against a
+//  7. an audio bitrate within 10 % of the highest one (0 = unknown loses against a
 //     known one);
-//  7. a cover; 8. a background; 9. #VERSION in the txt;
-//  10. tie: the earliest source (the order of -s, flattened), then the first relative path.
+//  8. a cover; 9. a background; 10. #VERSION in the txt;
+//  11. tie: the earliest source (the order of -s, flattened), then the first relative path.
 //
 // Filtering the whole group (instead of comparing pairs) keeps the choice transitive
 // with the bitrate tolerance: the keeper does not depend on the order of cs, and every
@@ -86,6 +87,10 @@ func chooseKeeper(cs []*Candidate, priority bool) (int, []string) {
 		return 0
 	}
 
+	if best(func(c *Candidate) int64 { return flag(!c.MarkedCopy) }, true) == 1 {
+		keep(func(c *Candidate) bool { return !c.MarkedCopy },
+			func(*Candidate) string { return "marked as a copy (_dupl suffix)" })
+	}
 	if priority {
 		tier := best(func(c *Candidate) int64 { return int64(c.Tier) }, false)
 		keep(func(c *Candidate) bool { return int64(c.Tier) == tier },

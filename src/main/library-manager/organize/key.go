@@ -1,6 +1,8 @@
 package organize
 
 import (
+	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -439,4 +441,25 @@ func LooseKey(artist, title string) string {
 func IsDuetTitle(title string) bool {
 	_, duet := titleWords(title, false)
 	return duet
+}
+
+// copySuffix is the "_dupl<n>" mark that some tools append to the name of a copy of a song
+// ("SOS_dupl1", "ABBA - SOS_dupl2", "song_dupl1.txt"), case-insensitive.
+var copySuffix = regexp.MustCompile(`(?i)\s*_dupl\d+$`)
+
+// StripCopySuffix removes a trailing "_dupl<n>" mark (and blanks around it) from s and
+// reports whether there was one. With ext, a file extension is ignored ("x_dupl1.txt" is
+// marked; the result keeps the extension).
+func StripCopySuffix(s string, ext bool) (string, bool) {
+	e := ""
+	if ext {
+		e = filepath.Ext(s)
+		s = strings.TrimSuffix(s, e)
+	}
+	t := strings.TrimRightFunc(s, unicode.IsSpace)
+	loc := copySuffix.FindStringIndex(t)
+	if loc == nil {
+		return s + e, false
+	}
+	return t[:loc[0]] + e, true
 }

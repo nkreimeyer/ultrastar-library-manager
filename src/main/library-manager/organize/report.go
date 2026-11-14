@@ -29,6 +29,7 @@ const (
 // planReport is the content of organize_plan.json. It is deterministic: no timestamps,
 // every list sorted.
 type planReport struct {
+	Mode      Mode           `json:"mode"`
 	DryRun    bool           `json:"dryRun"`
 	Priority  bool           `json:"priority"`
 	IgnoreThe bool           `json:"ignoreThe"`
@@ -132,7 +133,7 @@ func outDest(cfg config.OrganizeConfig, kind string, c *Candidate, o moveOutcome
 
 func buildReport(in reportInput) planReport {
 	r := planReport{
-		DryRun: in.cfg.DryRun, Priority: in.opts.Priority, IgnoreThe: in.opts.IgnoreThe,
+		Mode: in.opts.mode(), DryRun: in.cfg.DryRun, Priority: in.opts.Priority, IgnoreThe: in.opts.IgnoreThe,
 		Library: in.cfg.Library, Notes: in.notes,
 		ToLibrary: []libraryEntry{}, AlreadyInPlace: []libraryEntry{}, Duplicates: []duplicateEntry{},
 		Invalid: []invalidEntry{}, LeftInPlace: []leftEntry{}, PossibleDuplicates: [][]string{},
@@ -219,7 +220,7 @@ func (r planReport) text() []byte {
 	if r.DryRun {
 		mode = "dry run: nothing was moved"
 	}
-	fmt.Fprintf(&b, "organize plan (%s)\n", mode)
+	fmt.Fprintf(&b, "%s plan (%s)\n", r.Mode, mode)
 	fmt.Fprintf(&b, "library: %s\n", r.Library)
 	prio := "off (quality decides between all sources)"
 	if r.Priority {

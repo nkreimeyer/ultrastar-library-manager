@@ -212,3 +212,68 @@ func TestNewOrganizeLabelsNormalizationInsensitive(t *testing.T) {
 		t.Errorf("labels = %q, want %q", got, []string{nfc, nfd + " (2)"})
 	}
 }
+
+func TestNewDedupe(t *testing.T) {
+	root := realRoot(t, "library")
+	lib := filepath.Join(root, "library")
+	cfg, err := NewDedupe(lib, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Source{{Path: lib, Label: "library", Tier: 0, Index: 0}}
+	if !reflect.DeepEqual(cfg.Sources, want) || cfg.Library != lib || cfg.OutDir != filepath.Join(root, DefaultOrganizeOutDirName) || !cfg.DryRun {
+		t.Errorf("cfg = %+v", cfg)
+	}
+	for _, bad := range []string{"", filepath.Join(root, "missing")} {
+		if _, err := NewDedupe(bad, "", false); err == nil {
+			t.Errorf("NewDedupe(%q) accepted", bad)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "file"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewDedupe(filepath.Join(root, "file"), "", false); err == nil {
+		t.Error("NewDedupe accepted a file as library")
+	}
+	if _, err := NewDedupe(lib, filepath.Join(lib, "out"), false); err == nil {
+		t.Error("NewDedupe accepted an out dir inside the library")
+	}
+}
+
+func TestNewAdd(t *testing.T) {
+	root := realRoot(t, "library", "a", "b", "c")
+	j := func(rel string) string { return filepath.Join(root, rel) }
+	cfg, err := NewAdd([][]string{{j("a"), j("b")}, {j("c")}}, j("library"), j("out"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Source{
+		{Path: j("library"), Label: "library", Tier: 0, Index: 0},
+		{Path: j("a"), Label: "a", Tier: 0, Index: 1},
+		{Path: j("b"), Label: "b", Tier: 0, Index: 2},
+		{Path: j("c"), Label: "c", Tier: 1, Index: 3},
+	}
+	if !reflect.DeepEqual(cfg.Sources, want) || cfg.Library != j("library") || cfg.OutDir != j("out") {
+		t.Errorf("cfg = %+v\nwant sources %+v", cfg, want)
+	}
+	// A library that does not exist yet is no source.
+	cfg, err = NewAdd([][]string{{j("a")}}, j("new-library"), "", false)
+	if err != nil || len(cfg.Sources) != 1 || cfg.Sources[0].Path != j("a") || cfg.OutDir != j(DefaultOrganizeOutDirName) {
+		t.Errorf("new library: cfg = %+v, %v", cfg, err)
+	}
+	for name, tc := range map[string]struct {
+		tiers [][]string
+		lib   string
+		want  string
+	}{
+		"no sources":          {nil, j("library"), "at least one source"},
+		"no library":          {[][]string{{j("a")}}, "", "library dir is required"},
+		"the library as -s":   {[][]string{{j("a")}, {j("library")}}, j("library"), "is the library"},
+		"a source in the lib": {[][]string{{j("library") + "/x"}}, j("library"), "must be an existing directory"},
+		"the lib in a source": {[][]string{{root}}, j("library"), "must not be inside the source dir"},
+	} {
+		if _, err := NewAdd(tc.tiers, tc.lib, j("out"), false); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
+		}
+	}
+}

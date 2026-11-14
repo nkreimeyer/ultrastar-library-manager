@@ -34,6 +34,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -tags netgo -ldflags '-w -extl
 ```bash
 library-manager -s <song-dir> [flags]
 library-manager organize -s <dir> [-s ...] -l <library> [flags]   # see "Organizing the library"
+library-manager dedupe -l <library> [flags]                       # see "Removing duplicates in place"
+library-manager add -s <dir> [-s ...] -l <library> [flags]        # see "Adding songs to a library"
 ```
 
 | Flag | Default | Description |
@@ -243,20 +245,28 @@ only differ by such qualifiers, or by an `ft.` in the title (it may also be an
 abbreviation, as in `Ft. Lauderdale`), are listed as *possible duplicates* for manual review
 (duets only with duets, solo versions only with solo versions).
 
+**Copies marked `_dupl<n>`.** A song whose folder name, song txt name, audio or video file
+name, `#ARTIST` or `#TITLE` ends in `_dupl1`, `_dupl2`, … (any case) is a copy: the suffix
+is ignored when songs are compared and named, and a marked copy always loses against an
+unmarked version of the same song. A copy without an unmarked version is kept (by
+organize and add under its name without the suffix; dedupe does not rename).
+
 **Which version is kept.** The criteria are applied in this order; at each step only the
 versions with the best value stay in the running:
 
-1. with `-priority`: the earlier `-s` tier;
-2. fewer warnings about the txt, the timing or the audio (problems with video, cover,
+1. not marked as a copy (`_dupl<n>`, see above);
+2. with `-priority`: the earlier `-s` tier;
+3. fewer warnings about the txt, the timing or the audio (problems with video, cover,
    background, `#VIDEOGAP` or stems do not count here);
-3. has a readable video;
-4. a video bitrate of at most 3 Mbit/s, the limit above which fixvideos (`-m`) re-encodes
+4. has a readable video;
+5. a video bitrate of at most 3 Mbit/s, the limit above which fixvideos (`-m`) re-encodes
    (unknown counts as within): a higher one only bloats the library;
-5. higher video height (e.g. 1080p over 720p), counted up to 1080p, since fixvideos
+6. higher video height (e.g. 1080p over 720p), counted up to 1080p, since fixvideos
    downscales larger videos (2160p is no better than 1080p);
-6. an audio bitrate within 10 % of the best version's (unknown loses);
-7. has a cover; 8. has a background; 9. the txt has `#VERSION`;
-10. otherwise the earlier source (in the order given), then the path.
+7. an audio bitrate within 10 % of the best version's (unknown loses);
+8. has a cover; 9. has a background; 10. the txt has `#VERSION`;
+11. otherwise the earlier source (in the order given), then the path.
+
 
 The report gives the deciding reason for every duplicate, e.g. `lower priority tier`,
 `no video` or `lower audio bitrate (128 vs 320 kbit/s)`. Without `ffprobe` on `PATH` the
@@ -289,6 +299,7 @@ of lower quality. For a better source put it first (`-s /m/new -s /m/library`), 
 out `-priority` (or give both in one tier, `-s /m/library:/m/new`) to let quality decide. Running
 `organize -s /m/library -l /m/library` on a finished library moves nothing. Empty folders
 (for example category folders emptied by an earlier run) are ignored and left alone.
+To add new songs without re-bucketing the library, use `add` instead (see below).
 
 **Undo.** `organize -undo -o <out>` (or `-l <library>` for the default output folder)
 reverts the most recent run that was not undone yet: every move in reverse order, and the
@@ -307,6 +318,46 @@ is gone or whose original place is taken again is skipped and counted as failed.
 
 `<source>` is the base name of the source folder (`low1`, …; ` (2)` is added if two
 sources have the same name).
+
+## Removing duplicates in place (`dedupe`)
+
+```bash
+library-manager dedupe -l <library> [-o <out>] [-deep] [-n] [-v level]
+library-manager dedupe -undo [-o <out> | -l <library>] [-n] [-v level]
+```
+
+`dedupe` removes the duplicates of one library without reorganizing it: songs are compared
+and the keeper is chosen exactly as by organize (including `_dupl<n>` copies), but the
+keeper stays where it is, whatever the folder layout. The other versions go to
+`<out>/duplicates/<library name>/…`, broken songs that have a working version to
+`<out>/invalid/<library name>/…`. Broken songs without a working version, songs with an
+encoding problem and unreadable folders stay. Nothing is renamed or re-bucketed. The plan,
+`-n`, the journal and `-undo` work as for organize (the output folder is the same
+`organize-output/` by default, and `-undo` reverts the newest organize, dedupe or add run).
+
+## Adding songs to a library (`add`)
+
+```bash
+library-manager add -s <dir>[:<dir>...] [-s ...] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n] [-v level]
+library-manager add -undo [-o <out> | -l <library>] [-n] [-v level]
+```
+
+`add` moves the songs of the sources into the library, deduplicated among themselves and
+against the library's songs (which are always compared; do not give the library as `-s`):
+
+- a song that is new to the library goes to `<Bucket>/<Artist - Title>` as with organize;
+- if the library already has the song, the better version wins by the criteria above (so
+  txt warnings and a video bitrate above 3 Mbit/s count against a version): a better input
+  replaces the library's copy (which goes to `duplicates/`), otherwise the input goes to
+  `duplicates/`. On a tie the library's copy stays;
+- the library's own songs are not moved otherwise (no re-bucketing), and a broken library
+  song only goes to `invalid/` when a working input replaces it. Broken inputs go to
+  `invalid/`;
+- a new song never takes the name of a library song that stays: it gets ` (2)`, ` (3)`, ….
+
+With `-priority` the order of the `-s` flags decides first between the inputs; the library
+counts as part of the first `-s`. The library may not exist yet (then `add` is the same as
+organize). `-n`, the report and `-undo` work as for organize.
 
 ## Development
 

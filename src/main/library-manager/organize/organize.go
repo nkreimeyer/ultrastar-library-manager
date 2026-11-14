@@ -21,8 +21,26 @@ import (
 	"github.com/nkreimeyer/library-manager/utils"
 )
 
+// Mode is what Run does with the library.
+type Mode string
+
+const (
+	// ModeOrganize (the organize subcommand) moves every keeper to <Bucket>/<FolderName>,
+	// the library's own songs only if the library is given as a source.
+	ModeOrganize Mode = "organize"
+	// ModeDedupe (dedupe) removes the duplicates of the library in place: the library is
+	// the only source, keepers stay where they are, the other versions go to duplicates/.
+	ModeDedupe Mode = "dedupe"
+	// ModeAdd (add) adds the sources to the library: the library's songs compete with the
+	// sources, library keepers stay where they are, new keepers go to their bucket.
+	ModeAdd Mode = "add"
+)
+
 // Options configure Run.
 type Options struct {
+	// Mode; "" is ModeOrganize. ModeDedupe and ModeAdd plan with LibraryInPlace and need
+	// the library among cfg.Sources (if it exists).
+	Mode Mode
 	// Priority: the tier of the source (the -s flag it was given with) decides first
 	// between working versions of a song.
 	Priority bool
@@ -84,7 +102,10 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 	})
 	log.Infof("Organize: %d song folder(s) in %d source(s), %d empty folder(s) ignored", len(cands), len(cfg.Sources), len(empty))
 
-	plan := MakePlan(cands, PlanOptions{Priority: opts.Priority, IgnoreThe: opts.IgnoreThe, Occupied: libraryOccupant(ops, cfg.Library)})
+	plan := MakePlan(cands, PlanOptions{
+		Priority: opts.Priority, IgnoreThe: opts.IgnoreThe, Occupied: libraryOccupant(ops, cfg.Library),
+		LibraryInPlace: opts.mode() != ModeOrganize,
+	})
 	logPlan(cands, plan)
 
 	in := reportInput{cfg: cfg, opts: opts, cands: cands, plan: plan, outcomes: map[int]moveOutcome{}, empty: empty, notes: notes}
@@ -113,13 +134,21 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 	if cfg.DryRun {
 		verb = "planned"
 	}
-	log.Infof("Organize: %d to the library, %d already in place, %d duplicate(s), %d invalid, %d left in place, %d possible duplicate(s); %d move(s) %s, %d failed; see %s",
-		rep.Summary.ToLibrary, rep.Summary.AlreadyInPlace, rep.Summary.Duplicates, rep.Summary.Invalid, rep.Summary.LeftInPlace,
+	log.Infof("%s: %d to the library, %d already in place, %d duplicate(s), %d invalid, %d left in place, %d possible duplicate(s); %d move(s) %s, %d failed; see %s",
+		strings.ToUpper(string(rep.Mode[:1]))+string(rep.Mode[1:]), rep.Summary.ToLibrary, rep.Summary.AlreadyInPlace, rep.Summary.Duplicates, rep.Summary.Invalid, rep.Summary.LeftInPlace,
 		rep.Summary.PossibleDuplicates, rep.Summary.Moved, verb, rep.Summary.Failed, cfg.ReportPath(reportTxt))
 	if a.j.failed {
 		return fmt.Errorf("the journal %s cannot be written; the remaining moves were not attempted", cfg.JournalPath())
 	}
 	return nil
+}
+
+// mode is the Mode, with "" as ModeOrganize.
+func (o Options) mode() Mode {
+	if o.Mode == "" {
+		return ModeOrganize
+	}
+	return o.Mode
 }
 
 func movesSong(a Action) bool { return a == ActMove || a == ActDuplicate || a == ActInvalid }
@@ -156,8 +185,20 @@ func newCandidate(cfg config.OrganizeConfig, src config.Source, folder string, i
 		}
 	}
 	sort.Strings(c.Errors)
+	_, c.MarkedCopy = StripCopySuffix(filepath.Base(folder), false)
+	if _, marked := StripCopySuffix(in.Txt, true); marked {
+		c.MarkedCopy = true
+	}
 	if in.Song != nil {
-		c.Artist, c.Title = lastTag(in.Song, "ARTIST"), lastTag(in.Song, "TITLE")
+		var markedArtist, markedTitle bool
+		c.Artist, markedArtist = StripCopySuffix(lastTag(in.Song, "ARTIST"), false)
+		c.Title, markedTitle = StripCopySuffix(lastTag(in.Song, "TITLE"), false)
+		c.MarkedCopy = c.MarkedCopy || markedArtist || markedTitle
+		for _, tag := range []string{"AUDIO", "MP3", "VIDEO"} {
+			if _, marked := StripCopySuffix(lastTag(in.Song, tag), true); marked {
+				c.MarkedCopy = true
+			}
+		}
 		c.Duet = len(in.Song.Players) > 0 || IsDuetTitle(c.Title)
 		c.Quality.HasVersion = lastTag(in.Song, "VERSION") != ""
 	}
