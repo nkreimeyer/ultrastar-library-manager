@@ -60,7 +60,7 @@ func runOrganize(mode organize.Mode, args []string, output io.Writer) int {
 	outDir := fs.String("o", "", "Output folder for invalid/, duplicates/, the journal and the reports (default: "+config.DefaultOrganizeOutDirName+"/ next to -l)")
 	deep := fs.Bool("deep", false, "Fully decode every referenced audio/video file while checking the songs (slow)")
 	dryRun := fs.Bool("n", false, "Dry run: write the plan report only; nothing is moved")
-	undo := fs.Bool("undo", false, "Undo the most recent organize, dedupe or add run recorded in the journal (needs -o or -l)")
+	undo := fs.Bool("undo", false, "Undo the most recent organize, dedupe, add or remove run recorded in the journal (needs -o or -l)")
 	logLevel := fs.String("v", "info", "Log level (debug, info, warn, error)")
 	fs.Usage = func() {
 		switch mode {

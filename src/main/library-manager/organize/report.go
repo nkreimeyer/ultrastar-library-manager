@@ -279,12 +279,6 @@ func (r planReport) text() []byte {
 	section := func(title string, n int) {
 		fmt.Fprintf(&b, "\n== %s (%d) ==\n", title, n)
 	}
-	withOutcome := func(o string) string {
-		if o == "" || o == outcomePlanned {
-			return ""
-		}
-		return "  [" + o + "]"
-	}
 	section("Into the library", len(r.ToLibrary))
 	for _, e := range r.ToLibrary {
 		fmt.Fprintf(&b, "%s  <-  %s%s\n", e.Target, e.Song, withOutcome(e.Outcome))
@@ -340,4 +334,12 @@ func (r planReport) text() []byte {
 		fmt.Fprintf(&b, "%s\n", e)
 	}
 	return b.Bytes()
+}
+
+// withOutcome is the outcome suffix of a report line: "  [moved]"; nothing for a dry run.
+func withOutcome(o string) string {
+	if o == "" || o == outcomePlanned {
+		return ""
+	}
+	return "  [" + o + "]"
 }

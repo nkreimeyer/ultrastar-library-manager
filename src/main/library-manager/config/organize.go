@@ -175,6 +175,10 @@ func (c OrganizeConfig) InvalidDir() string { return filepath.Join(c.OutDir, "in
 // source label.
 func (c OrganizeConfig) DuplicatesDir() string { return filepath.Join(c.OutDir, "duplicates") }
 
+// RemovedDir is where the remove subcommand moves the songs it removes, below their path
+// in the library.
+func (c OrganizeConfig) RemovedDir() string { return filepath.Join(c.OutDir, "removed") }
+
 // JournalPath is the move journal of organize (JSON Lines), used by -undo.
 func (c OrganizeConfig) JournalPath() string {
 	return filepath.Join(c.OutDir, "organize-journal.jsonl")

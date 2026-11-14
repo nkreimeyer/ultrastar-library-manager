@@ -14,8 +14,9 @@ is superseded.
 ```
 src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (go 1.24)
   main.go                     flags, validation, runs the modules in fixed order, summary + exit code;
-                              os.Args[1] == "organize"/"dedupe"/"add" dispatches to the subcommand
+                              os.Args[1] == "organize"/"dedupe"/"add"/"remove" dispatches to the subcommand
   organize_cmd.go             the organize, dedupe and add subcommands (organize.Mode): own FlagSet, -s tier lists, -undo, validation
+  remove_cmd.go               the remove subcommand: -artist/-song/-from patterns, -undo
   main_test.go                flag validation (-deep/-move-broken need -k), module order, organize usage
   pipeline_test.go            fixtxt → cleanup (→ check) integration tests (real run, dry-run = real-run plan, idempotence)
   config/                     Config{SongDir, OutDir, DryRun}: path validation, output layout, marker file;
@@ -38,6 +39,7 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   journal/                    content-fingerprint journal for media formats that cannot carry a marker tag
   organize/                   organize/dedupe/add: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey, StripCopySuffix),
                               content.go (ContentHash, union-find joining of groups by content),
+                              remove.go (Pattern, ParsePatternFile, planRemove (pure), Remove, remove_plan.json/.txt),
                               similar.go (Profile, findSimilar, similarJoin, review evidence),
                               quality.go (keeper order), plan.go (MakePlan, orderMoves; pure), organize.go (Run, Undo),
                               journal.go (organize-journal.jsonl), report.go (organize_plan.json/.txt)
@@ -68,8 +70,11 @@ Subcommands: `organize -s <dir>[:<dir>…] [-s …] -l <library> [-o <out>] [-pr
 `dedupe -l <library> [-o <out>] [-deep] [-n]` (in place: the library is the only source, keepers stay),
 `add -s … -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n]` (the library is always the first
 source of the first tier, library keepers stay, new keepers go to their bucket),
-and `<cmd> -undo [-o <out> | -l <library>] [-n]`
-(one journal for all three). Each `-s` is one priority tier (folders in
+`remove -l <library> [-artist <name>]… [-song "Artist - Title"]… [-from <file>]… [-o <out>] [-n]` (matching songs
+go to `<out>/removed/<rel>`; artist patterns match a subset of the collaboration names (`artistNames`), song
+patterns the SongKey with or without the duet marker; missing tags come from `utils.TagsFromFolderName`;
+encoding problems stay), and `<cmd> -undo [-o <out> | -l <library>] [-n]`
+(one journal for all four). Each `-s` is one priority tier (folders in
 it split with `filepath.SplitList`); `-o` defaults to `organize-output/` next to the library.
 Same exit codes and leftover-argument rule.
 
@@ -170,9 +175,9 @@ Same exit codes and leftover-argument rule.
   replacement by content), then pairs from `findSimilar` that pass `similarJoin` are joined
   too (`joinedBySimilar`; the other pairs become `Plan.Similar` review entries with
   evidence), and the keeper is chosen by `chooseKeeper`: the criteria (not a `_dupl<n>` copy, tier
-  with `-priority`, song warnings, video, video bitrate ≤ `fixvideos.BitrateThreshold`, height capped at
-  `fixvideos.MaxHeight`, audio bitrate within 10 % of the group's best, cover, background,
-  `#VERSION`, source order, path) are filters over the whole group, never pairwise
+  with `-priority`, song warnings, video, video bitrate ≤ `fixvideos.BitrateThreshold`, height
+  capped at `fixvideos.MaxHeight`, audio bitrate within 10 % of the group's best, cover,
+  background, `#VERSION`, source order, path) are filters over the whole group, never pairwise
   comparisons, because the bitrate tolerance is not transitive. Each loser's reason is the
   filter that dropped it. Without ffprobe, `MediaSummary.HasVideo` only means `#VIDEO`
   names an existing, non-empty file (height and bitrate unknown = 0). `SongKey` folds diacritics only on Latin/Greek letters (marks of

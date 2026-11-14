@@ -390,3 +390,86 @@ func TestRunDedupeAndAddUsage(t *testing.T) {
 		t.Error("undo did not restore the sources and the library")
 	}
 }
+
+func TestRunRemoveCommand(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	base := t.TempDir()
+	lib := filepath.Join(base, "lib")
+	write := func(rel, artist, title string) {
+		dir := filepath.Join(lib, rel)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		txt := "#ARTIST:" + artist + "\n#TITLE:" + title + "\n#MP3:a.mp3\n#BPM:300\n"
+		for i := range 10 {
+			txt += fmt.Sprintf(": %d 2 0 %s\n", i*4, title)
+		}
+		for name, content := range map[string]string{"song.txt": txt + "E\n", "a.mp3": "x"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write("A/ABBA - SOS", "ABBA", "SOS")
+	write("A/ABBA - Waterloo", "ABBA", "Waterloo")
+	write("C/Cher - Believe", "Cher", "Believe")
+	list := filepath.Join(base, "list.txt")
+	if err := os.WriteFile(list, []byte("# remove\nCher\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(base, "empty.txt")
+	if err := os.WriteFile(empty, []byte("# nothing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(base, "bad.txt")
+	if err := os.WriteFile(bad, []byte("song: SOS\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"no library", []string{"remove", "-artist", "ABBA"}, exitUsage},
+		{"no pattern", []string{"remove", "-l", lib}, exitUsage},
+		{"bad song pattern", []string{"remove", "-l", lib, "-song", "SOS"}, exitUsage},
+		{"bad artist pattern", []string{"remove", "-l", lib, "-artist", "?"}, exitUsage},
+		{"missing file", []string{"remove", "-l", lib, "-from", filepath.Join(base, "missing.txt")}, exitUsage},
+		{"empty file", []string{"remove", "-l", lib, "-from", empty}, exitUsage},
+		{"bad file", []string{"remove", "-l", lib, "-from", bad}, exitUsage},
+		{"leftover argument", []string{"remove", "-l", lib, "-artist", "Elton", "John"}, exitUsage},
+		{"missing library", []string{"remove", "-l", filepath.Join(base, "nope"), "-artist", "ABBA"}, exitUsage},
+		{"undo with a pattern", []string{"remove", "-undo", "-l", lib, "-artist", "ABBA"}, exitUsage},
+		{"undo without folder", []string{"remove", "-undo"}, exitUsage},
+		{"bad log level", []string{"remove", "-l", lib, "-artist", "ABBA", "-v", "loud"}, exitUsage},
+		{"help", []string{"remove", "-h"}, exitOK},
+		{"dry run", []string{"remove", "-l", lib, "-song", "ABBA - SOS", "-n"}, exitOK},
+		{"dry run with a file only", []string{"remove", "-l", lib, "-from", list, "-n"}, exitOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := runWithArgs(t, tt.args...); got != tt.want {
+				t.Errorf("run(%q) = %d, want %d", tt.args, got, tt.want)
+			}
+		})
+	}
+	exists := func(p ...string) bool {
+		_, err := os.Stat(filepath.Join(append([]string{base}, p...)...))
+		return err == nil
+	}
+	if !exists("lib", "A", "ABBA - SOS", "song.txt") {
+		t.Fatal("the dry run removed a song")
+	}
+	if got := runWithArgs(t, "remove", "-l", lib, "-song", "ABBA - SOS", "-from", list); got != exitOK {
+		t.Fatalf("remove = %d", got)
+	}
+	if exists("lib", "A", "ABBA - SOS") || exists("lib", "C", "Cher - Believe") || !exists("lib", "A", "ABBA - Waterloo", "song.txt") ||
+		!exists("organize-output", "removed", "A", "ABBA - SOS", "song.txt") || !exists("organize-output", "removed", "C", "Cher - Believe", "song.txt") {
+		t.Error("remove did not move SOS and Cher to removed/")
+	}
+	if got := runWithArgs(t, "remove", "-undo", "-l", lib); got != exitOK {
+		t.Fatalf("remove -undo = %d", got)
+	}
+	if !exists("lib", "A", "ABBA - SOS", "song.txt") || !exists("lib", "C", "Cher - Believe", "song.txt") {
+		t.Error("undo did not restore the removed songs")
+	}
+}

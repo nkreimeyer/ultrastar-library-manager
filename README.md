@@ -36,6 +36,7 @@ library-manager -s <song-dir> [flags]
 library-manager organize -s <dir> [-s ...] -l <library> [flags]   # see "Organizing the library"
 library-manager dedupe -l <library> [flags]                       # see "Removing duplicates in place"
 library-manager add -s <dir> [-s ...] -l <library> [flags]        # see "Adding songs to a library"
+library-manager remove -l <library> -artist <name> | -song "Artist - Title" | -from <file>   # see "Removing songs or artists"
 ```
 
 | Flag | Default | Description |
@@ -314,7 +315,6 @@ versions with the best value stay in the running:
 8. has a cover; 9. has a background; 10. the txt has `#VERSION`;
 11. otherwise the earlier source (in the order given), then the path.
 
-
 The report gives the deciding reason for every duplicate, e.g. `lower priority tier`,
 `no video` or `lower audio bitrate (128 vs 320 kbit/s)`. Without `ffprobe` on `PATH` the
 video height and the bitrates are unknown (the report says so): a version whose `#VIDEO`
@@ -405,6 +405,40 @@ against the library's songs (which are always compared; do not give the library 
 With `-priority` the order of the `-s` flags decides first between the inputs; the library
 counts as part of the first `-s`. The library may not exist yet (then `add` is the same as
 organize). `-n`, the report and `-undo` work as for organize.
+
+## Removing songs or artists (`remove`)
+
+```bash
+library-manager remove -l <library> [-artist <name>]... [-song "Artist - Title"]... [-from <file>]... [-o <out>] [-n] [-v level]
+library-manager remove -undo [-o <out> | -l <library>] [-n] [-v level]
+```
+
+`remove` moves the songs that match to `<out>/removed/<path in the library>` (`-o` defaults
+to `organize-output/` next to the library). Nothing is deleted: `remove -undo` puts the
+songs back, and once you are sure you can delete `removed/` yourself.
+
+- `-artist "Elton John"` removes every song of the artist, also collaborations with it
+  (`Elton John & Kiki Dee`, `Elton John x …`), but not songs where the artist is only
+  featured (`George Michael feat. Elton John`).
+- `-song "ABBA - SOS"` removes that song, the solo and the duet version, but not other
+  versions such as `SOS (Live)` unless you name them. `-song "ABBA - SOS [DUET]"` removes only
+  the duet.
+- `-from list.txt` reads patterns from a file, one per line: `Artist - Title` is a song, a
+  line without ` - ` an artist; `artist:` or `song:` at the start forces the kind
+  (`artist: Queen - The Band`). Blank lines and lines starting with `#` are ignored.
+
+All three can be repeated and combined. Tags are compared as the duplicate detection does:
+case, accents, spaces, punctuation, a leading `The` (or `(The)`), `feat.` parts, noise
+qualifiers and `_dupl<n>` marks do not matter, so `-artist "the cure"` also removes `Cure (The)`.
+A missing `#ARTIST` or `#TITLE` is taken from an obvious `Artist - Title` folder name (the
+same rule the sanitizer uses to fill it; the report marks such matches), so a library that was
+not sanitized yet can be cleaned too. Songs without a readable song txt are never matched, and a matching song whose txt has an
+encoding problem stays in place (its tags may be read wrongly; fix it with the sanitizer
+first). Run with `-n` first: `remove_plan.txt` lists every song that would go, the pattern
+that matched it, and the patterns that matched nothing (usually a typo).
+
+`remove` shares the journal with organize, dedupe and add, so `-undo` of any of them reverts
+the most recent of these runs.
 
 ## Development
 
