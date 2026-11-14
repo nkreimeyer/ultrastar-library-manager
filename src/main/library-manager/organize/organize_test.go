@@ -21,25 +21,26 @@ import (
 	"github.com/nkreimeyer/library-manager/fsops"
 )
 
-// notesTxt is a valid song body: 10 notes ending at 1.9 s, then E.
-func notesTxt() string {
+// notesTxt is a valid song body: 10 notes ending at 1.9 s, then E. The lyrics are lyric,
+// so songs with different lyrics never have the same content hash.
+func notesTxt(lyric string) string {
 	var b strings.Builder
 	b.WriteString("#BPM:300\n#GAP:0\n")
 	for i := range 10 {
-		fmt.Fprintf(&b, ": %d 2 0 la\n", i*4)
+		fmt.Fprintf(&b, ": %d 2 0 %s\n", i*4, lyric)
 	}
 	b.WriteString("E\n")
 	return b.String()
 }
 
-// duetTxt is a valid duet body with P1 and P2.
-func duetTxt() string {
+// duetTxt is a valid duet body with P1 and P2, sung to lyric.
+func duetTxt(lyric string) string {
 	var b strings.Builder
 	b.WriteString("#BPM:300\n#GAP:0\n")
 	for _, p := range []string{"P1", "P2"} {
 		b.WriteString(p + "\n")
 		for i := range 10 {
-			fmt.Fprintf(&b, ": %d 2 0 la\n", i*4)
+			fmt.Fprintf(&b, ": %d 2 0 %s\n", i*4, lyric)
 		}
 	}
 	b.WriteString("E\n")
@@ -76,11 +77,12 @@ func pngImage(w, h int) string {
 func songFiles(dir, artist, title string, extra ...string) map[string]string {
 	head := "#ARTIST:" + artist + "\n#TITLE:" + title + "\n#MP3:song.mp3\n"
 	files := map[string]string{dir + "/song.mp3": "audio of " + dir}
-	body := notesTxt()
+	lyric := artist + " / " + title // different songs, different content
+	body := notesTxt(lyric)
 	for _, e := range extra {
 		switch {
 		case e == "duet":
-			body = duetTxt()
+			body = duetTxt(lyric)
 		case e == "cover":
 			head += "#COVER:cover.png\n"
 			files[dir+"/cover.png"] = pngImage(4, 4)

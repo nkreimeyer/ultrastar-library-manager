@@ -37,6 +37,7 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   fixaudio/                   ffmpeg: downmix to stereo, peak-normalize to -3 dB, originals kept (tagged, idempotent)
   journal/                    content-fingerprint journal for media formats that cannot carry a marker tag
   organize/                   organize/dedupe/add: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey, StripCopySuffix),
+                              content.go (ContentHash, union-find joining of groups by content),
                               quality.go (keeper order), plan.go (MakePlan, orderMoves; pure), organize.go (Run, Undo),
                               journal.go (organize-journal.jsonl), report.go (organize_plan.json/.txt)
 old/                          legacy Python/shell (duplicate detection by folder name, fuzzy txt compare)
@@ -162,7 +163,10 @@ Same exit codes and leftover-argument rule.
 - organize: discovery per source, `check.Inspector` in a worker pool (min(16, NumCPU)), then
   `MakePlan` (pure, table-tested): encoding problems and unreadable folders stay, broken songs
   go to invalid/, working songs are grouped by `SongKey` (duet flag from P1/P2 or a `[DUET]`
-  title) and the keeper is chosen by `chooseKeeper`: the criteria (not a `_dupl<n>` copy, tier
+  title), groups sharing a `contentKey` (`ContentHash` + duet flag) are joined by union-find
+  (group key = smallest SongKey; a loser whose SongKey differs from the keeper's gets
+  `joinedByContent` appended to its reason; a broken song without a SongKey match finds its
+  replacement by content), and the keeper is chosen by `chooseKeeper`: the criteria (not a `_dupl<n>` copy, tier
   with `-priority`, song warnings, video, video bitrate ≤ `fixvideos.BitrateThreshold`, height capped at
   `fixvideos.MaxHeight`, audio bitrate within 10 % of the group's best, cover, background,
   `#VERSION`, source order, path) are filters over the whole group, never pairwise
@@ -317,7 +321,11 @@ the parsed `#ARTIST`/`#TITLE` (`organize.SongKey`: NFC, casefold, diacritics, pu
 is chosen on quality (`organize.chooseKeeper`), the losers are moved to `<out>/duplicates/`, and
 `LooseKey` lists possible duplicates for review. `dedupe` removes duplicates of one library in
 place (`-n` is the report-only mode), `add` adds sources to a library without re-bucketing it, and
-`_dupl<n>` copies always lose. **Still open:** fuzzy title matching, note-line similarity (BPM + note count)
+`_dupl<n>` copies always lose. Exact content duplicates are joined by `organize.ContentHash`
+(SHA-256 over the last `#BPM`, `B` lines and the sorted notes: type, start, length, pitch,
+NFC syllable, singer; `#GAP`, other tags, line breaks, RELATIVE, encoding ignored; fewer than
+10 notes = no hash). Test fixtures must give different songs different notes (`notesTxt(lyric)`),
+or the hash joins them. **Still open:** fuzzy title matching, note-line similarity (BPM + note count)
 and audio fingerprints, and choosing between several song txts *inside one folder* by content.
 
 Before organize: Go only "dedupes" multiple song `.txt` files *inside one folder*: it keeps the

@@ -26,6 +26,9 @@ type Candidate struct {
 	// "_dupl<n>" (StripCopySuffix), so it is a copy of another version; it loses against
 	// every version without the mark. Artist and Title are without the suffix.
 	MarkedCopy bool
+	// ContentHash fingerprints the notes, timing and lyrics (ContentHash); "" if the song
+	// has too few notes. Working songs with the same hash are one song, whatever the tags.
+	ContentHash string
 
 	// Unreadable: the folder or its txt cannot be read (already logged and counted).
 	Unreadable bool
@@ -120,10 +123,11 @@ type Plan struct {
 	PossibleDuplicates [][]int
 }
 
-// group is one song: all working candidates with the same SongKey.
+// group is one song: all working candidates with the same SongKey, joined with every
+// group that shares a content hash with it.
 type group struct {
-	key     string
-	members []int // candidate indices in (source, rel) order
+	key     string // the smallest SongKey of its members
+	members []int  // candidate indices in (source, rel) order
 	keeper  int
 	bucket  string
 	name    string // folder name without collision suffix
@@ -136,8 +140,10 @@ type group struct {
 //   - Unreadable candidates and those with an encoding problem are left in place.
 //   - Broken candidates go to invalid/; the working version of the same song (if any) is
 //     named as the replacement.
-//   - Working candidates are grouped by SongKey. The best one (see chooseKeeper) is the
-//     keeper, the others go to duplicates/ with the deciding criterion as reason.
+//   - Working candidates are grouped by SongKey, and groups whose members share a content
+//     hash (same notes, timing and lyrics; duets and solo versions apart) are joined. The
+//     best one (see chooseKeeper) is the keeper, the others go to duplicates/ with the
+//     deciding criterion as reason (and joinedByContent if their SongKey differs).
 //   - The keeper's target is <Bucket>/<FolderName>, plus " [DUET]" for a duet whose title
 //     has no duet qualifier. Targets of different songs that collide (NameKey) get " (2)",
 //     " (3)", ...: keepers already in place at one of those names keep it, the others are
@@ -164,9 +170,8 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 		return ca.Rel < cb.Rel
 	})
 
-	groups := map[string]*group{}
-	var groupKeys []string
-	var broken []int
+	songKey := make([]string, len(cands)) // working candidates only
+	var working, broken []int
 	for pos, i := range order {
 		c := &cands[i]
 		switch {
@@ -179,19 +184,42 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 		default:
 			key := SongKey(c.Artist, c.Title, c.Duet)
 			if key == "" {
-				// Nothing to compare by: never merge it with anything. The key is the
-				// (source, rel) position, zero-padded, so the numbering of such songs
+				// No tags to compare by (only the content hash can join it). The key is
+				// the (source, rel) position, zero-padded, so the numbering of such songs
 				// follows that order and not the order of cands.
 				key = fmt.Sprintf("\x00%09d", pos)
 			}
-			g := groups[key]
-			if g == nil {
-				g = &group{key: key}
-				groups[key] = g
-				groupKeys = append(groupKeys, key)
-			}
-			g.members = append(g.members, i)
+			songKey[i] = key
+			working = append(working, i)
 		}
+	}
+	// Join the song keys of candidates with the same content.
+	uf := unionFind{}
+	joinedBy := map[int]string{}  // how a candidate was joined with another song key
+	byContent := map[string]int{} // content key -> first working candidate with it
+	for _, i := range working {
+		ck := contentKey(&cands[i])
+		if ck == "" {
+			continue
+		}
+		if first, ok := byContent[ck]; ok {
+			uf.union(songKey[first], songKey[i])
+			joinedBy[i], joinedBy[first] = joinedByContent, joinedByContent
+		} else {
+			byContent[ck] = i
+		}
+	}
+	groups := map[string]*group{}
+	var groupKeys []string
+	for _, i := range working {
+		key := uf.find(songKey[i])
+		g := groups[key]
+		if g == nil {
+			g = &group{key: key}
+			groups[key] = g
+			groupKeys = append(groupKeys, key)
+		}
+		g.members = append(g.members, i)
 	}
 	sort.Strings(groupKeys)
 
@@ -206,7 +234,16 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 		g.keeper = g.members[keeper]
 		for j, m := range g.members {
 			if j != keeper {
-				p.Decisions[m] = Decision{Action: ActDuplicate, Reason: reasons[j], Other: g.keeper}
+				reason := reasons[j]
+				if songKey[m] != songKey[g.keeper] {
+					switch {
+					case joinedBy[m] != "":
+						reason += joinedBy[m]
+					default:
+						reason += joinedViaGroup
+					}
+				}
+				p.Decisions[m] = Decision{Action: ActDuplicate, Reason: reason, Other: g.keeper}
 			}
 		}
 	}
@@ -215,8 +252,10 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 	for _, i := range broken {
 		c := &cands[i]
 		d := Decision{Action: ActInvalid, Reason: "errors: " + strings.Join(c.Errors, ", "), Other: -1}
-		if key := SongKey(c.Artist, c.Title, c.Duet); key != "" && groups[key] != nil {
-			d.Other = groups[key].keeper
+		if key := SongKey(c.Artist, c.Title, c.Duet); key != "" && groups[uf.find(key)] != nil {
+			d.Other = groups[uf.find(key)].keeper
+		} else if first, ok := byContent[contentKey(c)]; ok {
+			d.Other = groups[uf.find(songKey[first])].keeper
 		}
 		if opts.LibraryInPlace && c.InLibrary && d.Other < 0 {
 			d = Decision{Action: ActLeft, Reason: fmt.Sprintf(reasonBrokenStays, strings.Join(c.Errors, ", ")), Other: -1}

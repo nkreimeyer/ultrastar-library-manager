@@ -221,7 +221,7 @@ func TestRunOrganizeFlags(t *testing.T) {
 	songTxt := func(artist, title, extra string) string {
 		s := "#ARTIST:" + artist + "\n#TITLE:" + title + "\n#MP3:a.mp3\n#BPM:300\n" + extra
 		for i := range 10 {
-			s += fmt.Sprintf(": %d 2 0 la\n", i*4)
+			s += fmt.Sprintf(": %d 2 0 %s\n", i*4, title) // other songs, other notes
 		}
 		return s + "E\n"
 	}

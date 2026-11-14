@@ -200,6 +200,7 @@ func newCandidate(cfg config.OrganizeConfig, src config.Source, folder string, i
 			}
 		}
 		c.Duet = len(in.Song.Players) > 0 || IsDuetTitle(c.Title)
+		c.ContentHash = ContentHash(in.Song)
 		c.Quality.HasVersion = lastTag(in.Song, "VERSION") != ""
 	}
 	m := in.Media

@@ -245,6 +245,20 @@ only differ by such qualifiers, or by an `ft.` in the title (it may also be an
 abbreviation, as in `Ft. Lauderdale`), are listed as *possible duplicates* for manual review
 (duets only with duets, solo versions only with solo versions).
 
+**Same notes, other tags.** Songs whose txts have the same notes are the same song as well,
+whatever their tags say (`Unknown Artist - Track 03` with the notes of `ABBA - SOS`). For
+every working song, the content of the txt is fingerprinted (SHA-256): `#BPM` and `B` lines,
+and every note with its type, beat, length, pitch, syllable and singer. Copies still match
+when they differ only in the other tags (`#GAP` too: the same chart synced to another audio
+file), the line breaks, the order of the note lines, RELATIVE mode, the encoding or the line
+endings. Everything else must match exactly: one changed syllable, pitch or beat makes a
+different song. A song with fewer than 10 notes gets no fingerprint, and a duet and a solo
+version are never joined this way either. Songs with the same fingerprint join the same
+group as songs with the same tags (also transitively), the keeper is chosen as below and
+names the folder, and the report says "the tags differ, but the notes, timing and lyrics
+are identical to another version of this song" for a duplicate found only through its notes.
+A broken song with the notes of a working one names it as the version used instead.
+
 **Copies marked `_dupl<n>`.** A song whose folder name, song txt name, audio or video file
 name, `#ARTIST` or `#TITLE` ends in `_dupl1`, `_dupl2`, … (any case) is a copy: the suffix
 is ignored when songs are compared and named, and a marked copy always loses against an
