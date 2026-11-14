@@ -355,6 +355,12 @@ func TestBuildReportOrderAndText(t *testing.T) {
 	}
 	cands[1].Errors = []string{"no-bpm", "no-notes"}
 	plan := MakePlan(cands, PlanOptions{})
+	// Evidence as the similarity check would give it (the candidates have no profiles).
+	plan.Similar = []Similar{
+		{A: 2, B: 3, Evidence: "lyrics 70 % alike, other chart", Possible: true},
+		{A: 4, B: 5, Possible: true},
+		{A: 3, B: 4, Evidence: "same chart, but only 10 % of the lyrics alike (a parody, translation or rewrite?)"},
+	}
 	build := func(perm []int, outcomes map[int]moveOutcome, dry bool) []byte {
 		cs := make([]Candidate, len(perm))
 		ds := make([]Decision, len(perm))
@@ -381,7 +387,12 @@ func TestBuildReportOrderAndText(t *testing.T) {
 		for i, o := range outcomes {
 			oc[inv[i]] = o
 		}
-		in := reportInput{cands: cs, plan: Plan{Decisions: ds, PossibleDuplicates: pd}, outcomes: oc}
+		var sim []Similar
+		for k := len(plan.Similar) - 1; k >= 0; k-- {
+			e := plan.Similar[k]
+			sim = append(sim, Similar{A: inv[e.B], B: inv[e.A], Evidence: e.Evidence, Possible: e.Possible})
+		}
+		in := reportInput{cands: cs, plan: Plan{Decisions: ds, PossibleDuplicates: pd, Similar: sim}, outcomes: oc}
 		in.cfg.DryRun = dry
 		in.cfg.Library = "/lib"
 		in.emptyLeft = 3
@@ -402,7 +413,7 @@ library: /lib
 priority: off (quality decides between all sources)
 sources:
 
-summary: 8 songs: 4 to the library, 0 already in place, 2 duplicates, 2 invalid, 0 left in place; 2 possible duplicates to review; 0 empty folders ignored; 1 moved, 2 failed; 3 emptied category folders left in the sources
+summary: 8 songs: 4 to the library, 0 already in place, 2 duplicates, 2 invalid, 0 left in place; 2 possible duplicates and 1 similar songs to review; 0 empty folders ignored; 1 moved, 2 failed; 3 emptied category folders left in the sources
 
 == Into the library (4) ==
 A/Abba - SOS  <-  hq:a  [moved]
@@ -430,7 +441,12 @@ low1:z  [failed]
 
 == Possible duplicates (review manually; nothing was merged) (2) ==
 hq:a  |  hq:b
+    lyrics 70 % alike, other chart
 hq:c  |  hq:d
+
+== Similar songs (review manually; nothing was merged) (1) ==
+hq:b  |  hq:c
+    same chart, but only 10 % of the lyrics alike (a parody, translation or rewrite?)
 
 == Empty folders (ignored) (0) ==
 `

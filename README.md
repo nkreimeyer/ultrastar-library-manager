@@ -202,7 +202,7 @@ recorded in a journal and can be undone with `-undo`.
    missing `#ARTIST`/`#TITLE` tags, so fixable songs are not sent to `invalid/` by organize.
 2. `library-manager organize … -n` and review `organize_plan.txt` in the output folder: what
    goes where, which version of each duplicate is kept and why, which songs are invalid or
-   left in place, and possible duplicates that were *not* merged.
+   left in place, and possible duplicates and similar songs that were *not* merged.
 3. Run the same command without `-n`. If something went wrong, `organize -undo` restores
    the previous state.
 
@@ -258,6 +258,34 @@ group as songs with the same tags (also transitively), the keeper is chosen as b
 names the folder, and the report says "the tags differ, but the notes, timing and lyrics
 are identical to another version of this song" for a duplicate found only through its notes.
 A broken song with the notes of a working one names it as the version used instead.
+
+**Same chart, small edits.** Many copies are the same chart with a few changes: typos fixed in
+the lyrics, the whole song moved by an octave, `#BPM` doubled with all beats doubled, every
+beat shifted. Such versions are joined too, when all of these hold:
+
+- both are duets or both solo versions;
+- at least 90 % of their lyrics match (the share of common 4-word sequences; a line break
+  ends a word, also when the next line starts without a space);
+- the charts match: the same number of notes, each with the same singer, the same pitch
+  relative to the first note (within an octave), and a start (from the first note) and length
+  within 30 ms;
+- the artists are similar: equal ignoring case, accents, spaces and punctuation, one name
+  contained in the other (`Glee` / `Glee Cast`, `Disney's Aladdin` / `Aladdin`), or a typo
+  (at most a quarter of the letters differ: `Elvis Presly`);
+- the titles name the same versions: a `Live` or `Mix` version with the chart of the studio
+  version is listed for review instead.
+
+The report then says "the tags differ, but the chart (timing and melody, within 30 ms) and
+at least 90 % of the lyrics match another version of this song".
+
+**Similar songs (review).** Weaker evidence never merges anything. The report lists, in its
+own section "Similar songs", pairs of kept songs with a similar artist whose lyrics are at
+least 60 % alike or whose shorter lyrics are 80 % contained in the longer ones (a TV size or
+radio edit), and pairs with the same chart, whatever the artist (a parody, a translation, a
+cover that reuses the chart, an artist alias). Every pair of a possible-duplicates group
+gets the same evidence line, or "only N % of the lyrics alike: probably different versions",
+so a live or TV version is easy to tell from a real duplicate. Covers by other artists with
+a chart of their own are not listed.
 
 **Copies marked `_dupl<n>`.** A song whose folder name, song txt name, audio or video file
 name, `#ARTIST` or `#TITLE` ends in `_dupl1`, `_dupl2`, … (any case) is a copy: the suffix

@@ -29,6 +29,9 @@ type Candidate struct {
 	// ContentHash fingerprints the notes, timing and lyrics (ContentHash); "" if the song
 	// has too few notes. Working songs with the same hash are one song, whatever the tags.
 	ContentHash string
+	// Profile is what the similarity check compares (lyrics, chart in ms); nil if the song
+	// has too few notes.
+	Profile *Profile
 
 	// Unreadable: the folder or its txt cannot be read (already logged and counted).
 	Unreadable bool
@@ -121,6 +124,18 @@ type Plan struct {
 	// still be the same song (equal LooseKey, both duets or both solo), for manual review.
 	// Sorted.
 	PossibleDuplicates [][]int
+	// Similar lists pairs of keepers of different songs that the similarity check found
+	// alike but did not join, and every pair inside a PossibleDuplicates group, with the
+	// evidence, for review. Sorted by (A, B).
+	Similar []Similar
+}
+
+// Similar is a pair of keepers (candidate indices, A < B) for review.
+type Similar struct {
+	A, B     int
+	Evidence string
+	// Possible: both are in the same PossibleDuplicates group.
+	Possible bool
 }
 
 // group is one song: all working candidates with the same SongKey, joined with every
@@ -209,6 +224,24 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 			byContent[ck] = i
 		}
 	}
+	// Join versions that the similarity check finds to be the same chart.
+	var profiled []int
+	for _, i := range working {
+		if cands[i].Profile != nil {
+			profiled = append(profiled, i)
+		}
+	}
+	similar := findSimilar(cands, profiled)
+	for _, sp := range similar {
+		if similarJoin(cands, sp) {
+			uf.union(songKey[sp.A], songKey[sp.B])
+			for _, i := range []int{sp.A, sp.B} {
+				if joinedBy[i] == "" {
+					joinedBy[i] = joinedBySimilar
+				}
+			}
+		}
+	}
 	groups := map[string]*group{}
 	var groupKeys []string
 	for _, i := range working {
@@ -279,6 +312,11 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 		resolveOccupied(cands, p.Decisions, opts.Occupied, opts.LibraryInPlace)
 	}
 	p.PossibleDuplicates = possibleDuplicates(cands, groups, groupKeys)
+	keepers := map[int]bool{}
+	for _, k := range groupKeys {
+		keepers[groups[k].keeper] = true
+	}
+	p.Similar = reviewSimilar(cands, p, similar, func(i int) bool { return keepers[i] })
 	return p
 }
 

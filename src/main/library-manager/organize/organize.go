@@ -134,9 +134,9 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 	if cfg.DryRun {
 		verb = "planned"
 	}
-	log.Infof("%s: %d to the library, %d already in place, %d duplicate(s), %d invalid, %d left in place, %d possible duplicate(s); %d move(s) %s, %d failed; see %s",
+	log.Infof("%s: %d to the library, %d already in place, %d duplicate(s), %d invalid, %d left in place, %d possible duplicate(s), %d similar song pair(s); %d move(s) %s, %d failed; see %s",
 		strings.ToUpper(string(rep.Mode[:1]))+string(rep.Mode[1:]), rep.Summary.ToLibrary, rep.Summary.AlreadyInPlace, rep.Summary.Duplicates, rep.Summary.Invalid, rep.Summary.LeftInPlace,
-		rep.Summary.PossibleDuplicates, rep.Summary.Moved, verb, rep.Summary.Failed, cfg.ReportPath(reportTxt))
+		rep.Summary.PossibleDuplicates, rep.Summary.Similar, rep.Summary.Moved, verb, rep.Summary.Failed, cfg.ReportPath(reportTxt))
 	if a.j.failed {
 		return fmt.Errorf("the journal %s cannot be written; the remaining moves were not attempted", cfg.JournalPath())
 	}
@@ -201,6 +201,7 @@ func newCandidate(cfg config.OrganizeConfig, src config.Source, folder string, i
 		}
 		c.Duet = len(in.Song.Players) > 0 || IsDuetTitle(c.Title)
 		c.ContentHash = ContentHash(in.Song)
+		c.Profile = NewProfile(in.Song)
 		c.Quality.HasVersion = lastTag(in.Song, "VERSION") != ""
 	}
 	m := in.Media

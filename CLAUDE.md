@@ -38,6 +38,7 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   journal/                    content-fingerprint journal for media formats that cannot carry a marker tag
   organize/                   organize/dedupe/add: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey, StripCopySuffix),
                               content.go (ContentHash, union-find joining of groups by content),
+                              similar.go (Profile, findSimilar, similarJoin, review evidence),
                               quality.go (keeper order), plan.go (MakePlan, orderMoves; pure), organize.go (Run, Undo),
                               journal.go (organize-journal.jsonl), report.go (organize_plan.json/.txt)
 old/                          legacy Python/shell (duplicate detection by folder name, fuzzy txt compare)
@@ -166,7 +167,9 @@ Same exit codes and leftover-argument rule.
   title), groups sharing a `contentKey` (`ContentHash` + duet flag) are joined by union-find
   (group key = smallest SongKey; a loser whose SongKey differs from the keeper's gets
   `joinedByContent` appended to its reason; a broken song without a SongKey match finds its
-  replacement by content), and the keeper is chosen by `chooseKeeper`: the criteria (not a `_dupl<n>` copy, tier
+  replacement by content), then pairs from `findSimilar` that pass `similarJoin` are joined
+  too (`joinedBySimilar`; the other pairs become `Plan.Similar` review entries with
+  evidence), and the keeper is chosen by `chooseKeeper`: the criteria (not a `_dupl<n>` copy, tier
   with `-priority`, song warnings, video, video bitrate ≤ `fixvideos.BitrateThreshold`, height capped at
   `fixvideos.MaxHeight`, audio bitrate within 10 % of the group's best, cover, background,
   `#VERSION`, source order, path) are filters over the whole group, never pairwise
@@ -325,8 +328,15 @@ place (`-n` is the report-only mode), `add` adds sources to a library without re
 (SHA-256 over the last `#BPM`, `B` lines and the sorted notes: type, start, length, pitch,
 NFC syllable, singer; `#GAP`, other tags, line breaks, RELATIVE, encoding ignored; fewer than
 10 notes = no hash). Test fixtures must give different songs different notes (`notesTxt(lyric)`),
-or the hash joins them. **Still open:** fuzzy title matching, note-line similarity (BPM + note count)
-and audio fingerprints, and choosing between several song txts *inside one folder* by content.
+or the hash joins them. The similarity check (`organize/similar.go`) joins the same chart with
+small edits: lyrics Jaccard over 4-word shingles ≥ 0.9 (line breaks end words), chart in ms
+from the first note within 30 ms with the pitch relative to the first note mod 12, similar
+artists (`artistSimilar`), same `variantWords`; candidates come from an inverted shingle
+index (shingles in > 50 songs ignored) and a coarse 50 ms chart key. Measured on the 15,147-song
+library (2026-11-14, txt-only shadow copy, no ffprobe): exact content 90 duplicates, plus the
+similarity check 195 (no false merge found in review). **Still open:**
+re-timed charts (another tempo) are only listed, never joined; artist aliases (`30`/`Thirty Seconds
+to Mars`, `CCR`), placeholder artists, U+FFFD as a wildcard, German `ae`/`ä` spellings; audio fingerprints, and choosing between several song txts *inside one folder* by content.
 
 Before organize: Go only "dedupes" multiple song `.txt` files *inside one folder*: it keeps the
 newest and moves the others to `extra-files/` (by mtime only, no content comparison).

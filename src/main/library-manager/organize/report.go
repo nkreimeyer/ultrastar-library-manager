@@ -44,7 +44,10 @@ type planReport struct {
 	Invalid            []invalidEntry   `json:"invalid"`
 	LeftInPlace        []leftEntry      `json:"leftInPlace"`
 	PossibleDuplicates [][]string       `json:"possibleDuplicates"`
-	EmptyFolders       []string         `json:"emptyFolders"` // ignored, "<label>:<rel>"
+	// Similar: pairs of kept songs the similarity check found alike (not joined), and the
+	// evidence for every pair of a possible-duplicates group (possibleDuplicate set).
+	Similar      []similarEntry `json:"similar"`
+	EmptyFolders []string       `json:"emptyFolders"` // ignored, "<label>:<rel>"
 }
 
 type sourceReport struct {
@@ -61,6 +64,7 @@ type summaryReport struct {
 	Invalid            int `json:"invalid"`
 	LeftInPlace        int `json:"leftInPlace"`
 	PossibleDuplicates int `json:"possibleDuplicates"`
+	Similar            int `json:"similar"` // pairs outside the possible-duplicates groups
 	EmptyFolders       int `json:"emptyFolders"`
 	// Moved and Failed count the executed (dry run: planned) moves.
 	Moved  int `json:"moved"`
@@ -93,6 +97,13 @@ type invalidEntry struct {
 	Replacement string   `json:"replacement,omitempty"` // the working version used instead
 	Dest        string   `json:"dest"`
 	Outcome     string   `json:"outcome"`
+}
+
+type similarEntry struct {
+	Songs             [2]string `json:"songs"` // sorted
+	Names             [2]string `json:"names"`
+	Evidence          string    `json:"evidence"`
+	PossibleDuplicate bool      `json:"possibleDuplicate,omitempty"`
 }
 
 type leftEntry struct {
@@ -136,7 +147,7 @@ func buildReport(in reportInput) planReport {
 		Mode: in.opts.mode(), DryRun: in.cfg.DryRun, Priority: in.opts.Priority, IgnoreThe: in.opts.IgnoreThe,
 		Library: in.cfg.Library, Notes: in.notes,
 		ToLibrary: []libraryEntry{}, AlreadyInPlace: []libraryEntry{}, Duplicates: []duplicateEntry{},
-		Invalid: []invalidEntry{}, LeftInPlace: []leftEntry{}, PossibleDuplicates: [][]string{},
+		Invalid: []invalidEntry{}, LeftInPlace: []leftEntry{}, PossibleDuplicates: [][]string{}, Similar: []similarEntry{},
 		EmptyFolders: append([]string{}, in.empty...),
 	}
 	for _, s := range in.cfg.Sources {
@@ -184,6 +195,25 @@ func buildReport(in reportInput) planReport {
 		sort.Strings(refs)
 		r.PossibleDuplicates = append(r.PossibleDuplicates, refs)
 	}
+	for _, sp := range in.plan.Similar {
+		a, b := &in.cands[sp.A], &in.cands[sp.B]
+		if b.Ref() < a.Ref() {
+			a, b = b, a
+		}
+		r.Similar = append(r.Similar, similarEntry{
+			Songs: [2]string{a.Ref(), b.Ref()}, Names: [2]string{a.Song(), b.Song()},
+			Evidence: sp.Evidence, PossibleDuplicate: sp.Possible,
+		})
+		if !sp.Possible {
+			r.Summary.Similar++
+		}
+	}
+	sort.Slice(r.Similar, func(a, b int) bool {
+		if r.Similar[a].Songs[0] != r.Similar[b].Songs[0] {
+			return r.Similar[a].Songs[0] < r.Similar[b].Songs[0]
+		}
+		return r.Similar[a].Songs[1] < r.Similar[b].Songs[1]
+	})
 	sort.Slice(r.ToLibrary, func(a, b int) bool { return r.ToLibrary[a].Target < r.ToLibrary[b].Target })
 	sort.Slice(r.AlreadyInPlace, func(a, b int) bool { return r.AlreadyInPlace[a].Target < r.AlreadyInPlace[b].Target })
 	sort.Slice(r.Duplicates, func(a, b int) bool { return r.Duplicates[a].Song < r.Duplicates[b].Song })
@@ -239,8 +269,8 @@ func (r planReport) text() []byte {
 	if r.DryRun {
 		moved = "planned moves"
 	}
-	fmt.Fprintf(&b, "\nsummary: %d songs: %d to the library, %d already in place, %d duplicates, %d invalid, %d left in place; %d possible duplicates to review; %d empty folders ignored; %d %s, %d failed",
-		s.Songs, s.ToLibrary, s.AlreadyInPlace, s.Duplicates, s.Invalid, s.LeftInPlace, s.PossibleDuplicates, s.EmptyFolders, s.Moved, moved, s.Failed)
+	fmt.Fprintf(&b, "\nsummary: %d songs: %d to the library, %d already in place, %d duplicates, %d invalid, %d left in place; %d possible duplicates and %d similar songs to review; %d empty folders ignored; %d %s, %d failed",
+		s.Songs, s.ToLibrary, s.AlreadyInPlace, s.Duplicates, s.Invalid, s.LeftInPlace, s.PossibleDuplicates, s.Similar, s.EmptyFolders, s.Moved, moved, s.Failed)
 	if s.EmptyCategoriesLeft > 0 {
 		fmt.Fprintf(&b, "; %d emptied category folders left in the sources", s.EmptyCategoriesLeft)
 	}
@@ -279,8 +309,31 @@ func (r planReport) text() []byte {
 		fmt.Fprintf(&b, "%s\n    reason: %s\n", e.Song, e.Reason)
 	}
 	section("Possible duplicates (review manually; nothing was merged)", len(r.PossibleDuplicates))
+	evidence := map[[2]string]string{}
+	for _, e := range r.Similar {
+		if e.PossibleDuplicate {
+			evidence[e.Songs] = e.Evidence
+		}
+	}
 	for _, g := range r.PossibleDuplicates {
 		fmt.Fprintf(&b, "%s\n", strings.Join(g, "  |  "))
+		for x := range g {
+			for y := x + 1; y < len(g); y++ {
+				if e := evidence[[2]string{g[x], g[y]}]; e != "" {
+					if len(g) == 2 {
+						fmt.Fprintf(&b, "    %s\n", e)
+					} else {
+						fmt.Fprintf(&b, "    %s  |  %s: %s\n", g[x], g[y], e)
+					}
+				}
+			}
+		}
+	}
+	section("Similar songs (review manually; nothing was merged)", r.Summary.Similar)
+	for _, e := range r.Similar {
+		if !e.PossibleDuplicate {
+			fmt.Fprintf(&b, "%s  |  %s\n    %s\n", e.Songs[0], e.Songs[1], e.Evidence)
+		}
 	}
 	section("Empty folders (ignored)", len(r.EmptyFolders))
 	for _, e := range r.EmptyFolders {
