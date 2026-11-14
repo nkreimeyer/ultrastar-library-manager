@@ -167,7 +167,9 @@ Same exit codes and leftover-argument rule.
   names an existing, non-empty file (height and bitrate unknown = 0). `SongKey` folds diacritics only on Latin/Greek letters (marks of
   other scripts make different letters), drops invisible format characters like FolderName,
   and never lets a `feat.` part or a duet qualifier swallow a version word (`Live`, `Remix`,
-  …). Target `<Bucket>/<FolderName>`; NameKey collisions of different songs get ` (2)`,
+  …). `LooseKey` groups for "possible duplicates" are split by the duet flag: a duet and a
+  solo version are both kept (the duet as `… [DUET]`) and never listed together. Target
+  `<Bucket>/<FolderName>`; NameKey collisions of different songs get ` (2)`,
   ` (3)` from one run-wide claimed set (a number never takes another song's plain name;
   keepers already in place keep their number). A target taken by a non-candidate or a
   staying song, or a bucket that is a file, a song folder (song txt or media directly in

@@ -153,6 +153,33 @@ func TestPossibleDuplicatesOrder(t *testing.T) {
 	}
 }
 
+// A duet and a solo version are never possible duplicates of each other, even when only
+// a qualifier tells them apart; two duets (or two solo versions) still are. A duet from
+// P1/P2 without a duet qualifier counts as a duet too. With the same LooseKey, the solo
+// group comes before the duet group.
+func TestPossibleDuplicatesDuetVsSolo(t *testing.T) {
+	cands := []Candidate{
+		song(hq, "1", "X", "Song", Quality{}),
+		song(hq, "2", "X", "Song (Live) [DUET]", Quality{}),
+		song(hq, "3", "X", "Song [DUET]", Quality{}),
+		song(hq, "4", "Y", "Other", Quality{}),
+		song(hq, "5", "Y", "Other (Acoustic)", Quality{}),
+		song(hq, "6", "Z", "Third", Quality{}),
+		song(hq, "7", "Z", "Third (Live)", Quality{}),
+		song(hq, "8", "X", "Song (Live)", Quality{}),
+	}
+	cands[3].Duet = true // P1/P2 in the txt
+	p := MakePlan(cands, PlanOptions{})
+	if want := [][]int{{0, 7}, {1, 2}, {5, 6}}; !reflect.DeepEqual(p.PossibleDuplicates, want) {
+		t.Errorf("possible duplicates = %v, want %v", p.PossibleDuplicates, want)
+	}
+	for i, want := range []string{"X/X - Song", "X/X - Song (Live) [DUET]", "X/X - Song [DUET]", "Y/Y - Other [DUET]"} {
+		if d := p.Decisions[i]; d.Action != ActMove || d.Target != want {
+			t.Errorf("%d: %+v, want to the library at %s", i+1, d, want)
+		}
+	}
+}
+
 // A broken duet names the working duet as its replacement, never the solo version.
 func TestMakePlanBrokenDuetReplacement(t *testing.T) {
 	broken := brokenSong(hq, "broken", "Artist", "Song", "no-bpm")

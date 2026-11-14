@@ -279,7 +279,8 @@ func TestRunMovesIntoBucketsAndUndo(t *testing.T) {
 	if !reflect.DeepEqual(rep.EmptyFolders, []string{"low1:Pop/Nothing", "low2:Empty"}) {
 		t.Errorf("empty folders = %v", rep.EmptyFolders)
 	}
-	if !reflect.DeepEqual(rep.PossibleDuplicates, [][]string{{"low1:Elton", "low2:Elton Duet"}}) {
+	// The duet and the solo Elton are different songs: both in the library, not listed.
+	if !reflect.DeepEqual(rep.PossibleDuplicates, [][]string{}) {
 		t.Errorf("possible duplicates = %v", rep.PossibleDuplicates)
 	}
 	if len(rep.LeftInPlace) != 1 || rep.LeftInPlace[0].Song != "low1:Enc" || rep.LeftInPlace[0].Reason != reasonEncoding {
@@ -309,7 +310,7 @@ func TestRunMovesIntoBucketsAndUndo(t *testing.T) {
 		"hq:Broken  [moved]\n    errors: ",
 		"    used instead: low1:Queen - Bohemian Rhapsody\n",
 		"== Left in place (1) ==\nlow1:Enc\n    reason: " + reasonEncoding + "\n",
-		"== Possible duplicates (review manually; nothing was merged) (1) ==\nlow1:Elton  |  low2:Elton Duet\n",
+		"== Possible duplicates (review manually; nothing was merged) (0) ==\n",
 		"== Empty folders (ignored) (2) ==\nlow1:Pop/Nothing\nlow2:Empty\n",
 	} {
 		if !strings.Contains(string(text), want) {

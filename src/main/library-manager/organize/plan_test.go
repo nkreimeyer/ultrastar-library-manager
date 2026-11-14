@@ -333,7 +333,8 @@ func TestPossibleDuplicates(t *testing.T) {
 		brokenSong(hq, "f", "Nirvana", "Smells Like Teen Spirit (Acoustic)", "no-notes"),
 	}
 	p := MakePlan(cands, PlanOptions{})
-	if want := [][]int{{0, 1, 3}}; !reflect.DeepEqual(p.PossibleDuplicates, want) {
+	// d is the duet version: a different song, never listed with the solo ones.
+	if want := [][]int{{0, 1}}; !reflect.DeepEqual(p.PossibleDuplicates, want) {
 		t.Errorf("possible duplicates = %v, want %v", p.PossibleDuplicates, want)
 	}
 	if d := p.Decisions[2]; d.Action != ActDuplicate || d.Other != 1 {

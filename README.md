@@ -236,9 +236,12 @@ hyphens, zero-width spaces), punctuation, `&`/`and`, a leading "The" of the arti
 qualifier keeps songs apart (`(Live)`, `(Acoustic)`, `(Remix)`, `(German Version)`, …),
 also next to a `feat.` part (`Song (feat. X Live)` ≠ `Song`) or inside a duet qualifier
 (`[Duet - Acoustic]` ≠ `[Duet]`). A duet (P1/P2 in the txt, or `[DUET]` in the title) is a
-variant of the solo version, not a duplicate. When in doubt nothing is merged: songs that
+variant of the solo version, not a duplicate: both go to the library, the duet as
+`Artist - Title [DUET]` (unless its title already names the duet), and they are never listed
+as possible duplicates of each other. When in doubt nothing is merged: songs that
 only differ by such qualifiers, or by an `ft.` in the title (it may also be an
-abbreviation, as in `Ft. Lauderdale`), are listed as *possible duplicates* for manual review.
+abbreviation, as in `Ft. Lauderdale`), are listed as *possible duplicates* for manual review
+(duets only with duets, solo versions only with solo versions).
 
 **Which version is kept.** The criteria are applied in this order; at each step only the
 versions with the best value stay in the running:

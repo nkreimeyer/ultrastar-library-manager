@@ -103,7 +103,8 @@ type Decision struct {
 type Plan struct {
 	Decisions []Decision
 	// PossibleDuplicates lists keepers (candidate indices) of different songs that might
-	// still be the same song (equal LooseKey), for manual review. Sorted.
+	// still be the same song (equal LooseKey, both duets or both solo), for manual review.
+	// Sorted.
 	PossibleDuplicates [][]int
 }
 
@@ -397,14 +398,21 @@ func keepLibraryLosers(cands []Candidate, ds []Decision, groups map[string]*grou
 	return changed
 }
 
-// possibleDuplicates lists the keepers of different songs whose LooseKey is equal.
+// possibleDuplicates lists the keepers of different songs whose LooseKey is equal and
+// that are both duets or both solo versions. A duet and a solo version of a song are
+// different songs (both go to the library, the duet as "... [DUET]"), so they are never
+// listed for review. Groups come out in LooseKey order, the solo group before the duet one.
 func possibleDuplicates(cands []Candidate, groups map[string]*group, keys []string) [][]int {
-	byLoose := map[string][]int{}
-	var looseKeys []string
+	type looseKey struct {
+		key  string
+		duet bool
+	}
+	byLoose := map[looseKey][]int{}
+	var looseKeys []looseKey
 	for _, k := range keys {
 		c := &cands[groups[k].keeper]
-		lk := LooseKey(c.Artist, c.Title)
-		if lk == "" {
+		lk := looseKey{LooseKey(c.Artist, c.Title), c.Duet || IsDuetTitle(c.Title)}
+		if lk.key == "" {
 			continue
 		}
 		if byLoose[lk] == nil {
@@ -412,7 +420,12 @@ func possibleDuplicates(cands []Candidate, groups map[string]*group, keys []stri
 		}
 		byLoose[lk] = append(byLoose[lk], groups[k].keeper)
 	}
-	sort.Strings(looseKeys)
+	sort.Slice(looseKeys, func(a, b int) bool {
+		if looseKeys[a].key != looseKeys[b].key {
+			return looseKeys[a].key < looseKeys[b].key
+		}
+		return !looseKeys[a].duet && looseKeys[b].duet
+	})
 	var out [][]int
 	for _, lk := range looseKeys {
 		if len(byLoose[lk]) > 1 {
