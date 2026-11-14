@@ -4,7 +4,7 @@ Tools for sanitizing an [UltraStar](https://usdx.eu/) karaoke song library: each
 folder containing one `.txt` (lyrics/notes + `#TAG:value` header), an audio file and
 optionally a video, cover and background image.
 
-The main tool is `songs-sanitizer`, a Go CLI in `src/main/songs-sanitizer/`. The `old/`
+The main tool is `library-manager`, a Go CLI in `src/main/library-manager/`. The `old/`
 directory contains the previous Python/shell scripts (including folder-name based duplicate
 detection) and is kept for reference only.
 
@@ -18,22 +18,22 @@ detection) and is kept for reference only.
 ## Build
 
 ```bash
-cd src/main/songs-sanitizer
-go build -o songs-sanitizer .
+cd src/main/library-manager
+go build -o library-manager .
 ```
 
 Fully statically linked Linux binary:
 
 ```bash
-cd src/main/songs-sanitizer
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -tags netgo -ldflags '-w -extldflags "-static"' -o songs-sanitizer .
+cd src/main/library-manager
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -tags netgo -ldflags '-w -extldflags "-static"' -o library-manager .
 ```
 
 ## Usage
 
 ```bash
-songs-sanitizer -s <song-dir> [flags]
-songs-sanitizer organize -s <dir> [-s ...] -l <library> [flags]   # see "Organizing the library"
+library-manager -s <song-dir> [flags]
+library-manager organize -s <dir> [-s ...] -l <library> [flags]   # see "Organizing the library"
 ```
 
 | Flag | Default | Description |
@@ -150,7 +150,7 @@ after the video module, handles audio files and the `#VOCALS`/`#INSTRUMENTAL` ta
 ### Output folder layout
 
 ```
-<out>/.songs-sanitizer-output                marker, the folder is never scanned as a library
+<out>/.library-manager-output                marker, the folder is never scanned as a library
 <out>/invalid/<relative song path>/          broken song folders
 <out>/extra-files/<relative song path>/      files removed from song folders
 <out>/originals/<relative song path>/        originals of re-encoded audio files (-a)
@@ -170,7 +170,7 @@ empty folders are merged into an existing target instead.
 
 ## Organizing the library (`organize`)
 
-`songs-sanitizer organize` builds one consolidated library from any number of source
+`library-manager organize` builds one consolidated library from any number of source
 folders, sorted into one folder per starting character, and removes duplicates across the
 sources:
 
@@ -184,8 +184,8 @@ sources:
 ```
 
 ```bash
-songs-sanitizer organize -s <dir>[:<dir>...] [-s ...] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n] [-v level]
-songs-sanitizer organize -undo [-o <out> | -l <library>] [-n] [-v level]
+library-manager organize -s <dir>[:<dir>...] [-s ...] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n] [-v level]
+library-manager organize -undo [-o <out> | -l <library>] [-n] [-v level]
 ```
 
 Songs are always **moved**, never copied or deleted: the best version of every song goes
@@ -195,10 +195,10 @@ recorded in a journal and can be undone with `-undo`.
 
 **Recommended workflow:**
 
-1. Run the sanitizer on every source first (`songs-sanitizer -s <source> -n`, then without
+1. Run the sanitizer on every source first (`library-manager -s <source> -n`, then without
    `-n`; add `-k` to see what check reports). fixtxt repairs encodings, file references and
    missing `#ARTIST`/`#TITLE` tags, so fixable songs are not sent to `invalid/` by organize.
-2. `songs-sanitizer organize … -n` and review `organize_plan.txt` in the output folder: what
+2. `library-manager organize … -n` and review `organize_plan.txt` in the output folder: what
    goes where, which version of each duplicate is kept and why, which songs are invalid or
    left in place, and possible duplicates that were *not* merged.
 3. Run the same command without `-n`. If something went wrong, `organize -undo` restores
@@ -219,7 +219,7 @@ recorded in a journal and can be undone with `-undo`.
 **Tiers.** With three sources, one high quality and two low quality ones:
 
 ```bash
-songs-sanitizer organize -s /m/hq -s /m/low1:/m/low2 -l /m/library -priority
+library-manager organize -s /m/hq -s /m/low1:/m/low2 -l /m/library -priority
 ```
 
 A song from `hq` is always kept over the same song from `low1` or `low2`; between `low1`
@@ -272,7 +272,7 @@ moved into it would be hidden inside that song). To deduplicate against an
 existing library, give the library as a source too:
 
 ```bash
-songs-sanitizer organize -s /m/library -s /m/new -l /m/library -priority
+library-manager organize -s /m/library -s /m/new -l /m/library -priority
 ```
 
 Its songs then compete like all others; songs already at their target stay where they are,
@@ -306,6 +306,6 @@ sources have the same name).
 See [CLAUDE.md](CLAUDE.md) for architecture notes, known issues and the roadmap.
 
 ```bash
-cd src/main/songs-sanitizer
+cd src/main/library-manager
 go vet ./... && go test ./...
 ```

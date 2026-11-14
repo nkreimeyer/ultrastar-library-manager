@@ -4,7 +4,7 @@ Tooling for sanitizing an **UltraStar** karaoke song library. Each song is a fol
 one `.txt` (UltraStar format: `#TAG:value` header lines plus note lines), an audio file,
 and optionally a video, a cover and a background image.
 
-The active code is a Go CLI in `src/main/songs-sanitizer/`. The `old/` directory holds the
+The active code is a Go CLI in `src/main/library-manager/`. The `old/` directory holds the
 earlier Python and shell scripts. They are kept for reference only. Cross-source duplicate
 detection exists in the Go `organize` subcommand; the folder-name based detection in `old/`
 is superseded.
@@ -12,7 +12,7 @@ is superseded.
 ## Layout
 
 ```
-src/main/songs-sanitizer/     Go module github.com/nkreimeyer/ultrastar-songs-sanitizer (go 1.24)
+src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (go 1.24)
   main.go                     flags, validation, runs the modules in fixed order, summary + exit code;
                               os.Args[1] == "organize" dispatches to the subcommand
   organize_cmd.go             the organize subcommand: own FlagSet, -s tier lists, -undo, validation
@@ -49,7 +49,7 @@ Runtime needs `ffmpeg` ≥ 5.1 and `ffprobe` on PATH for `-m` and `-a`.
 ## Build, run, test
 
 ```bash
-cd src/main/songs-sanitizer
+cd src/main/library-manager
 gofmt -l . ; go vet ./... && go test -race ./...   # ffmpeg tests skip if ffmpeg is missing
 go build -o ../../../test-assets/mybin .
 cd ../../../test-assets && ./mybin -s songs -n     # dry run; outputs go to test-assets/sanitizer-output/
@@ -114,7 +114,11 @@ Same exit codes and leftover-argument rule.
 ## Architecture notes
 
 - `config.New` resolves symlinks and refuses an out dir inside the song dir. `PrepareOutDir`
-  writes the `.songs-sanitizer-output` marker; discovery skips folders containing it.
+  writes the `.library-manager-output` marker; discovery skips folders containing it (and the
+  legacy `.songs-sanitizer-output` of the old program name). The program was called
+  songs-sanitizer until 2026-11-14; the media tags (`SANITIZER_*`), the default
+  `sanitizer-output/` and `organize-output/` folders and the temp-file names keep their names, so
+  existing journals and tagged media stay valid.
 - Discovery (`utils.GetAllSongFolders(ops, dir)`): a folder with a song txt is a song.
   - A txt-less folder with songs below it is a category.
   - A folder with a txt or media but no song below it is a broken song, returned as a whole.
