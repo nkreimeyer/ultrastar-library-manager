@@ -49,11 +49,11 @@ func TestReEncodeWorthIt(t *testing.T) {
 		{"old codec, estimate larger", "mpeg4", 0, nil, 1000, nil, 999, false},
 		{"old codec, estimate equal", "mpeg4", 0, nil, 1000, nil, 1000, false},
 		{"old codec, no estimate", "mpeg4", 0, nil, 0, probeErr, 1, true},
-		{"h264, high bitrate", "h264", bitrateThreshold + 1, nil, 100, nil, 1000, true},
-		{"h264, bitrate at the threshold", "h264", bitrateThreshold, nil, 100, nil, 1000, false},
-		{"h264, high bitrate, estimate larger", "h264", bitrateThreshold * 2, nil, 1000, nil, 100, false},
-		{"h264, high bitrate unknown", "h264", bitrateThreshold * 2, probeErr, 100, nil, 1000, false},
-		{"h264, high bitrate, no estimate", "h264", bitrateThreshold * 2, nil, 0, probeErr, 1000, false},
+		{"h264, high bitrate", "h264", BitrateThreshold + 1, nil, 100, nil, 1000, true},
+		{"h264, bitrate at the threshold", "h264", BitrateThreshold, nil, 100, nil, 1000, false},
+		{"h264, high bitrate, estimate larger", "h264", BitrateThreshold * 2, nil, 1000, nil, 100, false},
+		{"h264, high bitrate unknown", "h264", BitrateThreshold * 2, probeErr, 100, nil, 1000, false},
+		{"h264, high bitrate, no estimate", "h264", BitrateThreshold * 2, nil, 0, probeErr, 1000, false},
 		{"h264, low bitrate", "h264", 1000, nil, 100, nil, 1000, false},
 	}
 	for _, tt := range tests {
@@ -618,8 +618,8 @@ func TestGetNeedsReEncodeBitrate(t *testing.T) {
 	high, low := filepath.Join(dir, "high.mp4"), filepath.Join(dir, "low.mp4")
 	makeMediaFrom(t, high, "testsrc2=size=640x480:rate=25:duration=1", "-c:v", "libx264", "-qp", "0", "-an")
 	makeMedia(t, low, "-c:v", "libx264", "-crf", "35", "-an")
-	if br, err := getVideoBitrate(high); err != nil || br <= bitrateThreshold {
-		t.Fatalf("getVideoBitrate(high) = %d, %v; want above %d", br, err, bitrateThreshold)
+	if br, err := getVideoBitrate(high); err != nil || br <= BitrateThreshold {
+		t.Fatalf("getVideoBitrate(high) = %d, %v; want above %d", br, err, BitrateThreshold)
 	}
 	if !getNeedsReEncode(high, "h264") {
 		t.Error("high-bitrate H.264 must be re-encoded")

@@ -159,7 +159,8 @@ Same exit codes and leftover-argument rule.
   `MakePlan` (pure, table-tested): encoding problems and unreadable folders stay, broken songs
   go to invalid/, working songs are grouped by `SongKey` (duet flag from P1/P2 or a `[DUET]`
   title) and the keeper is chosen by `chooseKeeper`: the criteria (tier with `-priority`, song
-  warnings, video, height, bitrate within 10 % of the group's best, cover, background,
+  warnings, video, video bitrate ≤ `fixvideos.BitrateThreshold`, height capped at
+  `fixvideos.MaxHeight`, audio bitrate within 10 % of the group's best, cover, background,
   `#VERSION`, source order, path) are filters over the whole group, never pairwise
   comparisons, because the bitrate tolerance is not transitive. Each loser's reason is the
   filter that dropped it. Without ffprobe, `MediaSummary.HasVideo` only means `#VIDEO`
@@ -187,6 +188,8 @@ Same exit codes and leftover-argument rule.
   fixtxt's `removeDuplicateTags` also keeps the last and only looks at the header). Songs
   whose txt has a decode Problem are reported but never moved by `-move-broken`.
   `mediaInfo.HasVideo` means a moving video stream (attached cover art does not count).
+  `VideoBitrate` comes from the stream `bit_rate`, else its `BPS`/`BPS-eng` tag (Matroska),
+  else the container rate of a file without audio; 0 = unknown.
 - organize: when a keeper from another source cannot reach the library, the library's own
   copies of that song stay in place (not moved to duplicates/). The report's duplicate and
   invalid `Dest` is the actual target (with ` (2)`), also in dry runs.

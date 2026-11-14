@@ -163,7 +163,7 @@ func newCandidate(cfg config.OrganizeConfig, src config.Source, folder string, i
 	}
 	m := in.Media
 	c.Quality.SongWarnings = check.SongWarnings(in.Findings)
-	c.Quality.HasVideo, c.Quality.VideoHeight = m.HasVideo, m.VideoHeight
+	c.Quality.HasVideo, c.Quality.VideoHeight, c.Quality.VideoBitrate = m.HasVideo, m.VideoHeight, m.VideoBitrate
 	c.Quality.AudioBitrate = m.AudioBitrate
 	c.Quality.HasCover, c.Quality.HasBackground = m.HasCover, m.HasBackground
 	return c

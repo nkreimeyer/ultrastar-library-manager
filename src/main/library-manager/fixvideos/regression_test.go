@@ -224,8 +224,8 @@ func TestGetVideoBitrateMKVHighBitrate(t *testing.T) {
 	mkv := filepath.Join(t.TempDir(), "video.mkv")
 	makeMediaFrom(t, mkv, "testsrc2=size=640x480:rate=25:duration=1", "-c:v", "libx264", "-qp", "0", "-an")
 	br, err := getVideoBitrate(mkv)
-	if err != nil || br <= bitrateThreshold {
-		t.Fatalf("getVideoBitrate = %d, %v; want above %d", br, err, bitrateThreshold)
+	if err != nil || br <= BitrateThreshold {
+		t.Fatalf("getVideoBitrate = %d, %v; want above %d", br, err, BitrateThreshold)
 	}
 	if !getNeedsReEncode(mkv, "h264") {
 		t.Errorf("high-bitrate H.264 in MKV must be re-encoded (bitrate %d)", br)

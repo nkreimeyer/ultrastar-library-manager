@@ -32,8 +32,14 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// BitrateThreshold: videos above this bitrate (bit/s) are re-encoded. organize prefers a
+// video at or below it when choosing between versions of a song.
+const BitrateThreshold = 3000000 // 3 Mbit/s
+
+// MaxWidth and MaxHeight: larger videos are downscaled to fit (see maxWidth, maxHeight).
+const MaxWidth, MaxHeight = 1920, 1080
+
 const (
-	bitrateThreshold = 3000000 // 3 Mbit/s
 
 	// markerTag is written into every video fixvideos writes; tagged videos are skipped.
 	markerTag   = "SANITIZER_VIDEO"
@@ -60,7 +66,7 @@ const (
 
 // Videos larger than maxWidth x maxHeight are downscaled to fit within it. They are
 // variables so tests can lower them.
-var maxWidth, maxHeight = 1920, 1080
+var maxWidth, maxHeight = MaxWidth, MaxHeight
 
 // workers is the number of videos processed in parallel (each ffmpeg is multi-threaded).
 var workers = 4
@@ -655,7 +661,7 @@ func getNeedsReEncode(file, codec string) bool {
 
 // reEncodeWorthIt decides whether a video of the given codec, bitrate (bit/s) and size
 // (bytes) should be re-encoded, given the estimated size of the re-encode: only if its
-// codec is in codecsNeedReencode or its bitrate is above bitrateThreshold, and the
+// codec is in codecsNeedReencode or its bitrate is above BitrateThreshold, and the
 // estimate is smaller than the video. An unknown bitrate is not treated as high; without
 // an estimate, the codec alone decides.
 func reEncodeWorthIt(codec string, bitrate int, bitrateErr error, estimate int64, estimateErr error, size int64) bool {
@@ -663,7 +669,7 @@ func reEncodeWorthIt(codec string, bitrate int, bitrateErr error, estimate int64
 	if estimateErr != nil {
 		return codecReason
 	}
-	highBitrate := bitrateErr == nil && bitrate > bitrateThreshold
+	highBitrate := bitrateErr == nil && bitrate > BitrateThreshold
 	return (highBitrate || codecReason) && estimate < size
 }
 

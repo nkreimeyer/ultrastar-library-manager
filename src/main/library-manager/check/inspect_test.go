@@ -31,8 +31,8 @@ func TestParseProbeBitrateAndSize(t *testing.T) {
 			{"codec_type":"video","width":1920,"height":1080},{"codec_type":"video","width":640,"height":360},
 			{"codec_type":"audio","bit_rate":"128000"},{"codec_type":"audio","bit_rate":"320000"}],"format":{}}`,
 			mediaInfo{HasAudio: true, HasVideo: true, AudioBitrate: 128000, VideoWidth: 1920, VideoHeight: 1080}},
-		{"no audio: no bitrate", `{"streams":[{"codec_type":"video","width":2,"height":2}],"format":{"bit_rate":"1000"}}`,
-			mediaInfo{HasVideo: true, VideoWidth: 2, VideoHeight: 2}},
+		{"no audio: no audio bitrate, the container rate is the video rate", `{"streams":[{"codec_type":"video","width":2,"height":2}],"format":{"bit_rate":"1000"}}`,
+			mediaInfo{HasVideo: true, VideoWidth: 2, VideoHeight: 2, VideoBitrate: 1000}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -49,15 +49,15 @@ func TestSummarizeMedia(t *testing.T) {
 	src := func() fileObs { o := audio("a.mp3", 2); o.Media.AudioBitrate = 320000; return o }
 	vid := func() fileObs {
 		o := video("v.mp4", 2)
-		o.Media.VideoWidth, o.Media.VideoHeight = 1920, 1080
+		o.Media.VideoWidth, o.Media.VideoHeight, o.Media.VideoBitrate = 1920, 1080, 2000000
 		return o
 	}
 	healthy := func() map[string]fileObs {
 		return map[string]fileObs{"MP3": src(), "VIDEO": vid(), "COVER": image("c.jpg"), "BACKGROUND": image("b.jpg")}
 	}
-	all := MediaSummary{Probed: true, AudioBitrate: 320000, HasVideo: true, VideoWidth: 1920, VideoHeight: 1080, HasCover: true, HasBackground: true}
+	all := MediaSummary{Probed: true, AudioBitrate: 320000, HasVideo: true, VideoWidth: 1920, VideoHeight: 1080, VideoBitrate: 2000000, HasCover: true, HasBackground: true}
 	without := func(f func(*MediaSummary)) MediaSummary { m := all; f(&m); return m }
-	noVideo := func(m *MediaSummary) { m.HasVideo, m.VideoWidth, m.VideoHeight = false, 0, 0 }
+	noVideo := func(m *MediaSummary) { m.HasVideo, m.VideoWidth, m.VideoHeight, m.VideoBitrate = false, 0, 0, 0 }
 	tests := []struct {
 		name  string
 		txt   string
@@ -267,6 +267,10 @@ func TestInspectMedia(t *testing.T) {
 	if err != nil || res.Broken {
 		t.Fatalf("Inspect = %+v, %v", res, err)
 	}
+	if res.Media.VideoBitrate <= 0 {
+		t.Errorf("video bitrate = %d, want it known", res.Media.VideoBitrate)
+	}
+	res.Media.VideoBitrate = 0 // depends on the encoder
 	want := MediaSummary{Probed: true, AudioBitrate: 192000, HasVideo: true, VideoWidth: 96, VideoHeight: 64}
 	if res.Media != want {
 		t.Errorf("media = %+v, want %+v", res.Media, want)

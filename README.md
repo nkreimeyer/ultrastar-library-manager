@@ -246,14 +246,18 @@ versions with the best value stay in the running:
 1. with `-priority`: the earlier `-s` tier;
 2. fewer warnings about the txt, the timing or the audio (problems with video, cover,
    background, `#VIDEOGAP` or stems do not count here);
-3. has a readable video; 4. higher video height (e.g. 1080p over 720p);
-5. an audio bitrate within 10 % of the best version's (unknown loses);
-6. has a cover; 7. has a background; 8. the txt has `#VERSION`;
-9. otherwise the earlier source (in the order given), then the path.
+3. has a readable video;
+4. a video bitrate of at most 3 Mbit/s, the limit above which fixvideos (`-m`) re-encodes
+   (unknown counts as within): a higher one only bloats the library;
+5. higher video height (e.g. 1080p over 720p), counted up to 1080p, since fixvideos
+   downscales larger videos (2160p is no better than 1080p);
+6. an audio bitrate within 10 % of the best version's (unknown loses);
+7. has a cover; 8. has a background; 9. the txt has `#VERSION`;
+10. otherwise the earlier source (in the order given), then the path.
 
 The report gives the deciding reason for every duplicate, e.g. `lower priority tier`,
 `no video` or `lower audio bitrate (128 vs 320 kbit/s)`. Without `ffprobe` on `PATH` the
-video height and the bitrate are unknown (the report says so): a version whose `#VIDEO`
+video height and the bitrates are unknown (the report says so): a version whose `#VIDEO`
 names an existing file still beats one without a video, and the other criteria decide.
 
 **Folder names** are `Artist - Title` from the tags, made safe for Windows, macOS and

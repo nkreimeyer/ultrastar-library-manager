@@ -342,7 +342,7 @@ func TestPossibleDuplicates(t *testing.T) {
 }
 
 func TestBetter(t *testing.T) {
-	base := Quality{SongWarnings: 1, HasVideo: true, VideoHeight: 720, AudioBitrate: 192000, HasCover: true, HasBackground: true, HasVersion: true}
+	base := Quality{SongWarnings: 1, HasVideo: true, VideoHeight: 720, VideoBitrate: 2000000, AudioBitrate: 192000, HasCover: true, HasBackground: true, HasVersion: true}
 	with := func(f func(*Quality)) Quality { q := base; f(&q); return q }
 	tests := []struct {
 		name     string
@@ -359,6 +359,19 @@ func TestBetter(t *testing.T) {
 		{"unknown bitrate loses", true, with(func(q *Quality) { q.AudioBitrate = 0 }), base, false, "unknown audio bitrate (vs 192 kbit/s)"},
 		{"both unknown are equal", true, with(func(q *Quality) { q.AudioBitrate = 0 }), with(func(q *Quality) { q.AudioBitrate = 0; q.HasBackground = false }), true, "no background"},
 		{"version", true, base, with(func(q *Quality) { q.HasVersion = false }), true, "no #VERSION"},
+		{"video bitrate above fixvideos' limit loses before the height", true, base,
+			with(func(q *Quality) { q.VideoHeight, q.VideoBitrate = 1080, 5000000 }), true,
+			"video bitrate too high (5000 kbit/s, above the 3000 kbit/s of fixvideos)"},
+		{"video bitrate at the limit is fine", true, base,
+			with(func(q *Quality) { q.VideoHeight, q.VideoBitrate = 1080, 3000000 }), false, "lower video height (720p vs 1080p)"},
+		{"unknown video bitrate is fine", true, base,
+			with(func(q *Quality) { q.VideoHeight, q.VideoBitrate = 1080, 0 }), false, "lower video height (720p vs 1080p)"},
+		{"both too high: the height decides", true, with(func(q *Quality) { q.VideoBitrate = 4000000 }),
+			with(func(q *Quality) { q.VideoHeight, q.VideoBitrate = 1080, 6000000 }), false, "lower video height (720p vs 1080p)"},
+		{"no video loses against a high-bitrate video", true, with(func(q *Quality) { q.HasVideo, q.VideoHeight, q.VideoBitrate = false, 0, 0 }),
+			with(func(q *Quality) { q.VideoBitrate = 9000000 }), false, "no video"},
+		{"the height counts up to 1080p", true, with(func(q *Quality) { q.VideoHeight = 1080 }),
+			with(func(q *Quality) { q.VideoHeight = 2160; q.HasCover = false }), true, "no cover"},
 		{"tie", true, base, base, true, "same quality; the version from the earlier source is kept"},
 	}
 	for _, tt := range tests {

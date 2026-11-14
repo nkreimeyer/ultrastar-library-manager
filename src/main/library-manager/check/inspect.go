@@ -58,6 +58,8 @@ type MediaSummary struct {
 	HasVideo bool
 	// VideoWidth and VideoHeight of that video stream (0 if !HasVideo).
 	VideoWidth, VideoHeight int
+	// VideoBitrate of that video stream in bit/s; 0 if unknown or !HasVideo.
+	VideoBitrate int64
 	// HasCover / HasBackground: #COVER / #BACKGROUND references an existing, non-empty,
 	// readable image (formats the header reader does not support count as readable).
 	HasCover, HasBackground bool
@@ -171,6 +173,7 @@ func summarizeMedia(refs []ref, files map[string]fileObs) MediaSummary {
 			case usableFile(o) && o.Probed && o.ProbeErr == "" && o.DecodeErr == "" && o.Media.VideoHeight > 0:
 				m.HasVideo = true
 				m.VideoWidth, m.VideoHeight = o.Media.VideoWidth, o.Media.VideoHeight
+				m.VideoBitrate = o.Media.VideoBitrate
 			case usableFile(o) && !o.Probed:
 				// Not probed (no ffprobe): an existing, non-empty video file is all that is
 				// known, which still beats having no video at all. The size stays unknown.

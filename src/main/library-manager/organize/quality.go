@@ -1,6 +1,10 @@
 package organize
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/nkreimeyer/library-manager/fixvideos"
+)
 
 // Quality holds what the keeper choice compares between working versions of one song.
 // See chooseKeeper for the order of the criteria.
@@ -12,6 +16,8 @@ type Quality struct {
 	// HasVideo: a readable video is referenced (check.MediaSummary.HasVideo).
 	HasVideo    bool
 	VideoHeight int
+	// VideoBitrate of that video in bit/s; 0 = unknown.
+	VideoBitrate int64
 	// AudioBitrate of the audio source in bit/s; 0 = unknown.
 	AudioBitrate            int64
 	HasCover, HasBackground bool
@@ -32,11 +38,14 @@ const bitrateTolerance = 0.10
 //  1. with priority: the lowest tier (earliest -s flag);
 //  2. the fewest song warnings (txt, timing, audio source);
 //  3. a readable video, if any version has one;
-//  4. the highest video height;
-//  5. an audio bitrate within 10 % of the highest one (0 = unknown loses against a
+//  4. a video bitrate at or below fixvideos.BitrateThreshold (unknown counts as below):
+//     a higher one only bloats the library until fixvideos re-encodes it;
+//  5. the highest video height, counted up to fixvideos.MaxHeight (fixvideos downscales
+//     taller videos, so 2160p is no better than 1080p);
+//  6. an audio bitrate within 10 % of the highest one (0 = unknown loses against a
 //     known one);
-//  6. a cover; 7. a background; 8. #VERSION in the txt;
-//  9. tie: the earliest source (the order of -s, flattened), then the first relative path.
+//  7. a cover; 8. a background; 9. #VERSION in the txt;
+//  10. tie: the earliest source (the order of -s, flattened), then the first relative path.
 //
 // Filtering the whole group (instead of comparing pairs) keeps the choice transitive
 // with the bitrate tolerance: the keeper does not depend on the order of cs, and every
@@ -90,8 +99,15 @@ func chooseKeeper(cs []*Candidate, priority bool) (int, []string) {
 	if best(func(c *Candidate) int64 { return flag(c.Quality.HasVideo) }, true) == 1 {
 		keep(func(c *Candidate) bool { return c.Quality.HasVideo }, func(*Candidate) string { return "no video" })
 	}
-	height := best(func(c *Candidate) int64 { return int64(c.Quality.VideoHeight) }, true)
-	keep(func(c *Candidate) bool { return int64(c.Quality.VideoHeight) == height },
+	if best(func(c *Candidate) int64 { return flag(!videoBitrateTooHigh(c)) }, true) == 1 {
+		keep(func(c *Candidate) bool { return !videoBitrateTooHigh(c) },
+			func(c *Candidate) string {
+				return fmt.Sprintf("video bitrate too high (%d kbit/s, above the %d kbit/s of fixvideos)",
+					c.Quality.VideoBitrate/1000, fixvideos.BitrateThreshold/1000)
+			})
+	}
+	height := best(func(c *Candidate) int64 { return int64(cappedHeight(c)) }, true)
+	keep(func(c *Candidate) bool { return int64(cappedHeight(c)) == height },
 		func(c *Candidate) string {
 			return fmt.Sprintf("lower video height (%dp vs %dp)", c.Quality.VideoHeight, height)
 		})
@@ -126,6 +142,16 @@ func chooseKeeper(cs []*Candidate, priority bool) (int, []string) {
 	keep(func(c *Candidate) bool { return c.Rel == first },
 		func(*Candidate) string { return "same quality; the version with the first path is kept" })
 	return alive[0], reasons
+}
+
+// videoBitrateTooHigh: the video is above the bitrate fixvideos re-encodes.
+func videoBitrateTooHigh(c *Candidate) bool {
+	return c.Quality.VideoBitrate > fixvideos.BitrateThreshold
+}
+
+// cappedHeight is the video height as far as it counts: up to fixvideos.MaxHeight.
+func cappedHeight(c *Candidate) int {
+	return min(c.Quality.VideoHeight, fixvideos.MaxHeight)
 }
 
 // better reports whether a is the better of the two versions a and b (chooseKeeper over

@@ -229,6 +229,9 @@ type mediaInfo struct {
 	// VideoWidth and VideoHeight of the first video stream that is not an attached
 	// picture; 0 if there is none.
 	VideoWidth, VideoHeight int
+	// VideoBitrate in bit/s of that stream: its bit_rate, else its BPS tag (Matroska),
+	// else the container bit_rate if the file has no audio stream; 0 if unknown.
+	VideoBitrate int64
 }
 
 // fileObs are the observations about one referenced file, gathered by the checker.
