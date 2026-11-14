@@ -232,9 +232,14 @@ goes to `invalid/` and the report names the version used instead.
 **Which songs are the same.** Songs are compared by their `#ARTIST` and `#TITLE` tags, not
 by folder names: case, accents of Latin and Greek letters (`Beyoncé` = `Beyonce`; in other
 scripts such marks make different letters, so `Мой` ≠ `Мои`), invisible characters (soft
-hyphens, zero-width spaces), punctuation, `&`/`and`, a leading "The" of the artist and
-`feat.` parts are ignored, and so are qualifiers that do not change the song
-(`(Remastered 2011)`, `(Official Video)`, `[HD]`, `(Karaoke)`, a year). Every other
+hyphens, zero-width spaces), punctuation, spaces (`A-ha` = `Aha`, `Ring Ring` = `RingRing`),
+`&`/`and`, HTML entities (`&amp;`), a leading "The" of the artist (also written as a trailing
+`(The)` or `, The`: `Cranberries (The)` = `The Cranberries`) and `feat.` parts are ignored, and
+so are qualifiers that do not change the song (`(Remastered 2011)`, `(Official Video)`, `[HD]`,
+`(Karaoke)`, `(Kar)`, `(PV)`, `(MV)`, a year). The names of a collaboration are compared as
+a set: `Kate Bush & Peter Gabriel` = `Peter Gabriel and Kate Bush` = `Peter Gabriel x Kate
+Bush` (also `+`, `with`, `vs.`). A title that repeats the artist before a dash loses it
+(`James Blunt - James Blunt-Wise Men` = `James Blunt - Wise Men`). Every other
 qualifier keeps songs apart (`(Live)`, `(Acoustic)`, `(Remix)`, `(German Version)`, …),
 also next to a `feat.` part (`Song (feat. X Live)` ≠ `Song`) or inside a duet qualifier
 (`[Duet - Acoustic]` ≠ `[Duet]`). A duet (P1/P2 in the txt, or `[DUET]` in the title) is a

@@ -153,10 +153,10 @@ func TestSongKeyEdgeCases(t *testing.T) {
 			t.Errorf("SongKey(%q, %q) = %q, SongKey(%q, %q) = %q: want equal", tc.a1, tc.t1, k1, tc.a2, tc.t2, k2)
 		}
 	}
-	if got, want := SongKey("FT Island", "Love Love Love", false), "ft island|love love love"; got != want {
+	if got, want := SongKey("FT Island", "Love Love Love", false), "ftisland|lovelovelove"; got != want {
 		t.Errorf("SongKey(FT Island) = %q, want %q", got, want)
 	}
-	if got, want := LooseKey("Ft. Island", "Love"), "ft island|love"; got != want {
+	if got, want := LooseKey("Ft. Island", "Love"), "ftisland|love"; got != want {
 		t.Errorf("LooseKey(Ft. Island) = %q, want %q", got, want)
 	}
 }

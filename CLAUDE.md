@@ -178,9 +178,14 @@ Same exit codes and leftover-argument rule.
   names an existing, non-empty file (height and bitrate unknown = 0). `SongKey` folds diacritics only on Latin/Greek letters (marks of
   other scripts make different letters), drops invisible format characters like FolderName,
   and never lets a `feat.` part or a duet qualifier swallow a version word (`Live`, `Remix`,
-  …). `LooseKey` groups for "possible duplicates" are split by the duet flag: a duet and a
-  solo version are both kept (the duet as `… [DUET]`) and never listed together. Target
-  `<Bucket>/<FolderName>`; NameKey collisions of different songs get ` (2)`,
+  …). Keys ignore spaces (words joined without them), treat a collaboration as a sorted
+  set (`artistKey`: `&`/`and`/`+`/`x`/`with`/`vs`, not at the start or end of the name),
+  drop a trailing `(The)`/`, The`, a title prefix equal to the artist before a dash
+  (`cutArtistPrefix`) and HTML entities. Because the key ignores every non-letter, two
+  different songs share a folder name only by truncation or by a dash split differently
+  between artist and title (`A - Rock` / `Roll` vs `A` / `Rock - Roll`, used by the
+  collision tests). `LooseKey` groups for "possible duplicates" are split by the duet flag: a duet and a
+  solo version are both kept (the duet as `… [DUET]`) and never listed together. Target `<Bucket>/<FolderName>`; NameKey collisions of different songs get ` (2)`,
   ` (3)` from one run-wide claimed set (a number never takes another song's plain name;
   keepers already in place keep their number). A target taken by a non-candidate or a
   staying song, or a bucket that is a file, a song folder (song txt or media directly in
@@ -334,7 +339,7 @@ from the first note within 30 ms with the pitch relative to the first note mod 1
 artists (`artistSimilar`), same `variantWords`; candidates come from an inverted shingle
 index (shingles in > 50 songs ignored) and a coarse 50 ms chart key. Measured on the 15,147-song
 library (2026-11-14, txt-only shadow copy, no ffprobe): exact content 90 duplicates, plus the
-similarity check 195 (no false merge found in review). **Still open:**
+similarity check 195, plus the key fixes 259 (no false merge found in review). **Still open:**
 re-timed charts (another tempo) are only listed, never joined; artist aliases (`30`/`Thirty Seconds
 to Mars`, `CCR`), placeholder artists, U+FFFD as a wildcard, German `ae`/`ä` spellings; audio fingerprints, and choosing between several song txts *inside one folder* by content.
 

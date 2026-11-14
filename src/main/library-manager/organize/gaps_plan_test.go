@@ -55,35 +55,35 @@ func TestResolveOccupiedFixpoint(t *testing.T) {
 // A keeper already at the plain name keeps it, even if another member of its family has
 // a smaller SongKey; a numbered keeper outside the bucket is moved into it.
 func TestAssignTargetsInPlaceKeepers(t *testing.T) {
-	// Rock'n'Roll -> key a|rocknroll; Rock"n"Roll -> key a|rock n roll (sorts first). Both
-	// have the folder name "A - Rock'n'Roll".
+	// "A" / "Rock - Roll" -> key a|rockroll; "A - Rock" / "Roll" -> key arock|roll (sorts
+	// first). Both have the folder name "A - Rock - Roll".
 	cands := []Candidate{
-		song(hq, "s", "A", `Rock"n"Roll`, Quality{}),
-		song(lib, "A/A - Rock'n'Roll", "A", "Rock'n'Roll", Quality{}),
+		song(hq, "s", "A - Rock", "Roll", Quality{}),
+		song(lib, "A/A - Rock - Roll", "A", "Rock - Roll", Quality{}),
 	}
 	checkSummary(t, cands, MakePlan(cands, PlanOptions{}), []string{
-		"hq:s: library A/A - Rock'n'Roll (2)",
-		"library:A/A - Rock'n'Roll: in-place A/A - Rock'n'Roll",
+		"hq:s: library A/A - Rock - Roll (2)",
+		"library:A/A - Rock - Roll: in-place A/A - Rock - Roll",
 	})
 
 	cands = []Candidate{
-		song(hq, "s", "A", `Rock"n"Roll`, Quality{}),
-		song(lib, "old/A - Rock'n'Roll (2)", "A", "Rock'n'Roll", Quality{}),
+		song(hq, "s", "A - Rock", "Roll", Quality{}),
+		song(lib, "old/A - Rock - Roll (2)", "A", "Rock - Roll", Quality{}),
 	}
 	checkSummary(t, cands, MakePlan(cands, PlanOptions{}), []string{
-		"hq:s: library A/A - Rock'n'Roll",
-		"library:old/A - Rock'n'Roll (2): library A/A - Rock'n'Roll (2)",
+		"hq:s: library A/A - Rock - Roll",
+		"library:old/A - Rock - Roll (2): library A/A - Rock - Roll (2)",
 	})
 
 	// In the right bucket the numbered keeper keeps its number, and the plain name goes
 	// to the other one.
 	cands = []Candidate{
-		song(hq, "s", "A", `Rock"n"Roll`, Quality{}),
-		song(lib, "A/A - Rock'n'Roll (3)", "A", "Rock'n'Roll", Quality{}),
+		song(hq, "s", "A - Rock", "Roll", Quality{}),
+		song(lib, "A/A - Rock - Roll (3)", "A", "Rock - Roll", Quality{}),
 	}
 	checkSummary(t, cands, MakePlan(cands, PlanOptions{}), []string{
-		"hq:s: library A/A - Rock'n'Roll",
-		"library:A/A - Rock'n'Roll (3): in-place A/A - Rock'n'Roll (3)",
+		"hq:s: library A/A - Rock - Roll",
+		"library:A/A - Rock - Roll (3): in-place A/A - Rock - Roll (3)",
 	})
 }
 
@@ -269,7 +269,7 @@ func TestSongKeyLettersAndSeparators(t *testing.T) {
 	if got := classifyQualifier(nil); got != qualNoise {
 		t.Errorf("classifyQualifier(nil) = %v", got)
 	}
-	if got, want := SongKey("Artist feat. X Live", "Song", false), "artist x live|song"; got != want {
+	if got, want := SongKey("Artist feat. Y Live", "Song", false), "artistylive|song"; got != want {
 		t.Errorf("guarded artist feat: %q, want %q", got, want)
 	}
 }

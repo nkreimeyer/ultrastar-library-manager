@@ -88,16 +88,16 @@ func TestSongKeyFeatAfterQualifier(t *testing.T) {
 		}
 	}
 	for _, c := range []struct{ artist, title, want string }{
-		{"Artist", "Song (Live) feat. X", "artist|song live"},
-		{"Artist", "Song - Live feat. X", "artist|song live"},
-		{"Artist", "Song (Live) feat. X Remix", "artist|song live x remix"}, // guarded
-		{"Artist", "Song (Live) ft. X", "artist|song live ft x"},            // strict: ft. stays in plain text
-		{"Artist", "Song (Live) Feat", "artist|song live feat"},             // nothing follows the feat word
-		{"Artist", "(Remastered) feat. X", "artist|feat x"},                 // no earlier words
-		{"Artist (DE) feat. X", "Song", "artist de|song"},
-		{"Artist (DE) ft. X", "Song", "artist de|song"},
-		{"Artist", "Song (Live at Ft. Lauderdale)", "artist|song live at ft lauderdale"}, // strict: ft. stays in qualifiers too
-		{"Artist", "Song - Live at Ft. Worth", "artist|song live at ft worth"},
+		{"Artist", "Song (Live) feat. X", "artist|songlive"},
+		{"Artist", "Song - Live feat. X", "artist|songlive"},
+		{"Artist", "Song (Live) feat. X Remix", "artist|songlivexremix"}, // guarded
+		{"Artist", "Song (Live) ft. X", "artist|songliveftx"},            // strict: ft. stays in plain text
+		{"Artist", "Song (Live) Feat", "artist|songlivefeat"},            // nothing follows the feat word
+		{"Artist", "(Remastered) feat. X", "artist|featx"},               // no earlier words
+		{"Artist (DE) feat. X", "Song", "artistde|song"},
+		{"Artist (DE) ft. X", "Song", "artistde|song"},
+		{"Artist", "Song (Live at Ft. Lauderdale)", "artist|songliveatftlauderdale"}, // strict: ft. stays in qualifiers too
+		{"Artist", "Song - Live at Ft. Worth", "artist|songliveatftworth"},
 	} {
 		if got := SongKey(c.artist, c.title, false); got != c.want {
 			t.Errorf("SongKey(%q, %q) = %q, want %q", c.artist, c.title, got, c.want)

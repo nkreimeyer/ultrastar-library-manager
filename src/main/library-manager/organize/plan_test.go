@@ -213,22 +213,22 @@ func TestMakePlanTargets(t *testing.T) {
 			"hq:b: library A/" + FolderName("Artist", long),
 		}},
 		{"a numbered name skips another song's plain name", false, nil, []Candidate{
-			song(hq, "a", "A", `Rock"n"Roll`, Quality{}),     // key a|rock n roll, name A - Rock'n'Roll
-			song(hq, "b", "A", "Rock'n'Roll", Quality{}),     // key a|rocknroll, same name
-			song(hq, "c", "A", "Rock'n'Roll (2)", Quality{}), // its plain name is A - Rock'n'Roll (2)
+			song(hq, "a", "A - Rock", "Roll", Quality{}),     // key arock|roll, name A - Rock - Roll
+			song(hq, "b", "A", "Rock - Roll", Quality{}),     // key a|rockroll, same name
+			song(hq, "c", "A", "Rock - Roll (2)", Quality{}), // its plain name is A - Rock - Roll (2)
 		}, []string{
-			"hq:a: library A/A - Rock'n'Roll",
-			"hq:b: library A/A - Rock'n'Roll (3)",
-			"hq:c: library A/A - Rock'n'Roll (2)",
+			"hq:a: library A/A - Rock - Roll",
+			"hq:b: library A/A - Rock - Roll (3)",
+			"hq:c: library A/A - Rock - Roll (2)",
 		}},
 		{"a keeper in place at another song's plain name is renumbered", false, nil, []Candidate{
-			song(lib, "A/A - Rock'n'Roll (2)", "A", `Rock"n"Roll`, Quality{}),
-			song(hq, "b", "A", "Rock'n'Roll", Quality{}),
-			song(hq, "c", "A", "Rock'n'Roll (2)", Quality{}),
+			song(lib, "A/A - Rock - Roll (2)", "A - Rock", "Roll", Quality{}),
+			song(hq, "b", "A", "Rock - Roll", Quality{}),
+			song(hq, "c", "A", "Rock - Roll (2)", Quality{}),
 		}, []string{
-			"library:A/A - Rock'n'Roll (2): library A/A - Rock'n'Roll",
-			"hq:b: library A/A - Rock'n'Roll (3)",
-			"hq:c: library A/A - Rock'n'Roll (2)",
+			"library:A/A - Rock - Roll (2): library A/A - Rock - Roll",
+			"hq:b: library A/A - Rock - Roll (3)",
+			"hq:c: library A/A - Rock - Roll (2)",
 		}},
 		{"a single song with a numbered name loses the number", false, nil, []Candidate{
 			song(lib, "A/ABBA - SOS (2)", "ABBA", "SOS", Quality{}),

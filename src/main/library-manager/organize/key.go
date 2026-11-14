@@ -1,8 +1,10 @@
 package organize
 
 import (
+	"html"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -166,6 +168,7 @@ var (
 		"remaster": true, "remastered": true, "video": true, "hd": true, "hq": true,
 		"4k": true, "karaoke": true, "ultrastar": true, "singstar": true, "explicit": true,
 		"lyrics": true, "audio": true,
+		"kar": true, "pv": true, "mv": true, // karaoke, promotion video, music video
 	}
 	noiseModifiers = map[string]bool{
 		"official": true, "music": true, "digitally": true, "digital": true, "lyric": true,
@@ -373,10 +376,16 @@ func titleWords(title string, loose bool) (words []string, duet bool) {
 // ("(hed) p.e.").
 func artistWords(artist string) []string {
 	var words []string
-	for _, p := range splitBrackets(strings.TrimSpace(norm.NFC.String(strings.ToValidUTF8(artist, "")))) {
+	a := strings.TrimSpace(norm.NFC.String(strings.ToValidUTF8(artist, "")))
+	a = theSuffix.ReplaceAllString(a, "") // "Beatles, The" == "Beatles"
+	parts := splitBrackets(a)
+	for i, p := range parts {
 		w := normWords(p.text)
 		if p.bracket && len(w) > 0 && isFeatWord(w[0]) {
 			continue
+		}
+		if p.bracket && len(w) == 1 && w[0] == "the" && len(words) > 0 && i == len(parts)-1 {
+			continue // "Cranberries (The)" == "The Cranberries"
 		}
 		if !p.bracket {
 			w = cutFeat(w, len(words) > 0, true, true) // "Artist (DE) feat. X" too
@@ -389,11 +398,78 @@ func artistWords(artist string) []string {
 	return words
 }
 
+// theSuffix matches a trailing ", The" of an artist.
+var theSuffix = regexp.MustCompile(`(?i)\s*,\s*the\s*$`)
+
+// artistSeparators separate the names of a collaboration (after normWords, "&" and "+"
+// are "and").
+var artistSeparators = map[string]bool{"and": true, "x": true, "with": true, "vs": true, "versus": true}
+
+// artistKey is the artist part of a key: the names of a collaboration ("A & B", "A x B",
+// "A with B", "A vs. B") as an unordered set, each name without spaces, so "Kate Bush &
+// Peter Gabriel" == "Peter Gabriel and Kate Bush" and "A-ha" == "Aha" == "a ha". A
+// separator at the start or the end is part of the name ("X Ambassadors", "Malcolm X").
+func artistKey(words []string) string { return strings.Join(artistNames(words), "&") }
+
+// artistNames splits the normalized words of an artist (artistWords) into the names of a
+// collaboration, each without spaces, sorted.
+func artistNames(words []string) []string {
+	var names []string
+	start := 0
+	for i, w := range words {
+		if artistSeparators[w] && i > start && i < len(words)-1 {
+			names = append(names, strings.Join(words[start:i], ""))
+			start = i + 1
+		}
+	}
+	names = append(names, strings.Join(words[start:], ""))
+	sort.Strings(names)
+	return names
+}
+
+// cutArtistPrefix drops the artist from the start of a title, where it is followed by a
+// dash or colon ("James Blunt-Wise Men", "Die Ärzte - Männer sind Schweine" by Die Ärzte).
+// The title must keep words after it.
+func cutArtistPrefix(artist, title string) string {
+	aw := strings.Join(normWords(artist), " ")
+	for i, r := range title {
+		if r != '-' && r != '–' && r != '—' && r != ':' {
+			continue
+		}
+		if strings.Join(normWords(title[:i]), " ") == aw {
+			if rest := title[i+len(string(r)):]; len(normWords(rest)) > 0 {
+				return rest
+			}
+		}
+	}
+	return title
+}
+
+// keyInput prepares a tag value for the keys: HTML entities ("&amp;", also without the
+// semicolon) are decoded.
+func keyInput(s string) string { return html.UnescapeString(s) }
+
+// keyParts returns the artist and title parts of SongKey and LooseKey.
+func keyParts(artist, title string, loose bool) (a, t string, duet bool) {
+	artist, title = keyInput(artist), keyInput(title)
+	aw := artistWords(artist)
+	tw, duet := titleWords(cutArtistPrefix(artist, title), loose)
+	if len(aw) == 0 || len(tw) == 0 {
+		return "", "", duet
+	}
+	return artistKey(aw), strings.Join(tw, ""), duet
+}
+
 // SongKey returns the strict identity key used to group duplicates, or "" if the artist
 // or the title is empty after normalization.
 //
 // Words are normalized as described at the top of this file. In addition:
-//   - a leading "the" is stripped from the artist ("The Beatles" == "Beatles");
+//   - a leading "the" is stripped from the artist ("The Beatles" == "Beatles"), and so is
+//     a trailing "(The)" or ", The" ("Cranberries (The)", "Beatles, The");
+//   - spaces between words are ignored ("A-ha" == "Aha", "Ring Ring" == "RingRing");
+//   - the names of a collaboration are a set (artistKey: "A & B" == "B x A");
+//   - a title that starts with the artist and a dash drops it (cutArtistPrefix);
+//   - HTML entities are decoded ("&amp;" == "&");
 //   - "feat." / "ft." / "featuring" parts are dropped from artist and title, also inside
 //     brackets ("Song (feat. X)" == "Song"). In the plain text of a title "ft." is kept (it
 //     may be an abbreviation: "Welcome to Ft. Lauderdale"); LooseKey drops it. If a
@@ -410,12 +486,11 @@ func artistWords(artist string) []string {
 //     marker, so a duet and a solo version of the same song have different keys. Other
 //     qualifiers inside the duet group stay ("[Duet - Acoustic]" == "(Acoustic) [DUET]").
 func SongKey(artist, title string, duet bool) string {
-	a := artistWords(artist)
-	t, titleDuet := titleWords(title, false)
-	if len(a) == 0 || len(t) == 0 {
+	a, t, titleDuet := keyParts(artist, title, false)
+	if a == "" {
 		return ""
 	}
-	key := strings.Join(a, " ") + keySep + strings.Join(t, " ")
+	key := a + keySep + t
 	if duet || titleDuet {
 		key += keySep + "duet"
 	}
@@ -427,12 +502,11 @@ func SongKey(artist, title string, duet bool) string {
 // ignored. It only lists possible duplicates for manual review; nothing is merged by it.
 // It returns "" if the artist or the title is empty after normalization.
 func LooseKey(artist, title string) string {
-	a := artistWords(artist)
-	t, _ := titleWords(title, true)
-	if len(a) == 0 || len(t) == 0 {
+	a, t, _ := keyParts(artist, title, true)
+	if a == "" {
 		return ""
 	}
-	return strings.Join(a, " ") + keySep + strings.Join(t, " ")
+	return a + keySep + t
 }
 
 // IsDuetTitle reports whether the title has a duet qualifier: a bracket group or a
