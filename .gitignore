@@ -1,12 +1,5 @@
 .vscode/settings.json
 .sonarlint/
 .continue/
-test-assets/songs/
-test-assets/extra-files
-test-assets/notxt
-test-assets/invalid/
-test-assets/potentiallyCorruptedFiles.txt
-test-assets/missing_files.txt
-test-assets/mybin
-test-assets/sanitizer-output/
+test-assets/
 src/main/library-manager/library-manager
