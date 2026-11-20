@@ -1,6 +1,7 @@
 package organize
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	log "github.com/sirupsen/logrus"
 
@@ -48,6 +50,52 @@ type Options struct {
 	IgnoreThe bool
 	// Deep: fully decode the media files while checking (check -deep).
 	Deep bool
+
+	// Ctx cancels the run (nil = never). It is checked before each song folder is
+	// inspected (nothing has moved then) and before each move; a run stopped during the
+	// moves is journaled like a complete one, so Undo reverts what it did. Run then
+	// returns Ctx.Err().
+	Ctx context.Context
+	// Progress, if set, is called with the phase (PhaseInspect, PhaseMove), the number of
+	// items done and their total. It may be called from several goroutines at once.
+	Progress func(phase string, done, total int)
+	// Exclude lists candidates (by Ref) that are left where they are ("excluded in
+	// review"); see PlanOptions.Exclude.
+	Exclude map[string]bool
+	// Review, if set, is called with the plan before any report is written or anything is
+	// moved. An error it returns stops Run with that error.
+	Review func(*Review) error
+}
+
+// Phases reported to Options.Progress.
+const (
+	PhaseInspect = "inspect"
+	PhaseMove    = "move"
+)
+
+// Review is the plan of a run, as Options.Review sees it.
+type Review struct {
+	Cands []Candidate
+	Plan  Plan
+	// Notes are the report notes (e.g. ffprobe missing).
+	Notes []string
+	// Replan plans the same candidates again with other exclusions, against the library
+	// as it was seen for Plan. It is pure and may be called after Run returned.
+	Replan func(exclude map[string]bool) Plan
+}
+
+// ctx is the Ctx, with nil as context.Background().
+func (o Options) ctx() context.Context {
+	if o.Ctx == nil {
+		return context.Background()
+	}
+	return o.Ctx
+}
+
+func (o Options) progress(phase string, done, total int) {
+	if o.Progress != nil {
+		o.Progress(phase, done, total)
+	}
 }
 
 // workers is the number of song folders inspected at the same time. It is a variable so
@@ -95,18 +143,40 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 	if !insp.MediaChecked() {
 		notes = append(notes, noteNoMediaQuality)
 	}
+	ctx := opts.ctx()
 	cands := make([]Candidate, len(items))
+	var inspected atomic.Int64
+	opts.progress(PhaseInspect, 0, len(items))
 	forEachParallel(len(items), workers, func(i int) {
+		if ctx.Err() != nil {
+			return
+		}
 		in, err := insp.Inspect(items[i].folder) // an error is logged and counted by Inspect
 		cands[i] = newCandidate(cfg, items[i].src, items[i].folder, in, err)
+		opts.progress(PhaseInspect, int(inspected.Add(1)), len(items))
 	})
+	if err := ctx.Err(); err != nil {
+		log.Warnf("Organize: stopped while inspecting the songs; nothing was moved")
+		return err
+	}
 	log.Infof("Organize: %d song folder(s) in %d source(s), %d empty folder(s) ignored", len(cands), len(cfg.Sources), len(empty))
 
-	plan := MakePlan(cands, PlanOptions{
+	planOpts := PlanOptions{
 		Priority: opts.Priority, IgnoreThe: opts.IgnoreThe, Occupied: libraryOccupant(ops, cfg.Library),
-		LibraryInPlace: opts.mode() != ModeOrganize,
-	})
+		LibraryInPlace: opts.mode() != ModeOrganize, Exclude: opts.Exclude,
+	}
+	plan := MakePlan(cands, planOpts)
 	logPlan(cands, plan)
+	if opts.Review != nil {
+		replan := func(exclude map[string]bool) Plan {
+			po := planOpts
+			po.Exclude = exclude
+			return MakePlan(cands, po)
+		}
+		if err := opts.Review(&Review{Cands: cands, Plan: plan, Notes: notes, Replan: replan}); err != nil {
+			return err
+		}
+	}
 
 	in := reportInput{cfg: cfg, opts: opts, cands: cands, plan: plan, outcomes: map[int]moveOutcome{}, empty: empty, notes: notes}
 	if !cfg.DryRun {
@@ -122,6 +192,7 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 	}
 
 	a := newApplier(cfg, ops, cands, in.outcomes)
+	a.ctx, a.progress = ctx, opts.progress
 	a.apply(plan)
 	if !cfg.DryRun {
 		in.emptyLeft = emptiedCategories(cfg, cands, in.outcomes)
@@ -139,6 +210,10 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 		rep.Summary.PossibleDuplicates, rep.Summary.Similar, rep.Summary.Moved, verb, rep.Summary.Failed, cfg.ReportPath(reportTxt))
 	if a.j.failed {
 		return fmt.Errorf("the journal %s cannot be written; the remaining moves were not attempted", cfg.JournalPath())
+	}
+	if err := ctx.Err(); err != nil && a.stopped {
+		log.Warnf("Organize: stopped during the moves; the moves done so far are journaled (undo reverts them)")
+		return err
 	}
 	return nil
 }
@@ -391,10 +466,28 @@ type applier struct {
 	moveTo func(src, dst string) error
 	// freeBuckets are the bucket folders found able to take songs (bucketTaken).
 	freeBuckets map[string]bool
+	// ctx stops the moves (checked before each one); stopped is set when it did.
+	ctx     context.Context
+	stopped bool
+	// progress reports the moves (PhaseMove); never nil.
+	progress func(phase string, done, total int)
 }
 
 func newApplier(cfg config.OrganizeConfig, ops *fsops.Ops, cands []Candidate, outcomes map[int]moveOutcome) *applier {
-	return &applier{cfg: cfg, ops: ops, cands: cands, j: newJournal(ops, cfg.JournalPath()), outcomes: outcomes, moveTo: ops.MoveTo, freeBuckets: map[string]bool{}}
+	return &applier{cfg: cfg, ops: ops, cands: cands, j: newJournal(ops, cfg.JournalPath()), outcomes: outcomes, moveTo: ops.MoveTo, freeBuckets: map[string]bool{},
+		ctx: context.Background(), progress: func(string, int, int) {}}
+}
+
+// cancelled reports whether the moves are to stop, and logs it once.
+func (a *applier) cancelled() bool {
+	if a.ctx.Err() == nil {
+		return false
+	}
+	if !a.stopped {
+		a.stopped = true
+		log.Warnf("Stopping: no further songs are moved")
+	}
+	return true
 }
 
 func (a *applier) done(i int, dst string) {
@@ -426,10 +519,14 @@ func (a *applier) apply(p Plan) {
 		}
 		return a.cands[out[x]].Ref() < a.cands[out[y]].Ref()
 	})
+	total, moved := len(out)+len(moves), 0
+	a.progress(PhaseMove, 0, total)
 	for _, i := range out {
-		if !a.ready(i) {
+		if a.cancelled() || !a.ready(i) {
 			continue
 		}
+		moved++
+		a.progress(PhaseMove, moved, total)
 		c := &a.cands[i]
 		dir := a.cfg.DuplicatesDir()
 		if p.Decisions[i].Action == ActInvalid {
@@ -452,6 +549,16 @@ func (a *applier) apply(p Plan) {
 	for _, s := range steps {
 		if s.ViaTemp && !parked[s.Cand] {
 			continue // its move to the temporary name failed or was undone
+		}
+		if a.cancelled() {
+			if s.ViaTemp {
+				a.unpark(s) // never leave a song hidden under the temporary name
+			}
+			continue
+		}
+		if !s.ToTemp {
+			moved++
+			a.progress(PhaseMove, moved, total)
 		}
 		if !s.ToTemp {
 			if why := a.bucketTaken(s.Dst); why != "" {

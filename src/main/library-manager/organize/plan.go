@@ -81,7 +81,11 @@ const (
 	reasonKeeperLeft     = "the better version %s cannot be moved into the library, so this copy stays"
 	reasonNotASong       = "target %s exists in the library and is not a song folder (an empty or category folder, or a file); it is never overwritten"
 	reasonBrokenStays    = "broken (errors: %s), but no working version replaces it, so it stays; check -k -move-broken moves broken songs"
+	reasonExcluded       = "excluded in review"
 )
+
+// ReasonExcluded is the Decision.Reason of a candidate in PlanOptions.Exclude.
+const ReasonExcluded = reasonExcluded
 
 // PlanOptions configure Plan.
 type PlanOptions struct {
@@ -102,6 +106,11 @@ type PlanOptions struct {
 	// takes it; note, if not empty, says why the bucket cannot take songs. nil = the
 	// library is empty.
 	Occupied func(rel string) (occupant, note string, ok bool)
+	// Exclude lists candidates (by Ref) that take no part in the plan: each is left where
+	// it is (ActLeft, ReasonExcluded), like an unreadable song. The other versions of its
+	// song are planned without it (one of them may become the keeper); to leave a whole
+	// song alone, exclude all of its versions.
+	Exclude map[string]bool
 }
 
 // Decision is the plan for one candidate.
@@ -190,6 +199,8 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 	for pos, i := range order {
 		c := &cands[i]
 		switch {
+		case opts.Exclude[c.Ref()]:
+			p.Decisions[i] = Decision{Action: ActLeft, Reason: reasonExcluded, Other: -1}
 		case c.Unreadable:
 			p.Decisions[i] = Decision{Action: ActLeft, Reason: reasonUnreadable, Other: -1}
 		case c.EncodingProblem:

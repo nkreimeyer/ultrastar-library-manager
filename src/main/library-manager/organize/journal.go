@@ -13,6 +13,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
+	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
 )
 
@@ -203,4 +204,29 @@ func lastUndoable(runs []*journalRun) *journalRun {
 		}
 	}
 	return nil
+}
+
+// RunInfo describes one run of the journal (organize, dedupe, add or remove).
+type RunInfo struct {
+	ID     string `json:"id"`
+	Time   string `json:"time,omitempty"` // RFC 3339, UTC; empty if the run line is lost
+	Moves  int    `json:"moves"`
+	Undone bool   `json:"undone"`
+	// Next: this is the run Undo reverts next.
+	Next bool `json:"next"`
+}
+
+// ListRuns returns the runs of the journal of cfg, oldest first. A missing journal has
+// none.
+func ListRuns(cfg config.OrganizeConfig) ([]RunInfo, error) {
+	runs, err := readJournal(cfg.JournalPath())
+	if err != nil {
+		return nil, err
+	}
+	next := lastUndoable(runs)
+	infos := make([]RunInfo, len(runs))
+	for i, r := range runs {
+		infos[i] = RunInfo{ID: r.ID, Time: r.Time, Moves: r.moves(), Undone: r.Undone, Next: r == next}
+	}
+	return infos, nil
 }
