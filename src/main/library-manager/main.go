@@ -48,7 +48,17 @@ func main() {
 	os.Exit(run())
 }
 
+// version is set at build time (-ldflags "-X main.version=v1.2.3").
+var version = "dev"
+
 func run() int {
+	if len(os.Args) == 1 {
+		// Started without arguments (e.g. by a double-click): open the UI.
+		return runUI(nil, flag.CommandLine.Output(), true)
+	}
+	if os.Args[1] == "ui" {
+		return runUI(os.Args[2:], flag.CommandLine.Output(), false)
+	}
 	if len(os.Args) > 1 {
 		switch m := organize.Mode(os.Args[1]); m {
 		case organize.ModeOrganize, organize.ModeDedupe, organize.ModeAdd:

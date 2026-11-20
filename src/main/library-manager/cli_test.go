@@ -103,12 +103,6 @@ func TestStaleAudioTagKeepsAudio(t *testing.T) {
 	}
 }
 
-func TestRunWithoutArguments(t *testing.T) {
-	if got := runWithArgs(t); got != exitUsage {
-		t.Errorf("run() without arguments = %d, want %d", got, exitUsage)
-	}
-}
-
 func TestRunUsageErrors(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	lib := t.TempDir()

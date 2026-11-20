@@ -1,0 +1,197 @@
+// Package webui serves the browser UI of library-manager on a loopback address.
+//
+// The UI can move and rewrite files, so every request is checked: the Host must be the
+// address the server listens on (no DNS rebinding), the session cookie must be set (it is
+// handed out once for the secret token in the start URL), and a request that changes
+// anything must be a same-origin JSON POST (no cross-site forms).
+//
+// Only one job (an analysis, an apply or an undo) runs at a time: the modules log through
+// the global logrus logger, and the job's log is what the hook collects while it runs.
+package webui
+
+import (
+	"crypto/rand"
+	"crypto/subtle"
+	"embed"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+
+	log "github.com/sirupsen/logrus"
+)
+
+//go:embed static
+var staticFiles embed.FS
+
+const (
+	cookieName = "lm_session"
+	// maxBody limits JSON request bodies.
+	maxBody = 4 << 20
+)
+
+// Server is the UI server for one listening address.
+type Server struct {
+	addr    string // host:port the server listens on
+	token   string // secret of the start URL
+	session string // value of the session cookie
+	version string
+	mux     *http.ServeMux
+	jobs    *jobRunner
+
+	mu       sync.Mutex
+	organize map[string]*organizeAnalysis
+	repair   map[string]*repairAnalysis
+	nextID   int
+}
+
+// New returns a server for the loopback address addr ("127.0.0.1:8080"). version is shown
+// in the UI.
+func New(addr, version string) (*Server, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return nil, fmt.Errorf("the UI only listens on a loopback address (127.0.0.1 or ::1), not %q", host)
+	}
+	s := &Server{
+		addr: addr, token: randomHex(16), session: randomHex(32), version: version,
+		mux: http.NewServeMux(), jobs: newJobRunner(),
+		organize: map[string]*organizeAnalysis{}, repair: map[string]*repairAnalysis{},
+	}
+	s.routes()
+	return s, nil
+}
+
+// StartURL is the URL to open: it carries the token that sets the session cookie.
+func (s *Server) StartURL() string {
+	return "http://" + s.addr + "/?token=" + s.token
+}
+
+// Close cancels a running job and waits for it to end.
+func (s *Server) Close() { s.jobs.close() }
+
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic(err) // crypto/rand does not fail on supported platforms
+	}
+	return hex.EncodeToString(b)
+}
+
+func (s *Server) routes() {
+	static, _ := fs.Sub(staticFiles, "static")
+	files := http.FileServer(http.FS(static))
+	s.mux.Handle("GET /", files)
+	s.mux.HandleFunc("GET /api/system", s.handleSystem)
+	s.mux.HandleFunc("GET /api/fs/list", s.handleFSList)
+	s.mux.HandleFunc("GET /api/job", s.handleJob)
+	s.mux.HandleFunc("GET /api/job/events", s.handleJobEvents)
+	s.mux.HandleFunc("POST /api/job/cancel", s.handleJobCancel)
+	s.mux.HandleFunc("POST /api/organize/validate", s.handleOrganizeValidate)
+	s.mux.HandleFunc("POST /api/organize/analyse", s.handleOrganizeAnalyse)
+	s.mux.HandleFunc("GET /api/organize/analysis", s.handleOrganizeAnalysis)
+	s.mux.HandleFunc("POST /api/organize/exclude", s.handleOrganizeExclude)
+	s.mux.HandleFunc("POST /api/organize/apply", s.handleOrganizeApply)
+	s.mux.HandleFunc("POST /api/organize/history", s.handleOrganizeHistory)
+	s.mux.HandleFunc("POST /api/organize/undo", s.handleOrganizeUndo)
+	s.mux.HandleFunc("POST /api/repair/validate", s.handleRepairValidate)
+	s.mux.HandleFunc("POST /api/repair/analyse", s.handleRepairAnalyse)
+	s.mux.HandleFunc("GET /api/repair/analysis", s.handleRepairAnalysis)
+	s.mux.HandleFunc("POST /api/repair/apply", s.handleRepairApply)
+}
+
+// ServeHTTP checks the Host, the session and (for POST) the origin, then routes.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !s.hostOK(r.Host) {
+		http.Error(w, "wrong host", http.StatusForbidden)
+		return
+	}
+	if r.URL.Path == "/" && r.URL.Query().Has("token") {
+		if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(s.token)) != 1 {
+			http.Error(w, "wrong token: open the link that library-manager printed", http.StatusForbidden)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: s.session, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+		http.Redirect(w, r, "/", http.StatusSeeOther) // the token leaves the address bar
+		return
+	}
+	c, err := r.Cookie(cookieName)
+	if err != nil || subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.session)) != 1 {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, "Not signed in. Open the link that library-manager printed when it started (it contains ?token=…).\n")
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if o := r.Header.Get("Origin"); o != "" && o != "http://"+r.Host {
+			http.Error(w, "cross-origin request", http.StatusForbidden)
+			return
+		}
+		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			http.Error(w, "requests must be JSON", http.StatusUnsupportedMediaType)
+			return
+		}
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+	w.Header().Set("Cache-Control", "no-store")
+	s.mux.ServeHTTP(w, r)
+}
+
+// hostOK accepts the listening address and its "localhost" spelling.
+func (s *Server) hostOK(host string) bool {
+	if host == s.addr {
+		return true
+	}
+	_, port, _ := net.SplitHostPort(s.addr)
+	return host == "localhost:"+port
+}
+
+// apiError is the JSON body of a failed API call.
+type apiError struct {
+	Error string `json:"error"`
+	// Details are extra lines, e.g. how a plan changed.
+	Details []string `json:"details,omitempty"`
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Debugf("webui: writing a response: %v", err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, apiError{Error: err.Error()})
+}
+
+// readJSON decodes the request body into v; unknown fields are an error.
+func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("bad request: %w", err))
+		return false
+	}
+	return true
+}
+
+// errBusy is returned when a job is started while another one runs.
+var errBusy = errors.New("another job is running; wait for it or cancel it first")
+
+func (s *Server) newID(prefix string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID++
+	return fmt.Sprintf("%s%d", prefix, s.nextID)
+}
