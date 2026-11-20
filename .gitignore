@@ -9,3 +9,4 @@ test-assets/potentiallyCorruptedFiles.txt
 test-assets/missing_files.txt
 test-assets/mybin
 test-assets/sanitizer-output/
+src/main/library-manager/library-manager
