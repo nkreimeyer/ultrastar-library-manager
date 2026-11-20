@@ -341,6 +341,13 @@ func (p *processor) processVideoFile(dir, file string) {
 		log.Debugf("Skipping %s: an earlier module would move it", file)
 		return
 	}
+	if st, err := os.Lstat(file); err == nil && st.Mode()&os.ModeSymlink != 0 {
+		// Replacing it would turn the link into a processed regular copy (a conversion
+		// would delete only the link), and the file it points to (maybe shared by other
+		// songs) would stay unprocessed.
+		log.Warnf("Skipping %s: it is a symbolic link; process the file it points to instead", file)
+		return
+	}
 	if p.journal.Has(journalChecked, file) || p.journal.Has(journalProcessed, file) {
 		log.Debugf("Skipping %s: recorded in the media journal", file)
 		return

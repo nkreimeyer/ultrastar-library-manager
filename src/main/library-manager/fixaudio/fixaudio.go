@@ -160,6 +160,12 @@ func (p *processor) processFolder(folder string) {
 		if utils.IsHidden(name) || !utils.IsAudioFile(name) || !utils.IsRegularFile(folder, entry) {
 			continue
 		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			// Replacing it would turn the link into a processed regular copy, and the file
+			// it points to (maybe shared by other songs) would stay unprocessed.
+			log.Warnf("Skipping %s: it is a symbolic link; normalize the file it points to instead", filepath.Join(folder, name))
+			continue
+		}
 		if stems[name] {
 			log.Infof("Skipping %s: it is a #VOCALS/#INSTRUMENTAL stem, normalizing it would change the mix balance", filepath.Join(folder, name))
 			continue

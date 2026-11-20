@@ -550,3 +550,37 @@ func TestSameVideoDurationFallbacks(t *testing.T) {
 		t.Errorf("unreadable output = %v, %q; want a mismatch", ok, msg)
 	}
 }
+
+// A symlinked video is left alone: replacing it would turn the link into a regular copy,
+// and a conversion would delete only the link.
+func TestSymlinkedVideoIsNotProcessed(t *testing.T) {
+	requireFFmpeg(t)
+	cfg, songDir, _ := newLibrary(t, false)
+	pool := filepath.Join(t.TempDir(), "pool.avi")
+	makeMedia(t, pool, "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
+	orig := readFile(t, pool)
+	song := filepath.Join(songDir, "A - S")
+	txt := "#TITLE:S\n#ARTIST:A\n#MP3:video.avi\n#VIDEO:video.avi\n: 0 4 0 La\nE\n"
+	writeFile(t, filepath.Join(song, "song.txt"), txt)
+	link := filepath.Join(song, "video.avi")
+	if err := os.Symlink(pool, link); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := fsops.New(false)
+	if err := Run(cfg, ops); err != nil {
+		t.Fatal(err)
+	}
+	if st := ops.Stats(); st != (fsops.Stats{}) {
+		t.Errorf("stats = %+v, want nothing done", st)
+	}
+	if target, err := os.Readlink(link); err != nil || target != pool {
+		t.Errorf("video.avi is no longer the link to %s: %q, %v", pool, target, err)
+	}
+	if readFile(t, pool) != orig || readFile(t, filepath.Join(song, "song.txt")) != txt {
+		t.Error("the linked video or the txt changed")
+	}
+	if _, err := os.Stat(filepath.Join(song, "video.mp4")); !os.IsNotExist(err) {
+		t.Errorf("video.mp4 exists (err=%v)", err)
+	}
+}

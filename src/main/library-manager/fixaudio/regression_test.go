@@ -747,3 +747,33 @@ func TestPeakExactlyAtToleranceIsLeftAlone(t *testing.T) {
 		t.Error("a file exactly at the tolerance was changed")
 	}
 }
+
+// A symlinked audio file is left alone: replacing it would turn the link into a regular
+// copy, and the file it points to (maybe shared by other songs) would stay as it is.
+func TestSymlinkedAudioIsNotProcessed(t *testing.T) {
+	requireFFmpeg(t)
+	cfg, ops := newLibrary(t, false)
+	pool := filepath.Join(t.TempDir(), "pool.mp3")
+	quietMP3(t, pool, "1")
+	orig := readFile(t, pool)
+	dir := addSong(t, cfg, "Artist - Linked", "song.mp3")
+	link := filepath.Join(dir, "song.mp3")
+	if err := os.Symlink(pool, link); err != nil {
+		t.Fatal(err)
+	}
+
+	run(t, cfg, ops)
+
+	if st := ops.Stats(); st != (fsops.Stats{}) {
+		t.Errorf("stats = %+v, want nothing done", st)
+	}
+	if target, err := os.Readlink(link); err != nil || target != pool {
+		t.Errorf("song.mp3 is no longer the link to %s: %q, %v", pool, target, err)
+	}
+	if !bytes.Equal(readFile(t, pool), orig) {
+		t.Error("the linked file changed")
+	}
+	if _, err := os.Stat(filepath.Join(cfg.OutDir, "originals")); !os.IsNotExist(err) {
+		t.Errorf("a backup was made (err=%v)", err)
+	}
+}
