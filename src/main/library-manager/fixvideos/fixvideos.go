@@ -50,10 +50,12 @@ const (
 	journalProcessed = "video-processed" // written by fixvideos
 
 	// durationTolerance is the maximum duration difference (in seconds) between an
-	// original and its tagged remux.
+	// original and its tagged remux, or between the video streams of an original and its
+	// processed version.
 	durationTolerance = 0.5
 
-	// corruptedReportName is the report listing videos ffmpeg could not read.
+	// corruptedReportName is the report listing videos ffmpeg could not read, or whose
+	// processed version did not keep their duration.
 	corruptedReportName = "potentiallyCorruptedFiles.txt"
 
 	// exitInvalidData is ffmpeg's exit code for AVERROR_INVALIDDATA ("Invalid data found
@@ -393,7 +395,11 @@ func (p *processor) exists(path string) bool {
 }
 
 // encode runs ffmpeg on file according to pl into a temp file next to it and replaces the
-// original with the result (see replaceOriginal).
+// original with the result (see replaceOriginal). A result whose video is shorter or
+// longer than the original's is discarded and the original reported as potentially
+// corrupted: ffmpeg exits 0 on damaged input and drops what it cannot decode, so an AVI
+// with a damaged section comes out shorter, and its video would run ahead of the song
+// from there on with no original left.
 func (p *processor) encode(dir, file string, pl encodePlan) {
 	tmp, err := fsops.TempFileNear(file, pl.outputExt(file))
 	if err != nil {
@@ -411,11 +417,16 @@ func (p *processor) encode(dir, file string, pl encodePlan) {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == exitInvalidData {
 			// ffmpeg could not read the input: report it instead of counting a failure.
-			p.flagCorrupted(file)
+			p.flagCorrupted(file, "ffmpeg could not read it")
 			return
 		}
 		log.Errorf("ffmpeg failed for %s: %v: %s", file, err, strings.TrimSpace(string(out)))
 		p.ops.Fail()
+		return
+	}
+	if ok, msg := sameVideoDuration(file, tmp, !pl.removeAudio); !ok {
+		os.Remove(tmp) // our own temp file, not a library file
+		p.flagCorrupted(file, msg+", keeping the original")
 		return
 	}
 
@@ -583,6 +594,94 @@ func (p *processor) tagByRemux(file string) error {
 	return p.ops.Replace(tmp, file) // removes tmp on failure
 }
 
+// sameVideoDuration reports whether the video of the processed out has the duration of
+// the video of the original in, and if not, why. The video streams are compared, because
+// stripping the audio shortens the container when the audio is the longer stream. If the
+// original's video stream has no known duration, the container durations are compared
+// when the audio is kept (keepsAudio); with neither known there is nothing to compare and
+// the result counts as matching. An out that ffprobe cannot read never matches.
+func sameVideoDuration(in, out string, keepsAudio bool) (bool, string) {
+	got, err := videoStreamDuration(out)
+	if err != nil {
+		return false, fmt.Sprintf("ffprobe cannot read the processed video: %v", err)
+	}
+	want, err := videoStreamDuration(in)
+	if err != nil || want <= 0 || got <= 0 {
+		if !keepsAudio {
+			log.Debugf("Not comparing the duration of %s with its processed version: unknown video duration", in)
+			return true, ""
+		}
+		want, err = getVideoDuration(in)
+		if err != nil || want <= 0 {
+			log.Debugf("Not comparing the duration of %s with its processed version: unknown duration", in)
+			return true, ""
+		}
+		if got, err = getVideoDuration(out); err != nil {
+			return false, fmt.Sprintf("ffprobe cannot read the processed video: %v", err)
+		}
+	}
+	if !durationsMatch(got, want) {
+		return false, fmt.Sprintf("the processed video is %.3f s long instead of %.3f s (damaged input?)", got, want)
+	}
+	return true, ""
+}
+
+// videoStreamDuration returns the duration in seconds of the first video stream of file:
+// the stream duration, else its DURATION tag (Matroska writes one per stream, maybe with
+// a language suffix); 0 if neither is known.
+func videoStreamDuration(file string) (float64, error) {
+	out, err := exec.Command("ffprobe", "-v", "error", selectStreams, "v:0",
+		showEntries, "stream=duration:stream_tags",
+		"-of", "json", "--", filepath.Clean(file)).Output()
+	if err != nil {
+		return 0, fmt.Errorf("ffprobe: %w", err)
+	}
+	return parseVideoStreamDuration(out)
+}
+
+func parseVideoStreamDuration(data []byte) (float64, error) {
+	var probe struct {
+		Streams []struct {
+			Duration string            `json:"duration"`
+			Tags     map[string]string `json:"tags"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return 0, fmt.Errorf("parsing ffprobe output: %w", err)
+	}
+	if len(probe.Streams) == 0 {
+		return 0, nil
+	}
+	st := probe.Streams[0]
+	if d, err := strconv.ParseFloat(st.Duration, 64); err == nil && d > 0 {
+		return d, nil
+	}
+	for _, k := range slices.Sorted(maps.Keys(st.Tags)) {
+		if name, _, _ := strings.Cut(k, "-"); strings.EqualFold(name, "DURATION") {
+			if d, ok := parseClock(st.Tags[k]); ok {
+				return d, nil
+			}
+		}
+	}
+	return 0, nil
+}
+
+// parseClock parses a Matroska duration tag ("HH:MM:SS.nnnnnnnnn") into seconds.
+func parseClock(v string) (float64, bool) {
+	parts := strings.Split(strings.TrimSpace(v), ":")
+	if len(parts) != 3 {
+		return 0, false
+	}
+	h, err1 := strconv.Atoi(parts[0])
+	m, err2 := strconv.Atoi(parts[1])
+	sec, err3 := strconv.ParseFloat(parts[2], 64)
+	if err1 != nil || err2 != nil || err3 != nil || h < 0 || m < 0 || m > 59 || sec < 0 || sec >= 60 {
+		return 0, false
+	}
+	d := float64(h*3600+m*60) + sec
+	return d, d > 0
+}
+
 // durationsMatch reports whether two durations (in seconds) differ by at most
 // durationTolerance.
 func durationsMatch(a, b float64) bool {
@@ -717,9 +816,9 @@ func estimateSize(width, height int, framerate, duration float64) int64 {
 	return int64(bitrate * duration / 8)
 }
 
-// flagCorrupted records a video ffmpeg could not read for the report.
-func (p *processor) flagCorrupted(file string) {
-	log.Warnf("Potentially corrupted video file %q (ffmpeg could not read it)", file)
+// flagCorrupted records a potentially corrupted video for the report; why is logged.
+func (p *processor) flagCorrupted(file, why string) {
+	log.Warnf("Potentially corrupted video file %q (%s)", file, why)
 	p.mu.Lock()
 	p.corrupted[file] = struct{}{}
 	p.mu.Unlock()

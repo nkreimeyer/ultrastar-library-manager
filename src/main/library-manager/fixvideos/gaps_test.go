@@ -167,7 +167,7 @@ func TestWriteCorruptedReportUnreadable(t *testing.T) {
 	if err := os.Mkdir(report, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	p.flagCorrupted("/lib/a.avi")
+	p.flagCorrupted("/lib/a.avi", "test")
 	p.writeCorruptedReport()
 	if st := p.ops.Stats(); st.Failed != 1 || st.Written != 0 {
 		t.Errorf("Stats = %+v, want 1 failure and nothing written", st)

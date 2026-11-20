@@ -136,8 +136,8 @@ func TestWriteCorruptedReportMergesSorted(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &processor{cfg: cfg, ops: fsops.New(false), corrupted: map[string]struct{}{}}
-	p.flagCorrupted("/lib/c.avi")
-	p.flagCorrupted("/lib/a.avi")
+	p.flagCorrupted("/lib/c.avi", "test")
+	p.flagCorrupted("/lib/a.avi", "test")
 	p.writeCorruptedReport()
 
 	got := readFile(t, report)

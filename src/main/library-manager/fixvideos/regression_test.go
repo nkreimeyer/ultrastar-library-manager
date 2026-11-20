@@ -1,6 +1,7 @@
 package fixvideos
 
 import (
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -421,5 +422,131 @@ func TestTagByRemuxNeedsKnownDuration(t *testing.T) {
 	}
 	if st := p.ops.Stats(); st != (fsops.Stats{}) {
 		t.Errorf("Stats = %+v, want nothing done", st)
+	}
+}
+
+// ffmpeg exits 0 on an AVI with a damaged section and drops what it cannot decode, so the
+// re-encode comes out shorter: its video would run ahead of the song from there on, and the
+// conversion deletes the original. The original must stay, referenced and reported.
+func TestDamagedAviIsNotConverted(t *testing.T) {
+	requireFFmpeg(t)
+	cfg, songDir, outDir := newLibrary(t, false)
+	song := filepath.Join(songDir, "Artist - Song")
+	txt := "#TITLE:Song\n#ARTIST:Artist\n#MP3:video.avi\n#VIDEO:video.avi\n: 0 4 0 La\nE\n"
+	writeFile(t, filepath.Join(song, "song.txt"), txt)
+	video := filepath.Join(song, "video.avi")
+	args := []string{"-hide_banner", "-nostdin", "-loglevel", "error",
+		"-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=4",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+		"-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3", "-y", video}
+	if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
+		t.Skipf("cannot generate test media (%v): %s", err, out)
+	}
+	// Zero 30 % of the file from 30 % on: the header and the index stay intact.
+	data, err := os.ReadFile(video)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clear(data[len(data)*3/10 : len(data)*6/10])
+	if err := os.WriteFile(video, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := videoStreamDuration(video); err != nil || !durationsMatch(d, 4) {
+		t.Fatalf("fixture video duration = %v, %v; want 4 s", d, err)
+	}
+
+	ops := fsops.New(false)
+	if err := Run(cfg, ops); err != nil {
+		t.Fatal(err)
+	}
+	if st := ops.Stats(); st.Failed != 0 || st.Removed != 0 || st.Replaced != 0 {
+		t.Errorf("stats = %+v, want nothing removed, replaced or failed", st)
+	}
+	if got := readFile(t, video); got != string(data) {
+		t.Error("the damaged original changed")
+	}
+	if got := readFile(t, filepath.Join(song, "song.txt")); got != txt {
+		t.Errorf("txt = %q, want it unchanged", got)
+	}
+	if _, err := os.Stat(filepath.Join(song, "video.mp4")); !os.IsNotExist(err) {
+		t.Errorf("video.mp4 exists (err=%v)", err)
+	}
+	if got, want := readFile(t, filepath.Join(outDir, corruptedReportName)), video+"\n"; got != want {
+		t.Errorf("report = %q, want %q", got, want)
+	}
+	assertNoTempFiles(t, songDir)
+}
+
+func TestParseVideoStreamDuration(t *testing.T) {
+	for _, tc := range []struct {
+		json string
+		want float64
+	}{
+		{`{"streams":[{"duration":"4.000000"}]}`, 4},
+		{`{"streams":[{"duration":"N/A","tags":{"DURATION":"00:03:21.120000000"}}]}`, 201.12},
+		{`{"streams":[{"tags":{"DURATION-eng":"01:00:00.5"}}]}`, 3600.5},
+		{`{"streams":[{"tags":{"duration":"00:00:02.000000000"}}]}`, 2},
+		{`{"streams":[{"duration":"0","tags":{"DURATION":"00:00:02"}}]}`, 2},
+		{`{"streams":[{"tags":{"DURATIONS":"00:00:02","TITLE":"x"}}]}`, 0},
+		{`{"streams":[{"tags":{"DURATION":"garbage"}}]}`, 0},
+		{`{"streams":[{"tags":{"DURATION":"00:61:00"}}]}`, 0},
+		{`{"streams":[{"tags":{"DURATION":"00:00:00.000"}}]}`, 0},
+		{`{"streams":[{"duration":"N/A"}]}`, 0},
+		{`{"streams":[]}`, 0},
+		{`{}`, 0},
+	} {
+		got, err := parseVideoStreamDuration([]byte(tc.json))
+		if err != nil || math.Abs(got-tc.want) > 1e-9 {
+			t.Errorf("parseVideoStreamDuration(%s) = %v, %v; want %v", tc.json, got, err, tc.want)
+		}
+	}
+	if _, err := parseVideoStreamDuration([]byte("{")); err == nil {
+		t.Error("parseVideoStreamDuration of broken JSON: no error")
+	}
+}
+
+// Without a known video duration, the containers are compared if the audio is kept; a
+// stripped audio track may have been the longer stream, so then nothing is compared.
+func TestSameVideoDurationFallbacks(t *testing.T) {
+	requireFFmpeg(t)
+	dir := t.TempDir()
+	gen := func(name, dur string, extra ...string) string {
+		path := filepath.Join(dir, name)
+		args := slices.Concat([]string{"-hide_banner", "-nostdin", "-loglevel", "error",
+			"-f", "lavfi", "-i", "testsrc=size=64x48:rate=25:duration=" + dur,
+			"-f", "lavfi", "-i", "sine=frequency=440:duration=" + dur,
+			"-c:v", "mpeg4"}, extra, []string{"-y", path})
+		if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
+			t.Skipf("cannot generate test media (%v): %s", err, out)
+		}
+		return path
+	}
+	long, short := gen("long.mp4", "3"), gen("short.mp4", "1")
+	if ok, msg := sameVideoDuration(long, short, true); ok || !strings.Contains(msg, "instead of 3.000 s") {
+		t.Errorf("3 s vs 1 s = %v, %q; want a mismatch", ok, msg)
+	}
+	if ok, _ := sameVideoDuration(long, gen("same.mp4", "3"), false); !ok {
+		t.Error("3 s vs 3 s: mismatch")
+	}
+	// FLV has a container duration, but none per stream.
+	noTags := gen("nostream.flv", "3", "-c:v", "flv1")
+	if d, err := videoStreamDuration(noTags); err != nil || d != 0 {
+		t.Fatalf("fixture has a video duration (%v, %v)", d, err)
+	}
+	if ok, _ := sameVideoDuration(noTags, short, false); !ok {
+		t.Error("unknown video duration, audio stripped: compared anyway")
+	}
+	if ok, _ := sameVideoDuration(noTags, short, true); ok {
+		t.Error("unknown video duration, audio kept: the containers (3 s vs 1 s) were not compared")
+	}
+	if ok, _ := sameVideoDuration(noTags, gen("same.mkv", "3"), true); !ok {
+		t.Error("unknown video duration, audio kept, same container duration: mismatch")
+	}
+	broken := filepath.Join(dir, "broken.mp4")
+	if err := os.WriteFile(broken, []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ok, msg := sameVideoDuration(long, broken, true); ok || !strings.Contains(msg, "cannot read") {
+		t.Errorf("unreadable output = %v, %q; want a mismatch", ok, msg)
 	}
 }
