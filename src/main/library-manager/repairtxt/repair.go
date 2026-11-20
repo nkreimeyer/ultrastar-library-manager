@@ -23,6 +23,7 @@
 package repairtxt
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -30,6 +31,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	log "github.com/sirupsen/logrus"
 
@@ -59,6 +61,31 @@ type Options struct {
 	Strict bool
 	// Workers is the number of folders read in parallel (0 = 16).
 	Workers int
+	// SkipFiles lists damaged txts (by FileReport.Path) that are planned and reported but
+	// never written (FileReport.Excluded).
+	SkipFiles map[string]bool
+	// Ctx cancels the run (nil = never). It is checked while scanning and planning (then
+	// Run returns Ctx.Err() before anything is written) and before each write (then the
+	// report lists what was written so far).
+	Ctx context.Context
+	// Progress, if set, is called with the phase (PhaseScan, PhasePlan, PhaseLyrics,
+	// PhaseWrite), the number of items done and their total. It may be called from
+	// several goroutines at once.
+	Progress func(phase string, done, total int)
+}
+
+// Phases reported to Options.Progress.
+const (
+	PhaseScan   = "scan"
+	PhasePlan   = "plan"
+	PhaseLyrics = "lyrics"
+	PhaseWrite  = "write"
+)
+
+func (o Options) progress(phase string, done, total int) {
+	if o.Progress != nil {
+		o.Progress(phase, done, total)
+	}
 }
 
 type damagedTxt struct {
@@ -91,6 +118,7 @@ type FileReport struct {
 	Outside      int      `json:"outside_tags_and_notes,omitempty"`
 	LyricsUsed   bool     `json:"lyrics_used,omitempty"`
 	Written      bool     `json:"written"`
+	Excluded     bool     `json:"excluded,omitempty"` // in Options.SkipFiles: never written
 	Fixes        []Fix    `json:"fixes,omitempty"`
 	Unresolved   []Left   `json:"unresolved,omitempty"`
 }
@@ -146,11 +174,13 @@ func oldestOriginal(cfg config.Config, rel string) []byte {
 // damaged ones are returned. A txt with a copy in <out>/originals/ was repaired by an
 // earlier run and stays out of the corpus, so its repairs never count as evidence and a
 // second run decides like the first.
-func scan(cfg config.Config, ops *fsops.Ops, lex *Lexicon, workers int) (damaged []damagedTxt, skipped []Skipped, corpus, repairedBefore int, err error) {
+func scan(ctx context.Context, cfg config.Config, ops *fsops.Ops, lex *Lexicon, workers int, progress func(string, int, int)) (damaged []damagedTxt, skipped []Skipped, corpus, repairedBefore int, err error) {
 	folders, err := utils.GetAllSongFolders(ops, cfg.SongDir)
 	if err != nil {
 		return nil, nil, 0, 0, err
 	}
+	var scanned atomic.Int64
+	progress(PhaseScan, 0, len(folders))
 	var mu sync.Mutex
 	jobs := make(chan string)
 	var wg sync.WaitGroup
@@ -159,6 +189,10 @@ func scan(cfg config.Config, ops *fsops.Ops, lex *Lexicon, workers int) (damaged
 		go func() {
 			defer wg.Done()
 			for dir := range jobs {
+				if ctx.Err() != nil {
+					continue
+				}
+				progress(PhaseScan, int(scanned.Add(1)), len(folders))
 				txts, err := utils.SongTxtFiles(ops, dir)
 				if err != nil {
 					log.Warnf("%s: %v", dir, err)
@@ -224,13 +258,22 @@ func scan(cfg config.Config, ops *fsops.Ops, lex *Lexicon, workers int) (damaged
 	}
 	close(jobs)
 	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, nil, 0, 0, err
+	}
 	sort.Slice(damaged, func(i, j int) bool { return damaged[i].rel < damaged[j].rel })
 	sort.Slice(skipped, func(i, j int) bool { return skipped[i].Path < skipped[j].Path })
 	return damaged, skipped, corpus, repairedBefore, nil
 }
 
 // planAll plans every damaged txt (in parallel; the planner only reads).
-func planAll(p *planner, damaged []damagedTxt, refs map[int][]string, only []int, plans []*filePlan, workers int) {
+func planAll(ctx context.Context, p *planner, damaged []damagedTxt, refs map[int][]string, only []int, plans []*filePlan, workers int, progress func(string, int, int)) error {
+	total := len(damaged)
+	if only != nil {
+		total = len(only)
+	}
+	var planned atomic.Int64
+	progress(PhasePlan, 0, total)
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 	for range workers {
@@ -238,8 +281,12 @@ func planAll(p *planner, damaged []damagedTxt, refs map[int][]string, only []int
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
+				if ctx.Err() != nil {
+					continue
+				}
 				d := damaged[i]
 				plans[i] = p.plan(songInput{raw: d.raw, song: d.song, names: d.names, refs: refs[i], own: d.own, songWords: d.songWords})
+				progress(PhasePlan, int(planned.Add(1)), total)
 			}
 		}()
 	}
@@ -254,6 +301,7 @@ func planAll(p *planner, damaged []damagedTxt, refs map[int][]string, only []int
 	}
 	close(jobs)
 	wg.Wait()
+	return ctx.Err()
 }
 
 // Run repairs the damaged song txts below cfg.SongDir and writes the report.
@@ -270,8 +318,12 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 	if err != nil {
 		return err
 	}
+	ctx := opts.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	lex := NewLexicon()
-	damaged, skipped, corpus, repairedBefore, err := scan(cfg, ops, lex, workers)
+	damaged, skipped, corpus, repairedBefore, err := scan(ctx, cfg, ops, lex, workers, opts.progress)
 	if err != nil {
 		return err
 	}
@@ -289,15 +341,25 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 	log.Infof("repair: %d damaged txts, corpus of %d undamaged txts (%d words)", len(damaged), corpus, lex.global().total)
 	p := &planner{lex: lex, wordlists: wl, reviewed: rw.global, strict: opts.Strict}
 	plans := make([]*filePlan, len(damaged))
-	planAll(p, damaged, nil, nil, plans, workers)
+	if err := planAll(ctx, p, damaged, nil, nil, plans, workers, opts.progress); err != nil {
+		return err
+	}
 
 	refs := map[int][]string{}
 	if opts.Lyrics != nil {
-		var redo []int
-		for i, d := range damaged {
-			if len(plans[i].left) == 0 {
-				continue
+		var redo, ask []int
+		for i := range damaged {
+			if len(plans[i].left) > 0 {
+				ask = append(ask, i)
 			}
+		}
+		opts.progress(PhaseLyrics, 0, len(ask))
+		for n, i := range ask {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			opts.progress(PhaseLyrics, n+1, len(ask))
+			d := damaged[i]
 			tags := utils.HeaderTags(string(plans[i].apply(d.raw)))
 			artist, title := tags["ARTIST"], tags["TITLE"]
 			if artist == "" || title == "" {
@@ -314,10 +376,14 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 			}
 		}
 		log.Infof("repair: lyrics found for %d songs", len(redo))
-		planAll(p, damaged, refs, redo, plans, workers)
+		if err := planAll(ctx, p, damaged, refs, redo, plans, workers, opts.progress); err != nil {
+			return err
+		}
 	}
 
 	rep := Report{DryRun: cfg.DryRun, Corpus: corpus, RepairedBefore: repairedBefore, Skipped: skipped, UnmatchedSections: unmatched}
+	stopped := false
+	opts.progress(PhaseWrite, 0, len(damaged))
 	for i, d := range damaged {
 		fp := plans[i]
 		fr := FileReport{
@@ -325,16 +391,28 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 			Damaged: fp.total, Fixed: len(fp.repl), Weak: fp.weakCount, Left: fp.total - len(fp.repl),
 			Outside: fp.outside, LyricsUsed: len(refs[i]) > 0, Fixes: fp.fixes, Unresolved: fp.left,
 		}
-		if len(fp.repl) > 0 {
+		fr.Excluded = opts.SkipFiles[d.rel]
+		if !stopped && ctx.Err() != nil {
+			stopped = true
+			log.Warnf("repair: stopped; no further txts are written")
+		}
+		if len(fp.repl) > 0 && !fr.Excluded && !stopped {
 			fr.Written = writeRepaired(cfg, ops, d, fp.apply(d.raw))
 		}
+		opts.progress(PhaseWrite, i+1, len(damaged))
 		rep.Damaged += fr.Damaged
 		rep.Fixed += fr.Fixed
 		rep.Weak += fr.Weak
 		rep.Files = append(rep.Files, fr)
 	}
 	log.Infof("repair: %d of %d U+FFFD characters repaired (%d weak), %d left", rep.Fixed, rep.Damaged, rep.Weak, rep.Damaged-rep.Fixed)
-	return writeReports(cfg, ops, rep)
+	if err := writeReports(cfg, ops, rep); err != nil {
+		return err
+	}
+	if stopped {
+		return ctx.Err()
+	}
+	return nil
 }
 
 // writeRepaired backs the original up to <out>/originals/ and writes the repaired txt.
