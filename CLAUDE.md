@@ -14,9 +14,10 @@ is superseded.
 ```
 src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (go 1.24)
   main.go                     flags, validation, runs the modules in fixed order, summary + exit code;
-                              os.Args[1] == "organize"/"dedupe"/"add"/"remove" dispatches to the subcommand
+                              os.Args[1] == "organize"/"dedupe"/"add"/"remove"/"repair" dispatches to the subcommand
   organize_cmd.go             the organize, dedupe and add subcommands (organize.Mode): own FlagSet, -s tier lists, -undo, validation
   remove_cmd.go               the remove subcommand: -artist/-song/-from patterns, -undo
+  repair_cmd.go               the repair subcommand: -s, -wordlist [lang=]file, -words file, -lyrics, -strict
   main_test.go                flag validation (-deep/-move-broken need -k), module order, organize usage
   pipeline_test.go            fixtxt → cleanup (→ check) integration tests (real run, dry-run = real-run plan, idempotence)
   config/                     Config{SongDir, OutDir, DryRun}: path validation, output layout, marker file;
@@ -37,6 +38,11 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   fixvideos/                  ffmpeg: re-encode to H.264 mp4, downscale to fit 1920x1080, strip audio, flag corrupt files (tagged, idempotent)
   fixaudio/                   ffmpeg: downmix to stereo, peak-normalize to -3 dB, originals kept (tagged, idempotent)
   journal/                    content-fingerprint journal for media formats that cannot carry a marker tag
+  repairtxt/                  repair of U+FFFD-damaged txts: lexicon.go (corpus per language: words, edge forms,
+                              bigrams, char 4/5-grams, punctuation classes), language.go (#LANGUAGE codes, naive
+                              Bayes detection), text.go (tag/lyric segments with byte offsets), resolve.go (evidence
+                              levels, case), plan.go + words.go (per-file planning), wordlist.go, lyrics.go (lrclib.net
+                              client with cache), repair.go (Run, fffd_repair.txt/.json)
   organize/                   organize/dedupe/add: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey, StripCopySuffix),
                               content.go (ContentHash, union-find joining of groups by content),
                               remove.go (Pattern, ParsePatternFile, planRemove (pure), Remove, remove_plan.json/.txt),
@@ -70,6 +76,9 @@ Subcommands: `organize -s <dir>[:<dir>…] [-s …] -l <library> [-o <out>] [-pr
 `dedupe -l <library> [-o <out>] [-deep] [-n]` (in place: the library is the only source, keepers stay),
 `add -s … -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n]` (the library is always the first
 source of the first tier, library keepers stay, new keepers go to their bucket),
+`repair -s <dir> [-wordlist [lang=]<file>]… [-words <file>]… [-lyrics] [-strict] [-o <out>] [-n]` (U+FFFD repair; `-words`
+files have `[Artist - Title]` sections for one song (`reviewed.go`, matched like lyrics records, before the global words), see
+"Architecture notes"; uses `config.New`, so `-o` defaults to `sanitizer-output/`),
 `remove -l <library> [-artist <name>]… [-song "Artist - Title"]… [-from <file>]… [-o <out>] [-n]` (matching songs
 go to `<out>/removed/<rel>`; artist patterns match a subset of the collaboration names (`artistNames`), song
 patterns the SongKey with or without the duet marker; missing tags come from `utils.TagsFromFolderName`;
@@ -205,6 +214,41 @@ Same exit codes and leftover-argument rule.
   newest not-undone run backwards. A dry run executes the same steps through ops (MoveTo
   simulates the ordered moves), so its plan and move count match the real run
   (`TestRunDryRunMatchesRealRun`).
+- repair (`repairtxt`): every U+FFFD is one lost CP1252/CP1250 byte, so it is replaced by
+  exactly one rune that one of those codepages has (`allowedRune`); only the U+FFFD bytes
+  of the raw file change (tested: originals and repaired files differ nowhere else). Only
+  UTF-8 txts without a decode Problem are repaired. Words are rebuilt across note syllables
+  (`~` is transparent, breaks and player markers end a line). Evidence levels in order:
+  reviewed spellings (`-words`, unique), song (folder file names, fetched lyrics, own
+  undamaged words; min 1, ratio 3), corpus of
+  the song's languages (min 2, ratio 5), word lists (unique), global corpus (weak if the song
+  has a language); an undecided level narrows the candidate pool for the next. Then `¿`/`¡`
+  by the line's `?`/`!` (Spanish only), bigram context, apostrophe split, the char n-gram
+  model (weak = suggestion only), and edge punctuation only if no letter forms a known
+  4-gram there (never an apostrophe: words with edge apostrophes/punctuation are corpus
+  forms of their own, `goin’`, `¡oh`). Words still left that are split by a hyphen
+  syllable (`l� - cher - lich`) are looked up joined, known words only (never the
+  spelling model: `j�ng - ste` would become `jängste` after `Angst`). Languages =
+  `#LANGUAGE` codes plus the detected one if it beats them by 0.5 nats/word; detection is
+  naive Bayes with Jelinek-Mercer smoothing against the whole corpus (add-one or Dirichlet
+  smoothing let a word missing from both corpora cost a big corpus more, so songs drifted
+  to the small Dutch corpus). lrclib lookups fall back to first artist + title without
+  `(…)`/`[…]`, then the title alone; titles and artists match accent-insensitively; old
+  "not found" cache entries (no `version` 2) are looked up again. The mid-line case of a
+  repaired first letter follows the song's own lexicon (lyrics) before the corpus. The song's
+  own lexicon is built from its oldest copy in `originals/` if there is one (`oldestOriginal`),
+  so words an earlier run repaired are no evidence (a context-repaired `får` decided the
+  song's other `F�r` before the lyrics were asked). In `byContext` a candidate that alone
+  has the song's own bigrams wins over the corpus; otherwise they count twice next to it. It
+  comes first in `spell`
+  (`localSpellAt`: two distinct 5-gram windows support one letter, none another; counts and
+  4-grams of one song are noise, `très` made `dor�s` = `dorès`). An ASCII `'` in fetched
+  lyrics is read as the song's apostrophe (`songApostrophe`, default `’`).
+  Txts with a copy in `<out>/originals/` (repaired
+  before) are kept out of the corpus so repairs never become evidence. On songs.organized
+  (14,871 txts, 2026-11-20, txt-only copy): 1,203 damaged txts, 19,183 U+FFFD; 15,697 repaired
+  offline, 17,948 with `-lyrics` and the reviewed `Täterätätä`/`Määänner` (589 weak); no
+  file had NUL bytes.
 - check: `analyze` is a pure function over the parsed song and probed file info, so every
   rule is table-tested without ffmpeg. Findings are not `ops.Fail`s and don't change the
   exit code. Repeated tags resolve like UltraStar does (the last header occurrence wins;
@@ -379,8 +423,13 @@ case-sensitive, it scans the top level only, picks a winner by listing order, an
 - [x] NFC-insensitive file references;
 - [x] non-UTF-8 file names reported.
 
-**Still open:** mojibake repair and the tiered `U+FFFD` repair described below. Damaged
-files are already listed in `encoding_issues.txt`, which can serve as the work list.
+**Still open:** mojibake repair. The `U+FFFD` repair is **done** (2026-11) as the `repair`
+subcommand (`repairtxt`, tiers 1 and 3 below plus the library corpus, bigram context and
+a char n-gram model, reviewed spellings with `-words`; no LLM pass). Still open there:
+UTF-8 sequences lost as a whole (several U+FFFD for one character; stretched singing such as
+`M���nner` = `Määänner` is one per character and works), non-Latin scripts (Korean CP949),
+German `ae`/`ä` spellings as evidence (`Eine Maeh` → `Mäh`), and Dutch `ë` vs German `ß`
+style confusions of the spelling model in small corpora.
 
 The Python fixer *failed* on undecodable bytes and moved on to the next codec. The Go code
 silently replaces them. Restore the fail-then-fallback behaviour, in the right order:

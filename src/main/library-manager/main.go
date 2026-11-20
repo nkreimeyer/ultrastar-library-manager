@@ -56,6 +56,9 @@ func run() int {
 		case organize.ModeRemove:
 			return runRemove(os.Args[2:], flag.CommandLine.Output())
 		}
+		if os.Args[1] == "repair" {
+			return runRepair(os.Args[2:], flag.CommandLine.Output())
+		}
 	}
 	songDir := flag.String("s", "", "Path to the folder containing song sub-folders (required)")
 	outDir := flag.String("o", "", "Output folder for invalid/, extra-files/ and reports (default: "+config.DefaultOutDirName+"/ next to -s; must not be inside -s)")
@@ -69,7 +72,7 @@ func run() int {
 	runFixAudio := flag.Bool("a", false, "Run the audio-fixing and re-encoding module")
 	logLevel := flag.String("v", "info", "Log level (debug, info, warn, error)")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s -s <song-dir> [flags]\n       %s organize -s <dir>[%c<dir>...] [-s ...] -l <library> [flags]   (see %s organize -h)\n       %s dedupe -l <library> [flags]   (see %s dedupe -h)\n       %s add -s <dir>[%c<dir>...] [-s ...] -l <library> [flags]   (see %s add -h)\n       %s remove -l <library> [-artist <name>] [-song \"Artist - Title\"] [-from <file>] [flags]   (see %s remove -h)\n\nModules run in this order: fixtxt (-t), cleanup (-c), check (-k), fixvideos (-m), fixaudio (-a).\n\nFlags:\n", os.Args[0], os.Args[0], filepath.ListSeparator, os.Args[0], os.Args[0], os.Args[0], os.Args[0], filepath.ListSeparator, os.Args[0], os.Args[0], os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s -s <song-dir> [flags]\n       %s organize -s <dir>[%c<dir>...] [-s ...] -l <library> [flags]   (see %s organize -h)\n       %s dedupe -l <library> [flags]   (see %s dedupe -h)\n       %s add -s <dir>[%c<dir>...] [-s ...] -l <library> [flags]   (see %s add -h)\n       %s remove -l <library> [-artist <name>] [-song \"Artist - Title\"] [-from <file>] [flags]   (see %s remove -h)\n       %s repair -s <song-dir> [-wordlist <file>] [-lyrics] [flags]   (see %s repair -h)\n\nModules run in this order: fixtxt (-t), cleanup (-c), check (-k), fixvideos (-m), fixaudio (-a).\n\nFlags:\n", os.Args[0], os.Args[0], filepath.ListSeparator, os.Args[0], os.Args[0], os.Args[0], os.Args[0], filepath.ListSeparator, os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
