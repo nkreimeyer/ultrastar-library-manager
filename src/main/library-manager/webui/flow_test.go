@@ -119,6 +119,12 @@ func TestOrganizeFlow(t *testing.T) {
 	if j.State != stateDone || j.DryRun || j.Stats.Moved != 1 || j.Stats.Failed != 0 {
 		t.Fatalf("apply job: %+v", j)
 	}
+	// The browser reads the JSON names.
+	var raw map[string]any
+	s.do("GET", "/api/job", nil, &raw)
+	if st, _ := raw["stats"].(map[string]any); st["moved"] != 1.0 || st["failed"] != 0.0 {
+		t.Errorf("stats JSON = %v", raw["stats"])
+	}
 	if _, err := os.Stat(filepath.Join(out, "duplicates", "library", "Pop", "ABBA - SOS", "song.txt")); err != nil {
 		t.Errorf("duplicate not moved: %v", err)
 	}

@@ -1,0 +1,1309 @@
+// library-manager UI. Plain DOM, no build step. Every text goes in as a text node.
+
+const nf = new Intl.NumberFormat();
+const fmt = (n) => nf.format(n || 0);
+const plural = (n, one, many) => `${fmt(n)} ${n === 1 ? one : many}`;
+
+function h(tag, props, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "value") el.value = v;
+    else if (k === "checked") el.checked = v;
+    else if (k === "style") for (const [p, val] of Object.entries(v)) el.style.setProperty(p, val);
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat(Infinity)) {
+    if (kid == null || kid === false) continue;
+    el.append(kid instanceof Node ? kid : String(kid));
+  }
+  return el;
+}
+
+// add appends the kids that are not null or false (Node.append would write "null").
+function add(el, ...kids) {
+  for (const k of kids.flat(Infinity)) if (k != null && k !== false && k !== "") el.append(k);
+  return el;
+}
+
+class ApiError extends Error {
+  constructor(msg, status, details) {
+    super(msg);
+    this.status = status;
+    this.details = details;
+  }
+}
+
+async function call(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { error: text.trim() };
+  }
+  if (!res.ok) throw new ApiError(data?.error || res.statusText, res.status, data?.details);
+  return data;
+}
+const get = (p) => call("GET", p);
+const post = (p, b) => call("POST", p, b ?? {});
+
+// ---------------------------------------------------------------- state
+
+const TASKS = {
+  dedupe: {
+    title: "Tidy up my library",
+    desc: "Find songs that are in the library more than once, keep the best version and set the others aside.",
+  },
+  add: {
+    title: "Add new songs to my library",
+    desc: "Bring songs from other folders into the library. Songs it already has are compared, and only the best version is kept.",
+  },
+  organize: {
+    title: "Build a new library from folders",
+    desc: "Sort songs from one or more folders into a new library with a folder per first letter (A to Z, 0-9 and #).",
+  },
+  repair: {
+    title: "Fix broken characters",
+    desc: "Repair lyrics where letters like ä, ö, ü or ß were lost and now show up as �.",
+  },
+};
+
+const PHASES = {
+  inspect: "Checking songs",
+  move: "Moving songs",
+  scan: "Reading song files",
+  plan: "Working out the repairs",
+  lyrics: "Looking up lyrics online",
+  write: "Writing repaired files",
+};
+
+const JOB_TITLES = {
+  "organize-analyse": "Checking first. Nothing is changed yet.",
+  "organize-apply": "Moving songs",
+  "organize-undo": "Undoing the last run",
+  "repair-analyse": "Looking for broken characters. Nothing is changed yet.",
+  "repair-apply": "Repairing files",
+};
+
+const emptyForm = () => ({
+  library: "",
+  tiers: [[""]],
+  out: "",
+  priority: false,
+  ignoreThe: false,
+  deep: false,
+  songDir: "",
+  rout: "",
+  lyrics: false,
+  strict: false,
+  wordLists: [],
+  words: [],
+  lyricsCache: "",
+});
+
+function loadForm() {
+  try {
+    return { ...emptyForm(), ...JSON.parse(localStorage.getItem("lm-form") || "{}") };
+  } catch {
+    return emptyForm();
+  }
+}
+
+const S = {
+  mode: localStorage.getItem("lm-mode") === "advanced" ? "advanced" : "easy",
+  task: TASKS[localStorage.getItem("lm-task")] ? localStorage.getItem("lm-task") : "dedupe",
+  f: loadForm(),
+  sys: null,
+  view: "setup", // setup | running | review | done
+  job: null, // latest job state from the server
+  waitingFor: null, // id of the job this page started or follows
+  handled: new Set(),
+  org: null, // organize review view
+  rep: null, // repair analysis
+  choices: new Map(), // path\nword -> form
+  skip: new Set(),
+  open: new Set(), // open review sections
+  notice: null,
+  done: null,
+  resolved: null,
+  resolveError: null,
+  history: null,
+  logs: [],
+  logJob: null,
+};
+
+const advanced = () => S.mode === "advanced";
+const isOrganizeTask = () => S.task !== "repair";
+const saveForm = () => localStorage.setItem("lm-form", JSON.stringify(S.f));
+
+// ---------------------------------------------------------------- rendering
+
+const app = document.getElementById("app");
+
+function render() {
+  app.classList.toggle("wide", advanced() && S.view === "review" && !!S.org);
+  let content;
+  switch (S.view) {
+    case "running":
+      content = viewRunning();
+      break;
+    case "review":
+      content = S.task === "repair" ? viewRepairReview() : viewOrganizeReview();
+      break;
+    case "done":
+      content = viewDone();
+      break;
+    default:
+      content = viewSetup();
+  }
+  app.replaceChildren(content);
+  document.getElementById("log").hidden = !advanced();
+  for (const b of document.querySelectorAll(".switch button")) {
+    b.setAttribute("aria-pressed", String(b.dataset.mode === S.mode));
+  }
+}
+
+function noticeBox(n) {
+  if (!n) return null;
+  return h(
+    "div",
+    { class: `notice ${n.kind || ""}`, role: n.kind === "bad" ? "alert" : "status" },
+    n.title ? h("p", null, h("strong", null, n.title)) : null,
+    n.text ? h("p", null, n.text) : null,
+    n.details?.length ? h("ul", null, n.details.map((d) => h("li", { class: "small path" }, d))) : null,
+  );
+}
+
+// ---------------------------------------------------------------- system check
+
+function toolsPill() {
+  const el = document.getElementById("tools");
+  if (!S.sys) return;
+  const ff = S.sys.tools.find((t) => t.name === "ffmpeg");
+  const unknown = S.sys.tools.some((t) => t.ok && !t.known);
+  let cls = "ok";
+  let text = `ffmpeg ${ff?.version || ""}`;
+  if (!S.sys.toolsOK) {
+    cls = S.sys.tools.some((t) => !t.found) ? "bad" : "warn";
+    text = S.sys.tools.some((t) => !t.found) ? "ffmpeg missing" : "ffmpeg too old";
+  } else if (unknown) {
+    cls = "warn";
+  }
+  el.replaceChildren(h("span", { class: `dot ${cls}`, "aria-hidden": "true" }), text);
+  el.title = S.sys.tools.map((t) => `${t.name}: ${t.found ? t.path + " " + (t.version || "") : "not found"}`).join("\n");
+}
+
+function systemNotice() {
+  if (!S.sys || S.sys.toolsOK) return null;
+  const missing = S.sys.tools.filter((t) => !t.found).map((t) => t.name);
+  const title = missing.length
+    ? `${missing.join(" and ")} ${missing.length === 1 ? "is" : "are"} not installed`
+    : `ffmpeg is older than ${S.sys.minVersion}`;
+  return h(
+    "div",
+    { class: "notice" },
+    h("p", null, h("strong", null, title)),
+    h(
+      "p",
+      null,
+      "Without it, video and audio quality are not compared when the best version of a song is picked. Fixing broken characters works without it.",
+    ),
+    h("p", { class: "small" }, S.sys.installHint),
+    advanced() ? h("ul", null, S.sys.tools.filter((t) => t.problem).map((t) => h("li", { class: "small" }, `${t.name}: ${t.problem}`))) : null,
+    h("p", null, h("button", { class: "btn", type: "button", onclick: loadSystem }, "Check again")),
+  );
+}
+
+async function loadSystem() {
+  try {
+    S.sys = await get("/api/system");
+    toolsPill();
+    if (S.view === "setup") render();
+  } catch (e) {
+    if (e.status === 403) {
+      app.replaceChildren(
+        h("h1", null, "Open the link from the terminal"),
+        h("p", null, "This page only works through the address library-manager printed when it started. It contains a one-time key."),
+      );
+      return false;
+    }
+    document.getElementById("tools").textContent = "ffmpeg check failed";
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------- folder fields
+
+function folderInput(value, onChange, label) {
+  const input = h("input", {
+    type: "text",
+    value,
+    placeholder: "Pick or paste a folder",
+    "aria-label": label,
+    spellcheck: "false",
+    oninput: (e) => onChange(e.target.value),
+  });
+  const browse = h("button", {
+    class: "btn",
+    type: "button",
+    onclick: () =>
+      pickFolder(input.value, (p) => {
+        input.value = p;
+        onChange(p);
+      }),
+  }, "Browse…");
+  return h("div", { class: "row" }, input, browse);
+}
+
+function folderField(label, key, hint) {
+  return h(
+    "div",
+    { class: "field" },
+    h("div", { class: "label" }, label),
+    folderInput(S.f[key], (v) => setField(key, v), label),
+    hint ? h("p", { class: "hint" }, hint) : null,
+  );
+}
+
+function setField(key, v) {
+  S.f[key] = v;
+  saveForm();
+  validateSoon();
+}
+
+// tiersField edits S.f.tiers. Easy mode shows one list (one tier); advanced mode shows the
+// priority groups.
+function tiersField(label, hint) {
+  const wrap = h("div", { class: "field" }, h("div", { class: "label" }, label));
+  const rerender = () => {
+    saveForm();
+    validateSoon();
+    render();
+  };
+  if (!advanced()) {
+    const flat = S.f.tiers.flat();
+    const list = flat.length ? flat : [""];
+    list.forEach((p, i) => {
+      const row = folderInput(p, (v) => {
+        list[i] = v;
+        S.f.tiers = [list];
+        saveForm();
+        validateSoon();
+      }, `${label} ${i + 1}`);
+      if (list.length > 1) {
+        row.append(h("button", { class: "btn", type: "button", "aria-label": "Remove this folder", onclick: () => {
+          list.splice(i, 1);
+          S.f.tiers = [list];
+          rerender();
+        } }, "Remove"));
+      }
+      wrap.append(row, h("div", { style: { height: "0.4rem" } }));
+    });
+    wrap.append(h("button", { class: "link", type: "button", onclick: () => {
+      S.f.tiers = [[...list, ""]];
+      rerender();
+    } }, "Add another folder"));
+    if (hint) wrap.append(h("p", { class: "hint" }, hint));
+    return wrap;
+  }
+  S.f.tiers.forEach((tier, ti) => {
+    const box = h("div", { class: "tier" }, h("div", { class: "tier-title" }, S.f.tiers.length > 1 ? `Priority group ${ti + 1}` : "Folders"));
+    tier.forEach((p, i) => {
+      const row = folderInput(p, (v) => {
+        tier[i] = v;
+        saveForm();
+        validateSoon();
+      }, `Group ${ti + 1}, folder ${i + 1}`);
+      row.append(h("button", { class: "btn", type: "button", "aria-label": "Remove this folder", onclick: () => {
+        tier.splice(i, 1);
+        if (!tier.length) S.f.tiers.splice(ti, 1);
+        if (!S.f.tiers.length) S.f.tiers = [[""]];
+        rerender();
+      } }, "Remove"));
+      box.append(row);
+    });
+    box.append(h("button", { class: "link", type: "button", onclick: () => {
+      tier.push("");
+      rerender();
+    } }, "Add a folder to this group"));
+    wrap.append(box);
+  });
+  wrap.append(h("button", { class: "link", type: "button", onclick: () => {
+    S.f.tiers.push([""]);
+    rerender();
+  } }, "Add a lower-priority group"));
+  wrap.append(h("p", { class: "hint" }, "Earlier groups win ties. With “Priority decides first”, a song from an earlier group always wins over a later one."));
+  return wrap;
+}
+
+function listField(label, key, hint, placeholder) {
+  const wrap = h("div", { class: "field" }, h("div", { class: "label" }, label));
+  S.f[key].forEach((v, i) => {
+    wrap.append(h("div", { class: "row" },
+      h("input", { type: "text", value: v, placeholder, "aria-label": `${label} ${i + 1}`, oninput: (e) => {
+        S.f[key][i] = e.target.value;
+        saveForm();
+        validateSoon();
+      } }),
+      h("button", { class: "btn", type: "button", onclick: () => {
+        S.f[key].splice(i, 1);
+        saveForm();
+        validateSoon();
+        render();
+      } }, "Remove"),
+    ), h("div", { style: { height: "0.4rem" } }));
+  });
+  wrap.append(h("button", { class: "link", type: "button", onclick: () => {
+    S.f[key].push("");
+    saveForm();
+    render();
+  } }, "Add one"));
+  if (hint) wrap.append(h("p", { class: "hint" }, hint));
+  return wrap;
+}
+
+function checkField(label, key, hint) {
+  return h("label", { class: "check" },
+    h("input", { type: "checkbox", checked: S.f[key], onchange: (e) => setField(key, e.target.checked) }),
+    h("span", null, label, hint ? h("span", { class: "hint small muted" }, h("br"), hint) : null),
+  );
+}
+
+// ---------------------------------------------------------------- folder picker
+
+async function pickFolder(start, onPick) {
+  const dlg = document.getElementById("picker");
+  let hidden = false;
+  const show = async (path) => {
+    let l;
+    try {
+      l = await get(`/api/fs/list?path=${encodeURIComponent(path || "")}${hidden ? "&hidden=1" : ""}`);
+    } catch (e) {
+      l = { path, dirs: [], roots: [], error: e.message };
+    }
+    const list = h("ul", { class: "picker-list" });
+    if (l.parent) list.append(h("li", null, h("button", { type: "button", onclick: () => show(l.parent) }, "↑ Up one level")));
+    for (const d of l.dirs) list.append(h("li", null, h("button", { type: "button", onclick: () => show(d.path) }, d.name)));
+    if (!l.dirs.length) list.append(h("li", { class: "empty" }, l.error ? `Cannot open this folder: ${l.error}` : "No folders in here."));
+    dlg.replaceChildren(h("form", { method: "dialog", class: "dlg" },
+      h("h2", null, "Pick a folder"),
+      h("div", { class: "picker-roots" }, l.roots.map((r) => h("button", { class: "btn", type: "button", onclick: () => show(r.path) }, r.name))),
+      h("p", { class: "path" }, l.path),
+      list,
+      h("label", { class: "check" }, h("input", { type: "checkbox", checked: hidden, onchange: (e) => {
+        hidden = e.target.checked;
+        show(l.path);
+      } }), h("span", { class: "small" }, "Show hidden folders")),
+      h("div", { class: "actions" },
+        h("button", { class: "btn primary", type: "button", disabled: !!l.error, onclick: () => {
+          dlg.close();
+          onPick(l.path);
+        } }, "Use this folder"),
+        h("button", { class: "btn", value: "cancel" }, "Cancel"),
+      ),
+    ));
+    if (!dlg.open) dlg.showModal();
+    list.querySelector("button")?.focus();
+  };
+  await show(start);
+}
+
+function confirmDialog(title, text, okLabel) {
+  const dlg = document.getElementById("confirm");
+  return new Promise((resolve) => {
+    dlg.replaceChildren(h("form", { method: "dialog", class: "dlg" },
+      h("h2", null, title),
+      text.map((t) => h("p", null, t)),
+      h("div", { class: "actions" },
+        h("button", { class: "btn primary", value: "ok" }, okLabel),
+        h("button", { class: "btn", value: "cancel", autofocus: true }, "Cancel"),
+      ),
+    ));
+    dlg.returnValue = "";
+    dlg.onclose = () => resolve(dlg.returnValue === "ok");
+    dlg.showModal();
+  });
+}
+
+// ---------------------------------------------------------------- setup
+
+function organizeRequest() {
+  return {
+    mode: S.task,
+    tiers: S.task === "dedupe" ? [] : S.f.tiers.map((t) => t.map((p) => p.trim()).filter(Boolean)).filter((t) => t.length),
+    library: S.f.library.trim(),
+    out: advanced() ? S.f.out.trim() : "",
+    priority: advanced() && S.f.priority,
+    ignoreThe: advanced() && S.f.ignoreThe,
+    deep: advanced() && S.f.deep,
+  };
+}
+
+function repairRequest() {
+  return {
+    songDir: S.f.songDir.trim(),
+    out: advanced() ? S.f.rout.trim() : "",
+    lyrics: S.f.lyrics,
+    strict: advanced() && S.f.strict,
+    wordLists: advanced() ? S.f.wordLists.map((s) => s.trim()).filter(Boolean) : [],
+    words: advanced() ? S.f.words.map((s) => s.trim()).filter(Boolean) : [],
+    lyricsCache: advanced() && S.f.lyrics ? S.f.lyricsCache.trim() : "",
+  };
+}
+
+let validateTimer = 0;
+let validateSeq = 0;
+function validateSoon() {
+  clearTimeout(validateTimer);
+  validateTimer = setTimeout(validate, 300);
+}
+
+async function validate() {
+  const seq = ++validateSeq;
+  const empty = isOrganizeTask() ? !S.f.library.trim() : !S.f.songDir.trim();
+  if (empty) {
+    S.resolved = null;
+    S.resolveError = null;
+    S.history = null;
+    updateResolved();
+    return;
+  }
+  try {
+    const res = isOrganizeTask()
+      ? await post("/api/organize/validate", organizeRequest())
+      : await post("/api/repair/validate", repairRequest());
+    if (seq !== validateSeq) return;
+    S.resolved = res;
+    S.resolveError = null;
+    if (isOrganizeTask() && advanced()) loadHistory();
+  } catch (e) {
+    if (seq !== validateSeq) return;
+    S.resolved = null;
+    S.resolveError = e.message;
+    S.history = null;
+  }
+  updateResolved();
+}
+
+async function loadHistory() {
+  try {
+    S.history = await post("/api/organize/history", { library: S.resolved.library, out: S.resolved.outDir });
+  } catch {
+    S.history = null;
+  }
+  const box = document.getElementById("history");
+  if (box) box.replaceChildren(historyList());
+}
+
+function updateResolved() {
+  const el = document.getElementById("resolved");
+  const btn = document.getElementById("start");
+  if (!el || !btn) return;
+  btn.disabled = !S.resolved;
+  if (S.resolveError) {
+    el.replaceChildren(h("span", { class: "error-text" }, S.resolveError));
+  } else if (S.resolved) {
+    const out = S.resolved.outDir;
+    el.replaceChildren(
+      isOrganizeTask() ? "Set-aside songs, reports and the record for undoing go to " : "Reports and copies of the original files go to ",
+      h("span", { class: "path" }, out),
+      ".",
+    );
+  } else {
+    el.replaceChildren(isOrganizeTask() ? "Pick the library folder to go on." : "Pick the song folder to go on.");
+  }
+}
+
+function viewSetup() {
+  const frag = h("div");
+  add(frag, h("h1", null, "What do you want to do?"));
+  add(frag, noticeBox(S.notice), systemNotice() || "");
+  const tasks = h("ul", { class: "tasks", role: "radiogroup", "aria-label": "Task" });
+  for (const [key, t] of Object.entries(TASKS)) {
+    tasks.append(h("li", null, h("label", null,
+      h("input", { type: "radio", name: "task", value: key, checked: S.task === key, onchange: () => {
+        S.task = key;
+        localStorage.setItem("lm-task", key);
+        S.notice = null;
+        S.resolved = null;
+        S.resolveError = null;
+        render();
+        validate();
+      } }),
+      h("span", { class: "t" }, t.title),
+      h("span", { class: "d" }, t.desc),
+    )));
+  }
+  add(frag, tasks);
+
+  const fields = h("section", { "aria-label": "Folders and options" });
+  switch (S.task) {
+    case "dedupe":
+      fields.append(folderField("Your library", "library", "The folder that holds your songs. Duplicates are moved out of it; the best version of each song stays where it is."));
+      break;
+    case "add":
+      fields.append(folderField("Your library", "library", "The songs end up here, sorted into a folder per first letter."));
+      fields.append(tiersField("Folders with new songs"));
+      break;
+    case "organize":
+      fields.append(tiersField("Folders to take songs from", "The songs are moved out of these folders."));
+      fields.append(folderField("New library folder", "library", "Can be a new, empty folder."));
+      break;
+    case "repair":
+      fields.append(folderField("Song folder", "songDir", "Every song below this folder is checked."));
+      fields.append(checkField("Also look up lyrics online", "lyrics", "Repairs more words. This sends the artist and title of each song that still has broken characters to lrclib.net."));
+      break;
+  }
+  if (advanced()) {
+    const opts = h("section", { "aria-label": "Advanced options" }, h("h2", null, "Options"));
+    if (isOrganizeTask()) {
+      if (S.task !== "dedupe") {
+        opts.append(checkField("Priority decides first (-priority)", "priority", "A song from an earlier priority group always wins, before quality is compared."));
+        opts.append(checkField("Sort “The …” by the next word (-ignore-the)", "ignoreThe", "“The Beatles” goes into B instead of T."));
+      }
+      opts.append(checkField("Decode every media file completely (-deep)", "deep", "Finds damaged audio and video, but is slow."));
+      opts.append(h("div", { class: "field" }, h("div", { class: "label" }, "Output folder (-o)"),
+        folderInput(S.f.out, (v) => setField("out", v), "Output folder"),
+        h("p", { class: "hint" }, "Empty: organize-output next to the library.")));
+    } else {
+      opts.append(checkField("Only certain repairs (-strict)", "strict", "Best guesses are listed but not written."));
+      opts.append(listField("Word lists (-wordlist)", "wordLists", "One file per line, optionally with a language: de=/path/to/de.txt", "de=/path/to/words.txt"));
+      opts.append(listField("Reviewed spellings (-words)", "words", "Files with one word per line; [Artist - Title] sections apply to one song.", "/path/to/words.txt"));
+      if (S.f.lyrics) opts.append(h("div", { class: "field" }, h("div", { class: "label" }, "Lyrics cache (-lyrics-cache)"),
+        folderInput(S.f.lyricsCache, (v) => setField("lyricsCache", v), "Lyrics cache"),
+        h("p", { class: "hint" }, "Empty: lyrics-cache in the output folder.")));
+      opts.append(h("div", { class: "field" }, h("div", { class: "label" }, "Output folder (-o)"),
+        folderInput(S.f.rout, (v) => setField("rout", v), "Output folder"),
+        h("p", { class: "hint" }, "Empty: sanitizer-output next to the song folder.")));
+    }
+    fields.append(opts);
+  }
+  add(frag, fields);
+  add(frag, h("p", { class: "resolved", id: "resolved", "aria-live": "polite" }));
+  add(frag, h("div", { class: "actions" },
+    h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: startAnalysis }, "Check first"),
+    h("span", { class: "muted small" }, "Nothing is changed yet. You see what would happen and decide then."),
+  ));
+  if (advanced() && isOrganizeTask()) {
+    add(frag, h("h2", null, "Earlier runs"), h("div", { id: "history" }, historyList()));
+  }
+  queueMicrotask(updateResolved);
+  return frag;
+}
+
+function historyList() {
+  if (!S.history) return h("p", { class: "muted small" }, "Pick a library to see its earlier runs.");
+  const runs = S.history.runs.filter((r) => r.moves > 0);
+  if (!runs.length) return h("p", { class: "muted small" }, "No runs yet with this output folder.");
+  return h("ul", { class: "history" }, runs.map((r) => h("li", null,
+    h("span", null, r.time ? new Date(r.time).toLocaleString() : r.id),
+    h("span", { class: "num" }, plural(r.moves, "move", "moves")),
+    r.undone ? h("span", { class: "muted" }, "undone")
+      : r.next ? h("button", { class: "link", type: "button", onclick: () => undo(S.resolved.library, S.resolved.outDir) }, "Undo this run")
+      : h("span", { class: "muted" }, "kept"),
+  )));
+}
+
+async function startJob(path, body) {
+  S.notice = null;
+  try {
+    const job = await post(path, body);
+    S.job = job;
+    S.waitingFor = job.id;
+    S.view = "running";
+    render();
+    if (S.lastJob?.id === job.id && S.lastJob.state !== "running") onJobEnd(S.lastJob);
+  } catch (e) {
+    S.notice = { kind: "bad", title: e.message, details: e.details };
+    render();
+  }
+}
+
+function startAnalysis() {
+  if (isOrganizeTask()) startJob("/api/organize/analyse", organizeRequest());
+  else startJob("/api/repair/analyse", repairRequest());
+}
+
+function undo(library, out) {
+  startJob("/api/organize/undo", { library, out });
+}
+
+// ---------------------------------------------------------------- running
+
+// A fixed melody for the note bars: lane (0 = top) and length per note.
+const MELODY = [[2, 3], [2, 2], [1, 3], [0, 4], [1, 2], [2, 3], [3, 5], [2, 2], [1, 2], [1, 3], [0, 2], [0, 4],
+  [1, 3], [2, 2], [3, 3], [3, 2], [2, 4], [1, 2], [2, 3], [3, 6]];
+
+function viewRunning() {
+  const j = S.job || {};
+  const notes = h("div", { class: "notes", "aria-hidden": "true" });
+  let x = 0;
+  const total = MELODY.reduce((s, [, len]) => s + len + 1, 0);
+  for (const [lane, len] of MELODY) {
+    notes.append(h("i", { "data-at": String(x / total), style: {
+      left: `${(x / total) * 100}%`, width: `${(len / total) * 100}%`, top: `${lane * 16 + 4}px`,
+    } }));
+    x += len + 1;
+  }
+  const box = h("div", null,
+    h("h1", null, JOB_TITLES[j.kind] || "Working"),
+    h("div", { class: "stage" },
+      notes,
+      h("div", { class: "lyric", id: "lyric", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100" },
+        h("span", { class: "base" }), h("span", { class: "sung", "aria-hidden": "true" })),
+      h("div", { class: "counter", id: "counter" }),
+    ),
+    h("div", { class: "actions" },
+      h("button", { class: "btn", type: "button", id: "stop", onclick: stopJob }, "Stop"),
+      h("span", { class: "muted small", id: "stop-hint" },
+        j.kind === "organize-apply" ? "Stopping finishes the current move; undo puts back what was moved." : "Stopping changes nothing."),
+    ),
+  );
+  queueMicrotask(updateRunning);
+  return box;
+}
+
+function updateRunning() {
+  const j = S.job;
+  const lyric = document.getElementById("lyric");
+  if (!j || !lyric) return;
+  const pct = j.total > 0 ? Math.min(100, (j.done / j.total) * 100) : 0;
+  const text = PHASES[j.phase] || "Getting started";
+  lyric.querySelector(".base").textContent = text;
+  const sung = lyric.querySelector(".sung");
+  sung.textContent = text;
+  lyric.style.setProperty("--p", `${pct}%`);
+  lyric.setAttribute("aria-valuenow", String(Math.round(pct)));
+  lyric.setAttribute("aria-valuetext", `${text}: ${fmt(j.done)} of ${fmt(j.total)}`);
+  for (const n of document.querySelectorAll(".notes i")) n.classList.toggle("sung", Number(n.dataset.at) * 100 < pct);
+  const parts = [];
+  if (j.total > 0) parts.push(`${fmt(j.done)} of ${fmt(j.total)}`);
+  if (!j.dryRun && j.stats?.moved) parts.push(`${plural(j.stats.moved, "folder", "folders")} moved`);
+  if (!j.dryRun && j.stats?.written) parts.push(`${plural(j.stats.written, "file", "files")} written`);
+  if (j.stats?.failed) parts.push(`${plural(j.stats.failed, "problem", "problems")}`);
+  document.getElementById("counter").textContent = parts.join(", ");
+}
+
+async function stopJob() {
+  const btn = document.getElementById("stop");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Stopping…";
+  }
+  try {
+    await post("/api/job/cancel");
+  } catch (e) {
+    S.notice = { kind: "bad", title: e.message };
+  }
+}
+
+// ---------------------------------------------------------------- job events
+
+function connectEvents() {
+  const es = new EventSource("/api/job/events");
+  es.addEventListener("job", (e) => {
+    const j = JSON.parse(e.data);
+    S.lastJob = j;
+    if (j.id !== S.logJob) {
+      S.logJob = j.id;
+      S.logs = [];
+      renderLogs();
+    }
+    if (j.id !== S.waitingFor) return;
+    S.job = j;
+    if (j.state === "running") updateRunning();
+    else onJobEnd(j);
+  });
+  es.addEventListener("log", (e) => {
+    const lines = JSON.parse(e.data);
+    S.logs.push(...lines);
+    if (S.logs.length > 5000) S.logs.splice(0, S.logs.length - 5000);
+    appendLogs(lines);
+  });
+}
+
+async function onJobEnd(j) {
+  if (S.handled.has(j.id)) return;
+  S.handled.add(j.id);
+  S.waitingFor = null;
+  const failed = (title) => ({ kind: "bad", title, text: j.error, details: j.details });
+  try {
+    switch (j.kind) {
+      case "organize-analyse":
+        if (j.state === "done") {
+          S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`);
+          S.open = new Set();
+          S.view = "review";
+        } else {
+          S.view = "setup";
+          S.notice = j.state === "cancelled" ? { kind: "", title: "Stopped. Nothing was changed." } : failed("The check did not finish");
+        }
+        break;
+      case "organize-apply":
+        if (j.state === "done" || j.state === "cancelled") {
+          S.done = { kind: "organize", job: j, stopped: j.state === "cancelled", cfg: S.org.config };
+          S.view = "done";
+        } else if (j.result?.planChanged) {
+          S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`);
+          S.view = "review";
+          S.notice = { kind: "bad", title: "Something changed since you checked, so nothing was moved", text: "Here is the new plan. Look through it again before you move anything.", details: advanced() ? j.details : null };
+        } else {
+          S.view = "review";
+          S.notice = failed("Moving did not finish");
+        }
+        break;
+      case "organize-undo":
+        S.done = { kind: "undo", job: j, cfg: S.done?.cfg };
+        S.view = "done";
+        if (j.state === "failed") S.notice = failed("Undo did not finish");
+        break;
+      case "repair-analyse":
+        if (j.state === "done") {
+          S.rep = await get(`/api/repair/analysis?id=${encodeURIComponent(j.result.analysis)}`);
+          S.choices = new Map();
+          S.skip = new Set();
+          S.open = new Set();
+          S.view = "review";
+        } else {
+          S.view = "setup";
+          S.notice = j.state === "cancelled" ? { kind: "", title: "Stopped. Nothing was changed." } : failed("The check did not finish");
+        }
+        break;
+      case "repair-apply":
+        if (j.state === "failed") {
+          S.view = "review";
+          S.notice = failed("Repairing did not finish");
+        } else {
+          S.done = { kind: "repair", job: j, stopped: j.state === "cancelled" };
+          S.view = "done";
+        }
+        break;
+      default:
+        S.view = "setup";
+    }
+  } catch (e) {
+    S.view = "setup";
+    S.notice = { kind: "bad", title: e.message };
+  }
+  render();
+  window.scrollTo(0, 0);
+}
+
+// ---------------------------------------------------------------- log panel
+
+const LEVELS = { trace: 0, debug: 1, info: 2, warning: 3, error: 4, fatal: 5, panic: 6 };
+const logPre = document.getElementById("log-lines");
+const logLevel = document.getElementById("log-level");
+
+function logLine(l) {
+  const t = new Date(l.time).toLocaleTimeString();
+  return h("span", { class: `lv-${l.level}` }, `${t} ${l.level.padEnd(7)} ${l.msg}\n`);
+}
+
+function appendLogs(lines) {
+  const min = LEVELS[logLevel.value];
+  for (const l of lines) if (LEVELS[l.level] >= min) logPre.append(logLine(l));
+  while (logPre.childNodes.length > 5000) logPre.firstChild.remove();
+  document.getElementById("log-count").textContent = S.logs.length ? plural(S.logs.length, "line", "lines") : "";
+  if (document.getElementById("log-follow").checked) logPre.scrollTop = logPre.scrollHeight;
+}
+
+function renderLogs() {
+  logPre.replaceChildren();
+  appendLogs(S.logs);
+}
+logLevel.addEventListener("change", renderLogs);
+
+// ---------------------------------------------------------------- organize review
+
+const songName = (s) => (s.artist || s.title ? `${s.artist || "?"} – ${s.title || "?"}` : s.rel);
+const where = (s) => h("span", { class: "path" }, `${s.label}: ${s.rel}`);
+
+function qualityText(q) {
+  const parts = [];
+  if (q.video) parts.push(q.videoHeight ? `video ${q.videoHeight}p` : "video");
+  else parts.push("no video");
+  if (q.audioKbps) parts.push(`${q.audioKbps} kbit/s audio`);
+  parts.push(q.cover ? "cover" : "no cover");
+  if (q.background) parts.push("background");
+  if (q.warnings) parts.push(plural(q.warnings, "warning", "warnings"));
+  return parts.join(", ");
+}
+
+async function setExcluded(refs, on) {
+  const ex = new Set(S.org.excluded);
+  for (const r of refs) on ? ex.add(r) : ex.delete(r);
+  try {
+    S.org = await post("/api/organize/exclude", { analysis: S.org.id, exclude: [...ex] });
+    S.notice = null;
+  } catch (e) {
+    S.notice = { kind: "bad", title: e.message };
+  }
+  const y = window.scrollY;
+  render();
+  window.scrollTo(0, y);
+}
+
+function cappedList(items, renderItem, key) {
+  const limit = S.open.has(`${key}:all`) ? Infinity : 200;
+  const ul = h("ul", { class: "songs" }, items.slice(0, limit).map(renderItem));
+  if (items.length > limit) {
+    return h("div", null, ul, h("button", { class: "link", type: "button", onclick: () => {
+      S.open.add(`${key}:all`);
+      render();
+    } }, `Show all ${fmt(items.length)}`));
+  }
+  return ul;
+}
+
+function tallyItem(key, kind, n, sentence, body) {
+  const open = S.open.has(key) && n > 0;
+  const id = `tally-${key}`;
+  return h("li", { class: `kind-${kind}` },
+    h("button", { class: "tally-head", type: "button", "aria-expanded": String(open), "aria-controls": id, disabled: n === 0, onclick: () => {
+      open ? S.open.delete(key) : S.open.add(key);
+      render();
+    } },
+      h("span", { class: "n" }, fmt(n)),
+      h("span", null, sentence),
+      n > 0 ? h("span", { class: "chev", "aria-hidden": "true" }, open ? "Hide" : "Show") : null,
+    ),
+    open ? h("div", { class: "tally-body", id }, body()) : null,
+  );
+}
+
+function viewOrganizeReview() {
+  const v = S.org;
+  const songs = v.songs;
+  const by = (action) => songs.map((s, i) => ({ ...s, i })).filter((s) => s.action === action);
+  const dupsOf = (i) => songs.filter((s) => s.action === "duplicate" && s.other === i);
+  const sum = v.summary;
+  const moving = sum.toLibrary + sum.duplicates + sum.invalid;
+  const frag = h("div");
+  add(frag, h("h1", null, "This is what would happen"));
+  add(frag, noticeBox(S.notice));
+  if (v.applied) add(frag, noticeBox({ kind: "good", title: "This plan was carried out. Check again for a new one." }));
+  for (const note of v.notes) add(frag, noticeBox({ kind: "", text: note }));
+
+  const keeperItem = (s) => {
+    const dups = dupsOf(s.i);
+    return h("li", null,
+      h("div", { class: "song-line" },
+        h("div", null,
+          h("div", { class: "song-name" }, songName(s), s.duet ? h("span", { class: "badge" }, "duet") : null),
+          h("div", { class: "song-meta" }, s.action === "library" ? ["to ", h("span", { class: "path" }, s.target), " from ", where(s)] : where(s)),
+          dups.length ? h("ul", { class: "versions" }, dups.map((d) => h("li", null, "Also found in ", where(d), ": set aside (", d.reason, ")"))) : null,
+        ),
+        h("button", { class: "link", type: "button", onclick: () => setExcluded([s.ref, ...dups.map((d) => d.ref)], true) }, "Leave this song alone"),
+      ),
+    );
+  };
+  const dupItem = (s) => h("li", null,
+    h("div", { class: "song-line" },
+      h("div", null,
+        h("div", { class: "song-name" }, songName(s), s.markedCopy ? h("span", { class: "badge dup" }, "copy") : null),
+        h("div", { class: "song-meta" }, where(s)),
+        h("div", { class: "song-meta" }, "Kept instead: ", s.other >= 0 ? where(songs[s.other]) : "?", ". Why: ", s.reason, "."),
+        advanced() && s.other >= 0 ? h("div", { class: "song-meta" }, "This one: ", qualityText(s.quality), ". Kept one: ", qualityText(songs[s.other].quality), ".") : null,
+      ),
+      h("button", { class: "link", type: "button", onclick: () => setExcluded([s.ref], true) }, "Leave it where it is"),
+    ),
+  );
+  const invalidItem = (s) => h("li", null,
+    h("div", { class: "song-line" },
+      h("div", null,
+        h("div", { class: "song-name" }, songName(s)),
+        h("div", { class: "song-meta" }, where(s)),
+        h("div", { class: "song-meta" }, "Problems: ", (s.errors || []).join(", ") || s.reason),
+        s.other >= 0 ? h("div", { class: "song-meta" }, "A working version is kept: ", where(songs[s.other])) : null,
+      ),
+      h("button", { class: "link", type: "button", onclick: () => setExcluded([s.ref], true) }, "Leave it where it is"),
+    ),
+  );
+  const leftItem = (s) => h("li", null,
+    h("div", { class: "song-name" }, songName(s)),
+    h("div", { class: "song-meta" }, where(s)),
+    h("div", { class: "song-meta" }, s.reason),
+  );
+  const excludedItem = (s) => h("li", null,
+    h("div", { class: "song-line" },
+      h("div", null, h("div", { class: "song-name" }, songName(s)), h("div", { class: "song-meta" }, where(s))),
+      h("button", { class: "link", type: "button", onclick: () => setExcluded([s.ref], false) }, "Include it again"),
+    ),
+  );
+  const left = by("left").filter((s) => !s.excluded);
+  const excluded = by("left").filter((s) => s.excluded);
+  const pairs = v.similar;
+
+  const tally = h("ul", { class: "tally" });
+  if (sum.toLibrary || S.task !== "dedupe") {
+    tally.append(tallyItem("library", "library", sum.toLibrary, sum.toLibrary === 1 ? "song moves into the library" : "songs move into the library",
+      () => cappedList(by("library"), keeperItem, "library")));
+  }
+  tally.append(tallyItem("inplace", "stay", sum.inPlace,
+    S.task === "dedupe" ? (sum.inPlace === 1 ? "song stays in the library as it is" : "songs stay in the library as they are")
+      : (sum.inPlace === 1 ? "song is already where it belongs" : "songs are already where they belong"),
+    () => cappedList(by("in-place"), keeperItem, "inplace")));
+  tally.append(tallyItem("dup", "dup", sum.duplicates, sum.duplicates === 1 ? "duplicate is set aside" : "duplicates are set aside",
+    () => cappedList(by("duplicate"), dupItem, "dup")));
+  tally.append(tallyItem("bad", "bad", sum.invalid, sum.invalid === 1 ? "broken song is set aside" : "broken songs are set aside",
+    () => cappedList(by("invalid"), invalidItem, "bad")));
+  tally.append(tallyItem("left", "stay", left.length, left.length === 1 ? "song stays where it is, for a reason" : "songs stay where they are, each for a reason",
+    () => cappedList(left, leftItem, "left")));
+  if (excluded.length) {
+    tally.append(tallyItem("excluded", "excluded", excluded.length, excluded.length === 1 ? "song you chose to leave alone" : "songs you chose to leave alone",
+      () => cappedList(excluded, excludedItem, "excluded")));
+  }
+  tally.append(tallyItem("similar", "stay", pairs.length, pairs.length === 1 ? "pair of songs looks alike but is kept apart" : "pairs of songs look alike but are kept apart",
+    () => h("div", null,
+      h("p", { class: "muted small" }, "Both songs of each pair are kept. If they are the same song, remove one by hand later."),
+      cappedList(pairs, (p) => h("li", null,
+        h("div", { class: "song-name" }, songName(songs[p.a]), " and ", songName(songs[p.b])),
+        h("div", { class: "song-meta" }, where(songs[p.a]), " / ", where(songs[p.b])),
+        h("div", { class: "song-meta" }, p.evidence),
+      ), "similar"))));
+  add(frag, tally);
+
+  const out = v.config.outDir;
+  add(frag, h("p", { class: "muted" }, "Set-aside songs go to ", h("span", { class: "path" }, out), " (duplicates and invalid). Every move is recorded, so you can undo the whole run afterwards."));
+  const moveLabel = moving ? `Move ${plural(moving, "song folder", "song folders")}` : "Nothing to move";
+  add(frag, h("div", { class: "actions" },
+    h("button", { class: "btn primary", type: "button", disabled: !moving || v.applied, onclick: async () => {
+      const aside = [sum.duplicates ? plural(sum.duplicates, "duplicate", "duplicates") : "", sum.invalid ? plural(sum.invalid, "broken song", "broken songs") : ""].filter(Boolean);
+      const ok = await confirmDialog(`${moveLabel}?`, [
+        aside.length ? `${aside.join(" and ")} ${sum.duplicates + sum.invalid === 1 ? "goes" : "go"} to ${out}.` : "",
+        sum.toLibrary ? `${plural(sum.toLibrary, "song moves", "songs move")} into ${v.config.library}.` : "",
+        "If anything changed since the check, nothing is moved and you see the new plan first.",
+      ].filter(Boolean), moveLabel);
+      if (ok) startJob("/api/organize/apply", { analysis: v.id });
+    } }, moveLabel),
+    h("button", { class: "btn", type: "button", onclick: startAnalysis }, "Check again"),
+    h("button", { class: "btn", type: "button", onclick: () => {
+      S.view = "setup";
+      S.notice = null;
+      render();
+      validate();
+    } }, "Change folders"),
+  ));
+  if (advanced()) add(frag, organizeTable(v));
+  return frag;
+}
+
+function organizeTable(v) {
+  const wrap = h("section", { "aria-label": "All song folders" }, h("h2", null, "All song folders"));
+  const filter = S.tableFilter || (S.tableFilter = { action: "", q: "" });
+  const tbody = h("tbody");
+  const more = h("div");
+  const fill = () => {
+    const q = filter.q.toLowerCase();
+    const rows = v.songs.map((s, i) => ({ ...s, i })).filter((s) =>
+      (!filter.action || s.action === filter.action) &&
+      (!q || `${s.artist} ${s.title} ${s.label}:${s.rel} ${s.target}`.toLowerCase().includes(q)));
+    const limit = filter.all ? rows.length : 500;
+    tbody.replaceChildren(...rows.slice(0, limit).map((s) => h("tr", { class: s.excluded ? "excluded" : "" },
+      h("td", null, songName(s)),
+      h("td", { class: "path" }, `${s.label}:${s.rel}`),
+      h("td", { class: `act-${s.action}` }, s.excluded ? "left (excluded)" : s.action),
+      h("td", null, s.target ? h("span", { class: "path" }, s.target) : s.other >= 0 ? ["instead: ", h("span", { class: "path" }, v.songs[s.other].rel)] : null,
+        s.reason && !s.excluded ? h("div", { class: "muted" }, s.reason) : null),
+      h("td", { class: "r" }, s.tier),
+      h("td", null, s.quality.video ? (s.quality.videoHeight ? `${s.quality.videoHeight}p` : "yes") : ""),
+      h("td", { class: "r" }, s.quality.videoKbps || ""),
+      h("td", { class: "r" }, s.quality.audioKbps || ""),
+      h("td", null, [s.quality.cover ? "C" : "", s.quality.background ? "B" : "", s.quality.version ? "V" : ""].join(" ")),
+      h("td", { class: "r" }, s.quality.warnings || ""),
+    )));
+    more.replaceChildren(rows.length > limit ? h("button", { class: "link", type: "button", onclick: () => {
+      filter.all = true;
+      fill();
+    } }, `Show all ${fmt(rows.length)} rows`) : h("span", { class: "muted small" }, plural(rows.length, "row", "rows")));
+  };
+  const actions = ["", "library", "in-place", "duplicate", "invalid", "left"];
+  wrap.append(h("div", { class: "filters" },
+    h("input", { type: "text", class: "plain", placeholder: "Search artist, title or folder", "aria-label": "Search", value: filter.q, oninput: (e) => {
+      filter.q = e.target.value;
+      fill();
+    } }),
+    h("select", { "aria-label": "Decision", onchange: (e) => {
+      filter.action = e.target.value;
+      fill();
+    } }, actions.map((a) => h("option", { value: a, selected: filter.action === a }, a || "every decision"))),
+  ));
+  wrap.append(h("div", { class: "table-wrap" }, h("table", null,
+    h("thead", null, h("tr", null, ["Song", "Folder", "Decision", "Target or reason"].map((t) => h("th", null, t)),
+      h("th", { class: "r" }, "Tier"), h("th", null, "Video"), h("th", { class: "r" }, "Video kbit/s"), h("th", { class: "r" }, "Audio kbit/s"),
+      h("th", { title: "Cover, Background, #VERSION", class: "nowrap" }, "C B V"), h("th", { class: "r" }, "Warnings"))),
+    tbody)), more);
+  fill();
+  const raw = h("details", { class: "plain" }, h("summary", null, "Show the plan as JSON"));
+  raw.addEventListener("toggle", () => {
+    if (raw.open && raw.childNodes.length === 1) raw.append(h("pre", { class: "json" }, JSON.stringify(v, null, 2)));
+  }, { once: false });
+  wrap.append(raw);
+  return wrap;
+}
+
+// ---------------------------------------------------------------- repair review
+
+const R = "�";
+
+function fits(word, form) {
+  const w = [...word];
+  const f = [...form];
+  if (w.length !== f.length || !word.includes(R)) return false;
+  return w.every((c, i) => (c === R ? f[i] !== R && !/\s/.test(f[i]) : c.toLowerCase() === f[i].toLowerCase()));
+}
+
+const choiceKey = (path, word) => `${path}\n${word}`;
+const folderOf = (path) => {
+  const parts = path.split(/[\\/]/);
+  return parts.length > 1 ? parts[parts.length - 2] : path;
+};
+
+function parseCandidate(c) {
+  const m = /^(\S+) \(suggested, (.+)\)$/.exec(c.form);
+  return m ? { form: m[1], note: `suggested by ${m[2]}` } : { form: c.form, note: c.count ? `seen ${fmt(c.count)}×` : "" };
+}
+
+function wordChooser(file, word, current) {
+  const key = choiceKey(file.path, word);
+  const chosen = S.choices.get(key);
+  const err = h("span", { class: "error-text small", "aria-live": "polite" });
+  const input = h("input", { type: "text", placeholder: "Type the word", "aria-label": `Spelling for ${word}`, value: chosen && !(current || []).some((c) => c.form === chosen) ? chosen : "",
+    oninput: (e) => {
+      const v = e.target.value.trim();
+      if (!v) {
+        S.choices.delete(key);
+        err.textContent = "";
+      } else if (fits(word, v)) {
+        S.choices.set(key, v);
+        err.textContent = "";
+        for (const b of e.target.parentElement.querySelectorAll(".choice")) b.setAttribute("aria-pressed", "false");
+      } else {
+        S.choices.delete(key);
+        err.textContent = `Only the ${R} may change, one letter each.`;
+      }
+      updateRepairButton();
+    } });
+  return h("div", { class: "choices" },
+    (current || []).map((c) => h("button", { class: "choice", type: "button", "aria-pressed": String(chosen === c.form), onclick: (e) => {
+      const on = S.choices.get(key) !== c.form;
+      on ? S.choices.set(key, c.form) : S.choices.delete(key);
+      for (const b of e.currentTarget.parentElement.querySelectorAll(".choice")) b.setAttribute("aria-pressed", "false");
+      e.currentTarget.setAttribute("aria-pressed", String(on));
+      input.value = "";
+      err.textContent = "";
+      updateRepairButton();
+    } }, c.form, c.note ? h("small", null, " ", c.note) : null)),
+    input, err,
+  );
+}
+
+// contextLine shows a lyric line with the damaged word marked (the report wraps it in «»).
+function contextLine(context, word, count) {
+  let i = context.indexOf(`«${word}»`);
+  let len = word.length + 2;
+  if (i < 0) {
+    i = context.indexOf(word);
+    len = word.length;
+  }
+  const more = count > 1 ? h("span", { class: "muted small" }, ` (${count}× in this song)`) : null;
+  if (i < 0) return h("div", { class: "context" }, context, more);
+  return h("div", { class: "context" }, context.slice(0, i), h("mark", null, word), context.slice(i + len), more);
+}
+
+// wordGroups merges the unresolved occurrences of one word (one choice repairs them all).
+function wordGroups(unresolved) {
+  const groups = new Map();
+  for (const u of unresolved) {
+    const g = groups.get(u.word);
+    if (g) {
+      g.count++;
+      for (const c of u.candidates || []) if (!g.candidates.some((x) => x.form === c.form)) g.candidates.push(c);
+    } else {
+      groups.set(u.word, { ...u, count: 1, candidates: [...(u.candidates || [])] });
+    }
+  }
+  return [...groups.values()];
+}
+
+function repairCount() {
+  return S.rep.report.files.filter((f) => !S.skip.has(f.path) &&
+    (f.fixed > 0 || [...S.choices.keys()].some((k) => k.startsWith(`${f.path}\n`)))).length;
+}
+
+function updateRepairButton() {
+  const b = document.getElementById("repair-go");
+  if (!b) return;
+  const n = repairCount();
+  b.disabled = n === 0;
+  b.textContent = n ? `Repair ${plural(n, "file", "files")}` : "Nothing to repair";
+}
+
+function skipToggle(f) {
+  return h("label", { class: "check small" },
+    h("input", { type: "checkbox", checked: S.skip.has(f.path), onchange: (e) => {
+      e.target.checked ? S.skip.add(f.path) : S.skip.delete(f.path);
+      updateRepairButton();
+    } }),
+    h("span", null, "Don’t change this file"));
+}
+
+function viewRepairReview() {
+  const rep = S.rep.report;
+  const sum = S.rep.summary;
+  const frag = h("div");
+  add(frag, h("h1", null, sum.damaged ? "Broken characters found" : "No broken characters found"));
+  add(frag, noticeBox(S.notice));
+  if (!sum.damaged) {
+    add(frag, h("p", null, `All song files below ${S.rep.songDir} are fine.`));
+    add(frag, h("div", { class: "actions" }, h("button", { class: "btn", type: "button", onclick: () => {
+      S.view = "setup";
+      render();
+      validate();
+    } }, "Back")));
+    return frag;
+  }
+  const files = rep.files || [];
+  const needChoice = files.filter((f) => f.unresolved?.length);
+  const withFixes = files.filter((f) => f.fixes?.length);
+  const fixItem = (f) => h("li", null,
+    h("div", { class: "song-name" }, folderOf(f.path), f.weak ? h("span", { class: "badge weak" }, `${f.weak} best ${f.weak === 1 ? "guess" : "guesses"}`) : null),
+    h("div", { class: "song-meta path" }, f.path),
+    h("ul", { class: "fixes" }, f.fixes.map((x) => {
+      const key = choiceKey(f.path, x.before);
+      const changed = S.choices.get(key);
+      const li = h("li", null, x.before, " becomes ", h("strong", null, changed || x.after),
+        x.weak ? h("span", { class: "badge weak" }, "best guess") : null,
+        advanced() ? h("span", { class: "muted small" }, ` (${x.source}, line ${x.lines.join(", ")})`) : null, " ");
+      li.append(h("button", { class: "link small", type: "button", onclick: (e) => {
+        e.currentTarget.replaceWith(wordChooser(f, x.before, [{ form: x.after, note: "proposed" }]));
+      } }, "Change"));
+      return li;
+    })),
+    skipToggle(f),
+  );
+  const choiceItem = (f) => h("li", null,
+    h("div", { class: "song-name" }, folderOf(f.path)),
+    h("div", { class: "song-meta path" }, f.path),
+    wordGroups(f.unresolved).map((u) => h("div", { class: "word" },
+      contextLine(u.context, u.word, u.count),
+      wordChooser(f, u.word, u.candidates.map(parseCandidate)),
+    )),
+    skipToggle(f),
+  );
+  const tally = h("ul", { class: "tally" });
+  tally.append(tallyItem("fixed", "library", sum.fixed, sum.fixed === 1 ? "character can be repaired automatically" : "characters can be repaired automatically",
+    () => h("div", null,
+      sum.weak ? h("p", { class: "muted small" }, `${plural(sum.weak, "of them is a best guess", "of them are best guesses")}; check those. “Change” lets you pick another spelling.`) : null,
+      cappedList(withFixes, fixItem, "fixed"))));
+  tally.append(tallyItem("choose", "dup", sum.left, sum.left === 1 ? "character needs your choice" : "characters need your choice",
+    () => h("div", null,
+      h("p", { class: "muted small" }, "Pick the right word, or type it. Words you leave open stay as they are. Your choices are kept for later runs."),
+      cappedList(needChoice, choiceItem, "choose"))));
+  if (rep.skipped?.length) {
+    tally.append(tallyItem("skipped", "bad", rep.skipped.length, rep.skipped.length === 1 ? "file cannot be repaired here" : "files cannot be repaired here",
+      () => cappedList(rep.skipped, (s) => h("li", null, h("div", { class: "path" }, s.path), h("div", { class: "song-meta" }, s.reason)), "skipped")));
+  }
+  add(frag, tally);
+  if (!S.rep.lyrics) add(frag, h("p", { class: "muted small" }, "Tip: with “Also look up lyrics online” more words are repaired."));
+  add(frag, h("p", { class: "muted" }, "Only the broken characters change. A copy of every original file is kept in ", h("span", { class: "path" }, `${S.rep.outDir}`), "."));
+  add(frag, h("div", { class: "actions" },
+    h("button", { class: "btn primary", type: "button", id: "repair-go", onclick: () => {
+      const choices = [...S.choices.entries()].map(([k, form]) => {
+        const [path, word] = k.split("\n");
+        return { path, word, form };
+      });
+      startJob("/api/repair/apply", { analysis: S.rep.id, choices, skip: [...S.skip] });
+    } }, "Repair"),
+    h("button", { class: "btn", type: "button", onclick: startAnalysis }, "Check again"),
+    h("button", { class: "btn", type: "button", onclick: () => {
+      S.view = "setup";
+      render();
+      validate();
+    } }, "Change folders"),
+  ));
+  queueMicrotask(updateRepairButton);
+  return frag;
+}
+
+// ---------------------------------------------------------------- done
+
+function viewDone() {
+  const d = S.done;
+  const j = d.job;
+  const st = j.stats || {};
+  const frag = h("div");
+  const again = h("button", { class: "btn", type: "button", onclick: () => {
+    S.view = "setup";
+    S.notice = null;
+    render();
+    validate();
+  } }, "Start over");
+  if (d.kind === "organize") {
+    add(frag, h("h1", null, d.stopped ? "Stopped part-way" : "Done"));
+    add(frag, noticeBox(S.notice));
+    add(frag, h("p", null, d.stopped
+      ? `${plural(st.moved, "song folder was", "song folders were")} moved before you stopped. Undo puts them back.`
+      : `${plural(st.moved, "song folder", "song folders")} moved.`));
+    if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "move", "moves")} failed`, text: advanced() ? "The log below says why." : "Switch to Advanced to see the log." }));
+    add(frag, h("p", null, "Set-aside songs are in ", h("span", { class: "path" }, d.cfg.outDir), ". Look through them before you delete anything."));
+    add(frag, h("div", { class: "actions" },
+      st.moved ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Undo this run") : null,
+      again));
+  } else if (d.kind === "undo") {
+    add(frag, h("h1", null, j.state === "done" ? "Undone" : "Undo did not finish"));
+    add(frag, noticeBox(S.notice));
+    add(frag, h("p", null, `${plural(st.moved, "song folder is", "song folders are")} back where ${st.moved === 1 ? "it was" : "they were"}.`));
+    if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "folder", "folders")} could not be moved back` }));
+    add(frag, h("div", { class: "actions" }, again));
+  } else {
+    const sum = j.result?.summary || {};
+    add(frag, h("h1", null, d.stopped ? "Stopped part-way" : "Repaired"));
+    add(frag, noticeBox(S.notice));
+    add(frag, h("p", null, `${plural(sum.written ?? st.written, "file was", "files were")} repaired.`));
+    if (j.result?.originals) add(frag, h("p", null, "The original files are kept in ", h("span", { class: "path" }, j.result.originals), "."));
+    if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "file", "files")} could not be written` }));
+    add(frag, h("div", { class: "actions" }, again));
+  }
+  return frag;
+}
+
+// ---------------------------------------------------------------- start
+
+for (const b of document.querySelectorAll(".switch button")) {
+  b.addEventListener("click", () => {
+    S.mode = b.dataset.mode;
+    localStorage.setItem("lm-mode", S.mode);
+    render();
+    if (S.view === "setup") validate();
+  });
+}
+
+async function start() {
+  if (!(await loadSystem())) return;
+  try {
+    const j = await get("/api/job");
+    if (j && j.state === "running") {
+      S.task = j.kind.startsWith("repair") ? "repair" : S.task === "repair" ? "dedupe" : S.task;
+      S.job = j;
+      S.waitingFor = j.id;
+      S.view = "running";
+    }
+  } catch {
+    // shown by the next call
+  }
+  connectEvents();
+  render();
+  if (S.view === "setup") validate();
+}
+
+start();

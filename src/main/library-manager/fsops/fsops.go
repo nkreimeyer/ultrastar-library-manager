@@ -24,12 +24,12 @@ import (
 
 // Stats counts the operations performed (or, in dry-run mode, planned) during a run.
 type Stats struct {
-	Written  int64 // files (re)written
-	Moved    int64 // files or folders moved
-	Removed  int64 // files removed
-	Replaced int64 // files replaced by a processed version
-	Copied   int64 // files backed up (copied out of the library)
-	Failed   int64 // operations that returned an error
+	Written  int64 `json:"written"`  // files (re)written
+	Moved    int64 `json:"moved"`    // files or folders moved
+	Removed  int64 `json:"removed"`  // files removed
+	Replaced int64 `json:"replaced"` // files replaced by a processed version
+	Copied   int64 `json:"copied"`   // files backed up (copied out of the library)
+	Failed   int64 `json:"failed"`   // operations that returned an error
 }
 
 // Ops performs file system modifications. It is safe for concurrent use.
