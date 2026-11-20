@@ -357,6 +357,32 @@ func TestMoveOtherRenameError(t *testing.T) {
 	}
 }
 
+// A rename to another drive fails with EXDEV on Unix and with ERROR_NOT_SAME_DEVICE (17)
+// on Windows, where errno 17 is not EEXIST and EXDEV never occurs.
+func TestIsCrossDevice(t *testing.T) {
+	link := func(err error) error { return &os.LinkError{Op: "rename", Old: "a", New: "b", Err: err} }
+	for _, tc := range []struct {
+		goos string
+		err  error
+		want bool
+	}{
+		{"linux", link(syscall.EXDEV), true},
+		{"darwin", link(syscall.EXDEV), true},
+		{"windows", link(syscall.Errno(17)), true},
+		{"windows", link(syscall.EXDEV), true},
+		{"linux", link(syscall.Errno(17)), false}, // EEXIST
+		{"darwin", link(syscall.Errno(17)), false},
+		{"windows", link(syscall.Errno(5)), false}, // ERROR_ACCESS_DENIED
+		{"linux", link(syscall.EACCES), false},
+		{"windows", errors.New("boom"), false},
+		{"linux", nil, false},
+	} {
+		if got := isCrossDevice(tc.goos, tc.err); got != tc.want {
+			t.Errorf("isCrossDevice(%s, %v) = %v, want %v", tc.goos, tc.err, got, tc.want)
+		}
+	}
+}
+
 func TestParkName(t *testing.T) {
 	dir := t.TempDir()
 	p, err := parkName(filepath.Join(dir, "Song"))

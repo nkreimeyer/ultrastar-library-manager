@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -697,10 +698,27 @@ var copyAcross = copyTree
 // move renames src to dst, falling back to copy + delete across file systems.
 func move(src, dst string) error {
 	err := rename(src, dst)
-	if err == nil || !errors.Is(err, syscall.EXDEV) {
+	if err == nil || !isCrossDevice(runtime.GOOS, err) {
 		return err
 	}
 	return moveAcross(src, dst)
+}
+
+// errNotSameDevice is ERROR_NOT_SAME_DEVICE, the error os.Rename gets on Windows for a move
+// to another drive (MoveFileEx without MOVEFILE_COPY_ALLOWED). On Windows syscall.EXDEV is
+// an invented errno that the system never returns, and errors.Is does not map one to the
+// other. On Unix the same number is EEXIST, so it only counts on Windows.
+const errNotSameDevice = syscall.Errno(17)
+
+// isCrossDevice reports whether err from os.Rename on goos means that src and dst are on
+// different file systems. goos is a parameter so that the Windows rule is tested on every
+// platform.
+func isCrossDevice(goos string, err error) bool {
+	var errno syscall.Errno
+	if !errors.As(err, &errno) {
+		return false
+	}
+	return errno == syscall.EXDEV || goos == "windows" && errno == errNotSameDevice
 }
 
 // moveAcross copies src to dst on another file system and then deletes src. It either
