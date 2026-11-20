@@ -424,7 +424,9 @@ func (o *Ops) RemoveEmptyDir(path string) (bool, error) {
 }
 
 // Rename renames src to dst within the library. Unlike MoveInto it does not pick a new
-// name: it fails if dst already exists.
+// name: it fails if dst already exists. A regular file src is fsynced first and the folder
+// of dst after the rename, because callers delete the original once src is in place
+// (fixvideos' conversions), and ffmpeg does not fsync its output.
 func (o *Ops) Rename(src, dst string) error {
 	if _, err := os.Lstat(dst); err == nil {
 		return o.fail(fmt.Errorf("renaming %s -> %s: target exists", src, dst))
@@ -434,15 +436,23 @@ func (o *Ops) Rename(src, dst string) error {
 		o.moved.Add(1)
 		return nil
 	}
+	if st, err := os.Lstat(src); err == nil && st.Mode().IsRegular() {
+		if err := syncFile(src); err != nil {
+			return o.fail(fmt.Errorf("renaming %s -> %s: syncing %s: %w", src, dst, src, err))
+		}
+	}
 	if err := move(src, dst); err != nil {
 		return o.fail(fmt.Errorf("renaming %s -> %s: %w", src, dst, err))
 	}
+	syncDir(filepath.Dir(dst))
 	o.moved.Add(1)
 	return nil
 }
 
 // Replace atomically replaces dst with the processed file tmp (which must be on the same
-// file system, i.e. created next to dst). Used after ffmpeg produced a new version.
+// file system, i.e. created next to dst). Used after ffmpeg produced a new version. tmp is
+// fsynced before the rename (ffmpeg does not fsync its output, and the replaced video is
+// not kept), and the folder after it.
 func (o *Ops) Replace(tmp, dst string) error {
 	if o.DryRun {
 		// Nothing is touched in dry-run mode, not even tmp; callers do not create temp
@@ -451,12 +461,48 @@ func (o *Ops) Replace(tmp, dst string) error {
 		o.replaced.Add(1)
 		return nil
 	}
+	if err := syncFile(tmp); err != nil {
+		os.Remove(tmp)
+		return o.fail(fmt.Errorf("replacing %s: syncing %s: %w", dst, tmp, err))
+	}
 	if err := os.Rename(tmp, dst); err != nil {
 		os.Remove(tmp)
 		return o.fail(fmt.Errorf("replacing %s: %w", dst, err))
 	}
+	syncDir(filepath.Dir(dst))
 	o.replaced.Add(1)
 	return nil
+}
+
+// syncFile fsyncs the file at path, so its data is on disk before a rename makes it the
+// only copy. A variable, so tests can make it fail.
+var syncFile = func(path string) error {
+	flag := os.O_RDONLY
+	if runtime.GOOS == "windows" {
+		flag = os.O_RDWR // FlushFileBuffers needs write access there
+	}
+	f, err := os.OpenFile(path, flag, 0)
+	if err != nil {
+		return err
+	}
+	return errors.Join(f.Sync(), f.Close())
+}
+
+// syncDir fsyncs the folder dir, so a rename into it is on disk before the caller deletes
+// the original. It is best effort: Windows cannot fsync a folder, and some network file
+// systems refuse to, so a failure is only logged.
+func syncDir(dir string) {
+	if runtime.GOOS == "windows" {
+		return
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		log.Debugf("Syncing the folder %s: %v", dir, err)
+		return
+	}
+	if err := errors.Join(f.Sync(), f.Close()); err != nil {
+		log.Debugf("Syncing the folder %s: %v", dir, err)
+	}
 }
 
 // CopyInto copies the regular file src to dstDir/relPath (creating parent folders, adding

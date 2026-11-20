@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -951,4 +952,93 @@ func TestWriteFileAtomicDryRunUnchangedAfterPlan(t *testing.T) {
 	if !bytes.Equal([]byte(readFile(t, p)), []byte("old")) {
 		t.Error("dry run changed the file")
 	}
+}
+
+// realSyncFile is syncFile before any test replaced it.
+var realSyncFile = syncFile
+
+// recordSyncs makes syncFile record the paths it is called with and return err (or sync
+// for real if err is nil).
+func recordSyncs(t *testing.T, err error) *[]string {
+	t.Helper()
+	var synced []string
+	syncFile = func(path string) error {
+		synced = append(synced, path)
+		if err != nil {
+			return err
+		}
+		return realSyncFile(path)
+	}
+	t.Cleanup(func() { syncFile = realSyncFile })
+	return &synced
+}
+
+// ffmpeg does not fsync its output and the replaced file is not kept, so the processed
+// file is fsynced before it replaces the original, also when it is read-only.
+func TestReplaceSyncsBeforeRename(t *testing.T) {
+	skipIfRoot(t)
+	dir := t.TempDir()
+	dst, tmp := filepath.Join(dir, "video.mp4"), filepath.Join(dir, ".video.tmp.mp4")
+	writeFile(t, dst, "old", 0o644)
+	writeFile(t, tmp, "new", 0o444)
+	synced := recordSyncs(t, nil)
+
+	ops := New(false)
+	if err := ops.Replace(tmp, dst); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{tmp}; !slices.Equal(*synced, want) || readFile(t, dst) != "new" {
+		t.Errorf("synced %v, dst %q; want %v synced and dst replaced", *synced, readFile(t, dst), want)
+	}
+
+	// A failing fsync keeps the original and removes the processed file.
+	boom := errors.New("boom")
+	recordSyncs(t, boom)
+	writeFile(t, tmp, "newer", 0o644)
+	if err := ops.Replace(tmp, dst); !errors.Is(err, boom) {
+		t.Errorf("Replace with a failing fsync = %v, want boom", err)
+	}
+	if readFile(t, dst) != "new" || exists(tmp) {
+		t.Errorf("dst = %q, tmp exists %v; want the original kept and tmp removed", readFile(t, dst), exists(tmp))
+	}
+	if s := ops.Stats(); s.Replaced != 1 || s.Failed != 1 {
+		t.Errorf("Stats = %+v, want Replaced=1 Failed=1", s)
+	}
+}
+
+// Rename fsyncs a file before the rename (fixvideos deletes the original once the txt
+// points to it), but not a folder; a failing fsync leaves src in place.
+func TestRenameSyncsFiles(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, ".v.tmp.mp4"), filepath.Join(dir, "v.mp4")
+	writeFile(t, src, "new", 0o644)
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("boom")
+	recordSyncs(t, boom)
+	ops := New(false)
+	if err := ops.Rename(src, dst); !errors.Is(err, boom) || !exists(src) || exists(dst) {
+		t.Errorf("Rename with a failing fsync = %v, src exists %v, dst exists %v", err, exists(src), exists(dst))
+	}
+
+	synced := recordSyncs(t, nil)
+	if err := ops.Rename(src, dst); err != nil || readFile(t, dst) != "new" {
+		t.Fatalf("Rename = %v", err)
+	}
+	if err := ops.Rename(sub, filepath.Join(dir, "sub2")); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{src}; !slices.Equal(*synced, want) {
+		t.Errorf("synced %v, want %v", *synced, want)
+	}
+	if s := ops.Stats(); s.Moved != 2 || s.Failed != 1 {
+		t.Errorf("Stats = %+v, want Moved=2 Failed=1", s)
+	}
+}
+
+func TestSyncDirIsBestEffort(t *testing.T) {
+	syncDir(filepath.Join(t.TempDir(), "missing")) // logs, never fails or panics
+	syncDir(t.TempDir())
 }
