@@ -163,20 +163,49 @@ func TestOrganizeFlow(t *testing.T) {
 	if len(hist.Runs) != 1 || !hist.Runs[0].Undone || hist.Runs[0].Next {
 		t.Errorf("history after undo = %+v", hist)
 	}
+	// A second run is listed first.
+	v = analyseOrganize(t, s, q)
+	s.do("POST", "/api/organize/apply", map[string]any{"analysis": v.ID}, &j)
+	if j = s.wait(); j.State != stateDone {
+		t.Fatalf("second apply: %+v", j)
+	}
+	s.do("POST", "/api/organize/history", folderRequest{Library: lib, Out: out}, &hist)
+	if len(hist.Runs) != 2 || hist.Runs[0].Undone || !hist.Runs[0].Next || !hist.Runs[1].Undone {
+		t.Errorf("history after a second run = %+v", hist)
+	}
 }
 
-func TestOrganizeApplyPlanChanged(t *testing.T) {
-	s := newTestServer(t)
+// planChanged analyses a library, adds two songs that change the plan and applies it.
+func planChanged(t *testing.T, s *testServer) (v organizeView, j Job, lib string, before map[string]string) {
+	t.Helper()
 	lib, out := dedupeLibrary(t)
-	v := analyseOrganize(t, s, organizeRequest{Mode: "dedupe", Library: lib, Out: out})
+	v = analyseOrganize(t, s, organizeRequest{Mode: "dedupe", Library: lib, Out: out})
 	// A better version appears after the review: it would become the keeper.
 	writeSong(t, filepath.Join(lib, "New", "ABBA - SOS"), "ABBA", "SOS", map[string]string{"cover.png": "x"})
 	writeSong(t, filepath.Join(lib, "R", "Roxette - Joy"), "Roxette", "Joy", nil)
-	before := tree(t, lib)
-
-	var j Job
+	before = tree(t, lib)
 	s.do("POST", "/api/organize/apply", map[string]any{"analysis": v.ID}, &j)
-	j = s.wait()
+	return v, s.wait(), lib, before
+}
+
+func setMaxDiffLines(t *testing.T, n int) {
+	old := maxDiffLines
+	maxDiffLines = n
+	t.Cleanup(func() { maxDiffLines = old })
+}
+
+func TestOrganizeApplyPlanChangedTruncated(t *testing.T) {
+	setMaxDiffLines(t, 1)
+	_, j, _, _ := planChanged(t, newTestServer(t))
+	if len(j.Details) != 2 || j.Details[1] != "… and 1 more" || !strings.Contains(j.Error, "2 song folder(s)") {
+		t.Errorf("details = %q, error %q", j.Details, j.Error)
+	}
+}
+
+func TestOrganizeApplyPlanChanged(t *testing.T) {
+	setMaxDiffLines(t, 2) // exactly at the limit: nothing cut
+	s := newTestServer(t)
+	v, j, lib, before := planChanged(t, s)
 	if j.State != stateFailed || !strings.Contains(j.Error, "nothing was moved") || j.Stats.Moved != 0 {
 		t.Fatalf("job = %+v", j)
 	}
@@ -255,6 +284,9 @@ func TestRepairFlow(t *testing.T) {
 	if got := s.do("POST", "/api/repair/validate", repairRequest{SongDir: lib, WordLists: []string{"de=/missing"}}, &e); got != http.StatusBadRequest {
 		t.Errorf("missing word list: %d", got)
 	}
+	if got := s.do("POST", "/api/repair/validate", repairRequest{SongDir: lib, Words: []string{"/missing"}}, &e); got != http.StatusBadRequest || !strings.Contains(e.Error, "words file") {
+		t.Errorf("missing words file: %d %q", got, e.Error)
+	}
 
 	var j Job
 	s.do("POST", "/api/repair/analyse", repairRequest{SongDir: lib, Out: out}, &j)
@@ -277,7 +309,7 @@ func TestRepairFlow(t *testing.T) {
 		} `json:"report"`
 	}
 	s.do("GET", "/api/repair/analysis?id="+id, nil, &a)
-	if a.Summary.Files != 2 || a.Summary.Damaged != 3 || a.Summary.Fixed != 2 || a.Summary.Written != 2 { // planned writes
+	if a.Summary.Files != 2 || a.Summary.Damaged != 3 || a.Summary.Fixed != 2 || a.Summary.Left != 1 || a.Summary.Written != 2 { // planned writes
 		t.Fatalf("summary = %+v", a.Summary)
 	}
 	weg := filepath.Join("A - Weg", "song.txt")
@@ -326,6 +358,63 @@ func TestRepairFlow(t *testing.T) {
 	data, _ := json.Marshal(j.Result)
 	if !strings.Contains(string(data), `"written":1`) {
 		t.Errorf("result summary: %s", data)
+	}
+
+	// A second repair adds its choices to the same words file.
+	s.do("POST", "/api/repair/analyse", repairRequest{SongDir: lib, Out: out}, &j)
+	if j = s.wait(); j.State != stateDone {
+		t.Fatalf("second analyse: %+v", j)
+	}
+	id = j.Result.(map[string]any)["analysis"].(string)
+	choice = repairChoice{Path: other, Word: "f" + R + "r", Form: "für"}
+	s.do("POST", "/api/repair/apply", map[string]any{"analysis": id, "choices": []repairChoice{choice}}, &j)
+	if j = s.wait(); j.State != stateDone {
+		t.Fatalf("second apply: %+v", j)
+	}
+	words, _ = os.ReadFile(filepath.Join(out, uiWordsName))
+	if want := "# Spellings chosen in the library-manager UI, per song folder ([folder name]).\n[A - Weg]\nsürprise\n[*]\n[A - Other]\nfür\n[*]\n"; string(words) != want {
+		t.Errorf("words file after two repairs:\n%s", words)
+	}
+}
+
+func TestRepairApplyWithoutChoices(t *testing.T) {
+	s := newTestServer(t)
+	lib, out := damagedLib(t)
+	var j Job
+	s.do("POST", "/api/repair/analyse", repairRequest{SongDir: lib, Out: out}, &j)
+	if j = s.wait(); j.State != stateDone {
+		t.Fatalf("analyse: %+v", j)
+	}
+	id := j.Result.(map[string]any)["analysis"].(string)
+	s.do("POST", "/api/repair/apply", map[string]any{"analysis": id}, &j)
+	if j = s.wait(); j.State != stateDone || j.Stats.Written != 2 {
+		t.Fatalf("apply: %+v", j)
+	}
+	if _, err := os.Stat(filepath.Join(out, uiWordsName)); !os.IsNotExist(err) {
+		t.Errorf("a words file without choices: %v", err)
+	}
+}
+
+func TestRepairApplyWordsFileUnreadable(t *testing.T) {
+	s := newTestServer(t)
+	lib, out := damagedLib(t)
+	var j Job
+	s.do("POST", "/api/repair/analyse", repairRequest{SongDir: lib, Out: out}, &j)
+	if j = s.wait(); j.State != stateDone {
+		t.Fatalf("analyse: %+v", j)
+	}
+	if err := os.Mkdir(filepath.Join(out, uiWordsName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := tree(t, lib)
+	id := j.Result.(map[string]any)["analysis"].(string)
+	choice := repairChoice{Path: filepath.Join("A - Weg", "song.txt"), Word: "s" + R + "rprise", Form: "sürprise"}
+	s.do("POST", "/api/repair/apply", map[string]any{"analysis": id, "choices": []repairChoice{choice}}, &j)
+	if j = s.wait(); j.State != stateFailed || !strings.Contains(j.Error, "saving the chosen spellings") {
+		t.Errorf("apply: %+v", j)
+	}
+	if !equalTrees(tree(t, lib), before) {
+		t.Error("txts were written although the choices could not be saved")
 	}
 }
 

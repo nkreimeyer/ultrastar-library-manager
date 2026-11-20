@@ -25,6 +25,7 @@ func TestParseVersion(t *testing.T) {
 		{"ffmpeg version 5.0.3 Copyright", true, Version{Raw: "5.0.3", Major: 5, Minor: 0}, true},
 		{"ffmpeg version 4.4.2-0ubuntu0.22.04.1 Copyright", true, Version{Raw: "4.4.2-0ubuntu0.22.04.1", Major: 4, Minor: 4}, true},
 		{"ffmpeg version 10.0 Copyright", true, Version{Raw: "10.0", Major: 10}, false},
+		{"ffmpeg version 7.1", true, Version{Raw: "7.1", Major: 7, Minor: 1}, false}, // nothing after the version
 		{"ffmpeg version N-118000-g1234abcd Copyright", true, Version{Raw: "N-118000-g1234abcd", Git: true}, false},
 		{"ffmpeg version 2024-03-07-git-97beb63a66-full_build-www.gyan.dev Copyright", true,
 			Version{Raw: "2024-03-07-git-97beb63a66-full_build-www.gyan.dev", Git: true, Date: "2024-03-07"}, false},

@@ -283,7 +283,7 @@ func (s *Server) handleRepairApply(w http.ResponseWriter, r *http.Request) {
 		case !known[c.Path]:
 			writeError(w, http.StatusBadRequest, fmt.Errorf("%s is not a damaged txt of this analysis", c.Path))
 			return
-		case strings.ContainsAny(c.Form, "\r\n[]#") || strings.TrimSpace(c.Form) != c.Form:
+		case strings.ContainsAny(c.Form, "\r\n[]#"): // fits refuses blanks and control characters
 			writeError(w, http.StatusBadRequest, fmt.Errorf("%q: a spelling is one word without [ ] # or line breaks", c.Form))
 			return
 		case !fits(c.Word, c.Form):
@@ -326,10 +326,7 @@ func (s *Server) handleRepairApply(w http.ResponseWriter, r *http.Request) {
 		if err == nil && !rep.DryRun {
 			res["summary"] = summarizeRepair(rep)
 		}
-		if runErr != nil {
-			return res, runErr
-		}
-		return res, nil
+		return res, runErr
 	})
 	if err != nil {
 		writeError(w, http.StatusConflict, err)

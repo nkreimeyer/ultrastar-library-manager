@@ -24,7 +24,7 @@ const (
 )
 
 // maxLogLines is how many log lines of a job are kept (the newest).
-const maxLogLines = 20000
+var maxLogLines = 20000
 
 // Job is the state of a job as the UI sees it.
 type Job struct {
@@ -230,8 +230,12 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"cancelled": s.jobs.cancelRunning()})
 }
 
-// eventInterval is how often the event stream looks for changes.
-var eventInterval = 250 * time.Millisecond
+// eventInterval is how often the event stream looks for changes; keepAliveInterval is
+// the longest it stays silent.
+var (
+	eventInterval     = 250 * time.Millisecond
+	keepAliveInterval = 15 * time.Second
+)
 
 // handleJobEvents streams the current job as Server-Sent Events: "job" (its state, when
 // it changed) and "log" (new log lines, from the query parameter "log" on). The stream
@@ -250,7 +254,7 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 	lastID, lastVersion := "", -1
 	tick := time.NewTicker(eventInterval)
 	defer tick.Stop()
-	idle := 0
+	lastSent := time.Now()
 	for {
 		j, version, lines, ok := s.jobs.current(next)
 		if ok && (j.ID != lastID || version != lastVersion) {
@@ -269,13 +273,13 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			fl.Flush()
-			idle = 0
-		} else if idle++; idle*int(eventInterval) >= int(15*time.Second) {
+			lastSent = time.Now()
+		} else if time.Since(lastSent) >= keepAliveInterval {
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
 				return
 			}
 			fl.Flush()
-			idle = 0
+			lastSent = time.Now()
 		}
 		select {
 		case <-r.Context().Done():

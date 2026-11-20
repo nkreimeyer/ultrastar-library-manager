@@ -327,9 +327,14 @@ type event struct{ name, data string }
 // readEvents reads SSE events until done says so.
 func readEvents(t *testing.T, r io.Reader, done func([]event) bool) []event {
 	t.Helper()
+	return scanEvents(t, bufio.NewScanner(r), done)
+}
+
+// scanEvents is readEvents on a scanner that can be read on afterwards.
+func scanEvents(t *testing.T, sc *bufio.Scanner, done func([]event) bool) []event {
+	t.Helper()
 	var evs []event
 	var cur event
-	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		line := sc.Text()
 		switch {

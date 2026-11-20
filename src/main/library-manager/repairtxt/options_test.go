@@ -94,6 +94,40 @@ func (p *progressLog) record(phase string, done, total int) {
 	p.calls[phase]++
 }
 
+// TestRunLyricsProgressAndUnrepaired: a txt whose only damaged word stays unresolved is
+// asked for lyrics (and the progress says so), and it is neither written nor backed up.
+func TestRunLyricsProgressAndUnrepaired(t *testing.T) {
+	base := t.TempDir()
+	lib := filepath.Join(base, "lib")
+	h := "#ARTIST:A\n#MP3:a.mp3\n#BPM:300\n#LANGUAGE:German\n"
+	weg := songText("#TITLE:Weg\n"+h, "s"+R+"rprise")
+	writeLib(t, lib, map[string]string{
+		"A - Corpus": songText("#TITLE:Corpus\n"+h, "für dich", "das Glück"),
+		"A - Weg":    weg,
+	})
+	cfg, err := config.New(lib, filepath.Join(base, "out"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p progressLog
+	ops := fsops.New(false)
+	if err := Run(cfg, ops, Options{Progress: p.record, Lyrics: fakeLyrics{}}); err != nil {
+		t.Fatal(err)
+	}
+	if p.last[PhaseLyrics] != [2]int{1, 1} || p.calls[PhaseLyrics] != 2 {
+		t.Errorf("lyrics progress: last %v, %d calls", p.last[PhaseLyrics], p.calls[PhaseLyrics])
+	}
+	if !unchanged(t, filepath.Join(lib, "A - Weg", "song.txt"), weg) {
+		t.Error("the unrepaired txt changed")
+	}
+	if st := ops.Stats(); st.Written != 0 || st.Copied != 0 {
+		t.Errorf("stats = %+v", st)
+	}
+	if rep, _ := readReport(t, cfg); len(rep.Files) != 1 || rep.Files[0].Written || len(rep.Files[0].Unresolved) != 1 {
+		t.Errorf("report files = %+v", rep.Files)
+	}
+}
+
 func TestRunProgress(t *testing.T) {
 	cfg, _, _ := twoDamaged(t)
 	var p progressLog

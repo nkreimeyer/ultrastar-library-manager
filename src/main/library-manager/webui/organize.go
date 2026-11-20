@@ -224,7 +224,7 @@ func (s *Server) handleOrganizeExclude(w http.ResponseWriter, r *http.Request) {
 }
 
 // maxDiffLines limits the plan differences shown.
-const maxDiffLines = 200
+var maxDiffLines = 200
 
 // handleOrganizeApply runs the reviewed analysis for real. The run plans again; if its
 // plan moves anything differently from the reviewed one (a folder changed since), it
@@ -285,16 +285,7 @@ func (s *Server) handleOrganizeApply(w http.ResponseWriter, r *http.Request) {
 		if data, err := os.ReadFile(cfg.ReportPath("organize_plan.json")); err == nil && a.applied {
 			res["report"] = json.RawMessage(data)
 		}
-		if runErr != nil {
-			if de, ok := runErr.(*detailedError); ok {
-				return nil, de
-			}
-			if ctx.Err() != nil {
-				return res, runErr
-			}
-			return nil, runErr
-		}
-		return res, nil
+		return res, runErr // a changed plan's detailedError brings its own result
 	})
 	if err != nil {
 		writeError(w, http.StatusConflict, err)

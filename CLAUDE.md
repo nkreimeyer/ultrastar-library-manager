@@ -135,7 +135,9 @@ Same exit codes and leftover-argument rule.
   gremlins unleash --workers 2 --timeout-coefficient 30 ./<pkg>` (80 for fixvideos; the root
   package with `-E '^[a-z]+/' .`). Some mutants (e.g. in `utils.utf8Sequences`) become endless
   allocating loops that OOM the machine otherwise. Never pass `--test-cpu`: it makes every
-  mutant count as KILLED. Tokens in switch `case` expressions are always NOT COVERED (a
+  mutant count as KILLED. Don't use `-D <ref>` either: the diff paths are relative to the repo
+  root, not the module, so every mutant is SKIPPED; run whole packages and keep the survivors on
+  changed lines (`git diff -U0`). Tokens in switch `case` expressions are always NOT COVERED (a
   coverage-profile artifact); check those by hand. Surviving mutants that are equivalent
   (unique sort keys, log-only arguments, buffer sizes) are expected.
 - **Never use `go run .` against a library**, and never point the tool at the real library

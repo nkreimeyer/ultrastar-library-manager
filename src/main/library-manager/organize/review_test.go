@@ -200,6 +200,25 @@ func TestRunReview(t *testing.T) {
 	}
 }
 
+func TestRunMoveProgress(t *testing.T) {
+	noFFprobe(t)
+	base, a, b := reviewSources(t)
+	cfg := organizeCfg(t, [][]string{{a}, {b}}, filepath.Join(base, "library"), filepath.Join(base, "out"), false)
+	var moves []string // PhaseMove is reported by the (sequential) moves only
+	err := Run(cfg, fsops.New(false), Options{Progress: func(phase string, done, total int) {
+		if phase == PhaseMove {
+			moves = append(moves, fmt.Sprintf("%d/%d", done, total))
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One duplicate to the out dir, then two songs into the library.
+	if got := strings.Join(moves, " "); got != "0/3 1/3 2/3 3/3" {
+		t.Errorf("move progress = %s", got)
+	}
+}
+
 func TestRunCancelBeforeMoves(t *testing.T) {
 	noFFprobe(t)
 	base, a, b := reviewSources(t)
