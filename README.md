@@ -29,9 +29,15 @@ cd src/main/library-manager
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -tags netgo -ldflags '-w -extldflags "-static"' -o library-manager .
 ```
 
+Prebuilt binaries: the CI (`.github/workflows/build.yml` and `.gitlab-ci.yml`) tests and
+builds `library-manager-{linux,windows,darwin}-amd64` on every push. A tag `v*` creates a
+release with the three binaries attached.
+
 ## Usage
 
 ```bash
+library-manager                                                   # without arguments: the browser UI, see "Browser UI"
+library-manager ui [-addr 127.0.0.1:0] [-no-browser] [-v level]
 library-manager -s <song-dir> [flags]
 library-manager organize -s <dir> [-s ...] -l <library> [flags]   # see "Organizing the library"
 library-manager dedupe -l <library> [flags]                       # see "Removing duplicates in place"
@@ -171,6 +177,43 @@ after the video module, handles audio files and the `#VOCALS`/`#INSTRUMENTAL` ta
 
 If a target already exists (e.g. from an earlier run), a suffix like ` (2)` is appended;
 empty folders are merged into an existing target instead.
+
+## Browser UI (`ui`)
+
+Start `library-manager` without arguments (on Windows: double-click the `.exe`), or run
+`library-manager ui`. It starts a small web server on `127.0.0.1` and opens the browser. Keep
+the terminal window open while you use it; closing it (or Ctrl-C) stops the UI and any
+running job.
+
+The UI covers `dedupe`, `add`, `organize` and `repair`:
+
+1. Choose what to do and pick the folders (a folder picker or a pasted path).
+2. **Check first**: a dry run. Nothing in the library changes.
+3. Review the outcome: which songs move into the library, which duplicates and broken songs
+   are set aside (and why), which stay where they are. **Leave this song alone** takes a
+   song (or one version of it) out of the plan; the plan updates at once.
+4. **Move**: the real run plans again and compares with the plan you reviewed. If anything
+   changed in between (a new song, a moved folder), nothing is moved and the new plan is
+   shown for another review.
+5. **Undo this run** reverts the moves, like `<cmd> -undo`.
+
+For `repair` the review lists the automatic repairs (best guesses marked) and the words that
+need a choice: click a suggestion or type the word. Choices are written to
+`<out>/ui-reviewed-words.txt` (a `-words` file with a section per song folder), so later runs
+from the UI keep them. A file can be left unchanged. Online lyrics (lrclib.net) are off unless
+you tick the box, since they send each damaged song's artist and title to that site.
+
+**Easy** mode (the default) shows plain choices. **Advanced** adds the flags (`-priority`,
+priority groups, `-ignore-the`, `-deep`, `-o`, `-strict`, word lists, `-words`, the lyrics
+cache), a table of every song folder with its decision and media quality, the plan as JSON,
+the earlier runs of the output folder and the live log.
+
+The header shows whether `ffmpeg`/`ffprobe` are installed and new enough (5.1 or later);
+without them the UI says what is skipped and how to install them.
+
+Security: the server only listens on a loopback address. The start URL carries a one-time
+key that sets a session cookie; requests without it, with another host name, or cross-site
+are refused. Only one job runs at a time.
 
 ## Organizing the library (`organize`)
 

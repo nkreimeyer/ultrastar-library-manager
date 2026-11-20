@@ -14,7 +14,9 @@ is superseded.
 ```
 src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (go 1.24)
   main.go                     flags, validation, runs the modules in fixed order, summary + exit code;
-                              os.Args[1] == "organize"/"dedupe"/"add"/"remove"/"repair" dispatches to the subcommand
+                              os.Args[1] == "organize"/"dedupe"/"add"/"remove"/"repair"/"ui" dispatches to the subcommand;
+                              no arguments at all starts the UI (double-click); main.version is set with -ldflags -X
+  ui_cmd.go                   the ui subcommand: -addr (loopback only), -no-browser, -v; opens the browser, stops on a signal
   organize_cmd.go             the organize, dedupe and add subcommands (organize.Mode): own FlagSet, -s tier lists, -undo, validation
   remove_cmd.go               the remove subcommand: -artist/-song/-from patterns, -undo
   repair_cmd.go               the repair subcommand: -s, -wordlist [lang=]file, -words file, -lyrics, -strict
@@ -38,6 +40,11 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   fixvideos/                  ffmpeg: re-encode to H.264 mp4, downscale to fit 1920x1080, strip audio, flag corrupt files (tagged, idempotent)
   fixaudio/                   ffmpeg: downmix to stereo, peak-normalize to -3 dB, originals kept (tagged, idempotent)
   journal/                    content-fingerprint journal for media formats that cannot carry a marker tag
+  mediatools/                 Detect: ffmpeg/ffprobe on PATH, "-version" parsed (releases, N-… and date git builds), >= 5.1
+  webui/                      browser UI: server.go (token -> session cookie, Host/Origin/JSON checks, CSP, routes),
+                              jobs.go (one job at a time, logrus hook, SSE /api/job/events), system.go (tools, folder lister),
+                              organize.go (validate/analyse/exclude/apply/history/undo), repair.go (analyse/apply, choices ->
+                              <out>/ui-reviewed-words.txt), static/ (index.html, style.css, app.js: embedded, no build step)
   repairtxt/                  repair of U+FFFD-damaged txts: lexicon.go (corpus per language: words, edge forms,
                               bigrams, char 4/5-grams, punctuation classes), language.go (#LANGUAGE codes, naive
                               Bayes detection), text.go (tag/lyric segments with byte offsets), resolve.go (evidence
@@ -54,6 +61,9 @@ test-assets/                  local fixture library (gitignored, not in the repo
 ```
 
 Dependencies: `logrus` and `golang.org/x/text` (charmaps, UTF-16, Unicode normalization).
+CI: `.github/workflows/build.yml` and `.gitlab-ci.yml` run gofmt, vet and `go test -race` (with ffmpeg),
+then cross-build linux/windows/darwin amd64 with `CGO_ENABLED=0`; tags `v*` make a release. Keep the
+module free of cgo so this keeps working.
 Runtime needs `ffmpeg` ≥ 5.1 and `ffprobe` on PATH for `-m` and `-a`.
 
 ## Build, run, test
@@ -257,6 +267,18 @@ Same exit codes and leftover-argument rule.
   `mediaInfo.HasVideo` means a moving video stream (attached cover art does not count).
   `VideoBitrate` comes from the stream `bit_rate`, else its `BPS`/`BPS-eng` tag (Matroska),
   else the container rate of a file without audio; 0 = unknown.
+- webui: one job at a time, because the modules log through the global logrus logger and the
+  job's log is what a hook collects while it runs (never log while holding `jobRunner.mu`). The
+  analysis keeps `organize.Review` (candidates, plan, `Replan`); exclusions replan in memory
+  (`PlanOptions.Exclude`, pure). Apply runs `organize.Run` for real with a `Review` hook that
+  compares the new plan with the reviewed one (`organize.PlanDiff`: action, target, keeper per
+  `Ref`) and stops before the first move if they differ (the analysis then holds the new plan).
+  `organize.Options` and `repairtxt.Options` have `Ctx` (checked before each inspection/move,
+  scan/plan/lyrics/write; a run stopped during the moves is journaled, a parked song is moved
+  out of its temporary name) and `Progress`. Repair choices are `-words` sections named by the
+  song folder (`forSong` matches the folder name). `fsops.Stats` has JSON names (the UI reads
+  them). Tests: `webui/*_test.go` run the real server with `httptest` against temp libraries;
+  `ui_cmd_test.go` stubs `openBrowser` in `init` (no test may open a browser).
 - organize: when a keeper from another source cannot reach the library, the library's own
   copies of that song stay in place (not moved to duplicates/). The report's duplicate and
   invalid `Dest` is the actual target (with ` (2)`), also in dry runs.
@@ -311,6 +333,9 @@ stripped from the only audio source, and the README.
   whose `.mp4` target already exists is skipped before encoding.
 
 Still open (roadmap items):
+
+- `fixaudio`'s `TestAACNormalizationIsIdempotentViaJournal` fails with ffmpeg 9.1: its fixture
+  now reaches -3.00 dB on the first pass, so it no longer misses the target as the test needs.
 
 - **No signal handling.** Ctrl-C during `-m`/`-a` leaves a hidden `.*.sanitizer-*` temp file.
   It is ignored as media and moved to `extra-files/` by the next cleanup run, and the
