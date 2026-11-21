@@ -393,7 +393,6 @@ func reviewSimilar(cands []Candidate, p Plan, pairs []similarPair, isKeeper func
 		found[[2]int{sp.A, sp.B}] = sp
 	}
 	var out []Similar
-	seen := map[[2]int]bool{}
 	for _, sp := range pairs {
 		k := [2]int{sp.A, sp.B}
 		if !isKeeper(sp.A) || !isKeeper(sp.B) || possible[k] {
@@ -401,7 +400,6 @@ func reviewSimilar(cands []Candidate, p Plan, pairs []similarPair, isKeeper func
 		}
 		if e := sp.evidence(cands); e != "" {
 			out = append(out, Similar{A: sp.A, B: sp.B, Evidence: e})
-			seen[k] = true
 		}
 	}
 	for k := range possible {
