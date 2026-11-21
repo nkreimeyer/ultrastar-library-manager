@@ -14,6 +14,7 @@ import (
 	"github.com/nkreimeyer/library-manager/fsops"
 	"github.com/nkreimeyer/library-manager/internal/testutil"
 	"github.com/nkreimeyer/library-manager/journal"
+	"github.com/nkreimeyer/library-manager/mediatools"
 )
 
 // --- pure unit tests (no ffmpeg needed) ---
@@ -188,6 +189,22 @@ func ffprobeValue(t *testing.T, path string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// audioWithCover writes one second of a 440 Hz sine with a JPEG cover (attached_pic) to
+// path, encoded with args (codec, filters, metadata). The cover is a one-frame image input:
+// "-frames:v 1" on a lavfi video source ends the whole output after its first frame, which
+// left about one audio frame with ffmpeg 9.1 and none with 7.1.
+func audioWithCover(t *testing.T, path string, args ...string) {
+	t.Helper()
+	cover := filepath.Join(t.TempDir(), "cover.jpg")
+	testutil.FFmpeg(t, "-f", "lavfi", "-i", "color=red:s=16x16", "-frames:v", "1", cover)
+	full := append([]string{"-f", "lavfi", "-i", "sine=f=440:d=1", "-i", cover,
+		"-map", "0:a", "-map", "1:v", "-c:v", "mjpeg", "-disposition:v", "attached_pic"}, args...)
+	testutil.FFmpeg(t, append(full, path)...)
+	if d, ok := mediatools.ParseSeconds(ffprobeValue(t, path, "-show_entries", "format=duration")); !ok || d < 0.9 {
+		t.Fatalf("fixture %s holds %.3f s of audio, want 1 s", path, d)
+	}
+}
+
 func assertPeakNear(t *testing.T, path string, want float64) {
 	t.Helper()
 	got, err := measurePeak(path, false)
@@ -322,10 +339,9 @@ func TestMP3CoverAndTagsKept(t *testing.T) {
 	cfg, ops := newLibrary(t, false)
 	dir := addSong(t, cfg, "Artist - Cover", "song.mp3")
 	audio := filepath.Join(dir, "song.mp3")
-	testutil.FFmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=1", "-f", "lavfi", "-i", "color=red:s=16x16:d=1",
-		"-map", "0:a", "-map", "1:v", "-frames:v", "1", "-c:v", "mjpeg", "-disposition:v", "attached_pic",
+	audioWithCover(t, audio,
 		"-af", "volume=-20dB", "-c:a", "libmp3lame", "-b:a", "192k",
-		"-metadata", "title=Cover Song", "-metadata", "artist=Tester", audio)
+		"-metadata", "title=Cover Song", "-metadata", "artist=Tester")
 
 	run(t, cfg, ops)
 

@@ -30,10 +30,9 @@ func TestM4ACoverAndTagsKept(t *testing.T) {
 			cfg, ops := newLibrary(t, false)
 			dir := addSong(t, cfg, "Artist - Cover", "song.m4a")
 			audio := filepath.Join(dir, "song.m4a")
-			testutil.FFmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=1", "-f", "lavfi", "-i", "color=red:s=16x16:d=1",
-				"-map", "0:a", "-map", "1:v", "-frames:v", "1", "-c:v", "mjpeg", "-disposition:v", "attached_pic",
+			audioWithCover(t, audio,
 				"-af", "volume=-20dB", "-c:a", codec,
-				"-metadata", "title=Cover Song", "-metadata", "artist=Tester", audio)
+				"-metadata", "title=Cover Song", "-metadata", "artist=Tester")
 			raw0 := readFile(t, audio)
 			if !bytes.Contains(raw0, []byte("covr")) || !bytes.Contains(raw0, []byte("\xa9nam")) {
 				t.Fatalf("fixture lacks covr/©nam")
@@ -75,10 +74,9 @@ func TestFLACCoverAndTagsKept(t *testing.T) {
 	cfg, ops := newLibrary(t, false)
 	dir := addSong(t, cfg, "Artist - Cover", "song.flac")
 	audio := filepath.Join(dir, "song.flac")
-	testutil.FFmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=1", "-f", "lavfi", "-i", "color=red:s=16x16:d=1",
-		"-map", "0:a", "-map", "1:v", "-frames:v", "1", "-c:v", "mjpeg", "-disposition:v", "attached_pic",
+	audioWithCover(t, audio,
 		"-af", "volume=-20dB", "-c:a", "flac", "-sample_fmt", "s16",
-		"-metadata", "title=Cover Song", audio)
+		"-metadata", "title=Cover Song")
 
 	run(t, cfg, ops)
 
