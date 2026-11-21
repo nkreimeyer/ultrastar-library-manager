@@ -60,8 +60,8 @@ type Ops struct {
 	// target in place too. MoveTo, MoveInto and CopyInto use it to see the library and the
 	// out dir as a real run would have left them so far (see exists and taken).
 	plannedPresent map[string]bool
-	// plannedDirs: in dry-run mode, whether the item a planned move put at a path is a
-	// folder (see isDirNow).
+	// plannedDirs: in dry-run mode, whether the item a planned move or copy put at a path
+	// is a folder (see isDirNow); a planned copy always puts a file there.
 	plannedDirs map[string]bool
 
 	// writesMu guards plannedWrites: in dry-run mode, the content of every planned write
@@ -586,8 +586,10 @@ func (o *Ops) CopyInto(src, dstDir, relPath string) (string, error) {
 		log.Infof("[dry-run] would copy %s -> %s", src, dst)
 		// The planned copy takes its target, so a later CopyInto or MoveInto of this run
 		// picks the next free name, as in a real run.
+		// It is a file, even at a path that held a planned folder moved away since.
 		o.plannedMu.Lock()
 		o.plannedPresent[filepath.Clean(dst)] = true
+		o.plannedDirs[filepath.Clean(dst)] = false
 		o.plannedMu.Unlock()
 		o.copied.Add(1)
 		return dst, nil

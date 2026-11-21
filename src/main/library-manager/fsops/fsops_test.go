@@ -258,7 +258,8 @@ func TestDryRunMoveIntoReportsCollisionName(t *testing.T) {
 // A dry run hands out the targets a real run does: a planned MoveInto or CopyInto takes
 // its target (the next one to the same path gets " (2)"), a folder emptied by planned moves
 // is merged into an existing folder, and so is an empty folder whose target a planned move
-// put in place.
+// put in place, but not one whose target is a file a planned move or copy put there (also
+// at a path that held a planned folder before it was moved away).
 func TestMoveIntoCopyIntoDryRunTargetsMatchRealRun(t *testing.T) {
 	run := func(dry bool) ([]string, Stats) {
 		lib, out := t.TempDir(), t.TempDir()
@@ -268,8 +269,12 @@ func TestMoveIntoCopyIntoDryRunTargetsMatchRealRun(t *testing.T) {
 		writeFile(t, filepath.Join(lib, "Cat", "f.txt"), "f", 0o644)
 		writeFile(t, filepath.Join(out, "Cat", "Old", "song.txt"), "old", 0o644)
 		writeFile(t, filepath.Join(lib, "x", "Song", "song.txt"), "x", 0o644)
-		if err := os.MkdirAll(filepath.Join(lib, "y", "Song"), 0o755); err != nil {
-			t.Fatal(err)
+		writeFile(t, filepath.Join(lib, "d", "f.mp3"), "d", 0o644)
+		writeFile(t, filepath.Join(lib, "g", "song.txt"), "g", 0o644)
+		for _, d := range []string{"y/Song", "e/Empty", "k/Empty"} {
+			if err := os.MkdirAll(filepath.Join(lib, d), 0o755); err != nil {
+				t.Fatal(err)
+			}
 		}
 		before := snapshot(t, lib)
 
@@ -293,6 +298,16 @@ func TestMoveIntoCopyIntoDryRunTargetsMatchRealRun(t *testing.T) {
 		// The empty y/Song is merged into the folder x/Song was just moved to.
 		add(ops.MoveInto(filepath.Join(lib, "x", "Song"), out, "New"))
 		add(ops.MoveInto(filepath.Join(lib, "y", "Song"), out, "New"))
+		// An empty folder is not merged onto the file a planned move put at its target.
+		add(ops.MoveInto(filepath.Join(lib, "d", "f.mp3"), out, "F"))
+		add(ops.MoveInto(filepath.Join(lib, "e", "Empty"), out, "F"))
+		// Nor onto the file a planned copy put where a planned folder was moved away from.
+		add(ops.MoveInto(filepath.Join(lib, "g"), out, "G"))
+		if err := ops.MoveTo(filepath.Join(out, "G"), filepath.Join(out, "H")); err != nil {
+			t.Fatalf("dry=%v: %v", dry, err)
+		}
+		add(ops.CopyInto(filepath.Join(lib, "c", "song.mp3"), out, "G"))
+		add(ops.MoveInto(filepath.Join(lib, "k", "Empty"), out, "G"))
 		if dry {
 			if after := snapshot(t, lib); strings.Join(after, "\n") != strings.Join(before, "\n") {
 				t.Errorf("library changed in dry-run: %v", after)
@@ -302,7 +317,7 @@ func TestMoveIntoCopyIntoDryRunTargetsMatchRealRun(t *testing.T) {
 	}
 	realRun, realStats := run(false)
 	want := []string{"S/cover.jpg", "S/cover (2).jpg", "O/song.mp3", "O/song (2).mp3",
-		"extra/f.txt", "Cat", "New", "New"}
+		"extra/f.txt", "Cat", "New", "New", "F", "F (2)", "G", "G", "G (2)"}
 	if strings.Join(realRun, "|") != strings.Join(want, "|") {
 		t.Fatalf("real run targets = %q, want %q", realRun, want)
 	}
