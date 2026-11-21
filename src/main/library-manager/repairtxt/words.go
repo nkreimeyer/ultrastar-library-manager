@@ -501,13 +501,16 @@ func (wr *wordResolver) joinHyphenated(seg segment, toks []token, outs []outcome
 		}
 	windows:
 		for size := min(hi-lo+1, 4); size >= 2; size-- {
+			// A window holding a word already repaired on its own is skipped, not the
+			// other windows of its size ("�ber - l� - cher - lich" still tries "l�cherlich").
+		starts:
 			for a := max(lo, i-size+1); a <= i && a+size-1 <= hi; a++ {
 				b := a + size - 1
 				var joined []rune
 				for k := a; k <= b; k++ {
 					w := seg.runes[toks[k].start:toks[k].end]
 					if hasRepl(w) && !left(k) {
-						continue windows
+						continue starts
 					}
 					joined = append(joined, w...)
 				}

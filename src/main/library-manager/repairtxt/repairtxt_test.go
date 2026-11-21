@@ -778,6 +778,17 @@ func TestPlanHyphenatedSyllables(t *testing.T) {
 	}
 }
 
+// A chain that starts with a word repaired on its own still joins its later syllables:
+// skipping a window that holds "Über" must not skip the other windows of that size.
+func TestPlanHyphenatedAfterRepairedWord(t *testing.T) {
+	lx := corpus("de", strings.Repeat("über alles\n", 5), strings.Repeat("so lächerlich\n", 3))
+	song := "#TITLE:X\n#ARTIST:Y\n#LANGUAGE:German\n: 0 2 0 " + R + "ber\n: 2 2 0  - l" + R + "\n: 4 2 0  - cher\n: 6 2 0  - lich\nE\n"
+	fp, got := planText(t, &planner{lex: lx}, song)
+	if !strings.Contains(got, " Über\n") || !strings.Contains(got, " - lä\n") || len(fp.left) != 0 {
+		t.Errorf("hyphen chain after a repaired word not joined (left %+v):\n%s", fp.left, got)
+	}
+}
+
 func TestReadReviewed(t *testing.T) {
 	in := "\uFEFF# comment\nTäterätätä Mäh\n\n[Patrick Lindner - Mandeln und Zimt]\nfährt\n[ Party Animals - Der Betze Ruft ]\nfährt schwört\n[*]\nSäcken 12\n"
 	global, secs, err := readReviewed(strings.NewReader(in))
