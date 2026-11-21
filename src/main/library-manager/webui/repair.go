@@ -10,12 +10,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
@@ -229,34 +232,71 @@ func fits(word, form string) bool {
 	return true
 }
 
-// writeChoices adds the chosen spellings to the UI's words file, one section per song
-// folder (the -words section name a damaged txt is matched by).
+// writeChoices saves the chosen spellings in the UI's words file, one section per song
+// folder (the -words section name a damaged txt is matched by). A spelling chosen earlier
+// for the same damaged word of that folder is taken out: it fits the word as well, and two
+// reviewed spellings for one word decide nothing, so the new choice would be ignored.
 func writeChoices(ops *fsops.Ops, path string, choices []repairChoice) error {
-	old, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	bySection := map[string][]string{}
+	if !utf8.Valid(raw) { // edited by hand: read it as the -words reader does
+		if raw, err = charmap.Windows1252.NewDecoder().Bytes(raw); err != nil {
+			return err
+		}
+	}
+	bySection := map[string][]repairChoice{}
 	for _, c := range choices {
 		sec := filepath.Base(filepath.Dir(c.Path))
-		bySection[sec] = append(bySection[sec], c.Form)
+		bySection[sec] = append(bySection[sec], c)
+	}
+	superseded := func(sec, form string) bool {
+		form = norm.NFC.String(form)
+		for _, c := range bySection[sec] {
+			if fits(norm.NFC.String(c.Word), form) {
+				return true
+			}
+		}
+		return false
+	}
+	var b bytes.Buffer
+	if len(raw) == 0 {
+		b.WriteString("# Spellings chosen in the library-manager UI, per song folder ([folder name]).\n")
+	}
+	sec := "" // the section of the line ("" = words for every song)
+	for _, line := range strings.SplitAfter(string(raw), "\n") {
+		if line == "" {
+			continue
+		}
+		t := strings.TrimSpace(line)
+		switch {
+		case t == "" || strings.HasPrefix(t, "#"):
+		case strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]"):
+			if sec = strings.TrimSpace(t[1 : len(t)-1]); sec == "*" {
+				sec = ""
+			}
+		case sec != "" && len(bySection[sec]) > 0:
+			fields := strings.Fields(t)
+			kept := slices.DeleteFunc(slices.Clone(fields), func(f string) bool { return superseded(sec, f) })
+			if len(kept) == 0 {
+				continue
+			}
+			if len(kept) < len(fields) {
+				line = strings.Join(kept, " ")
+			}
+		}
+		b.WriteString(strings.TrimSuffix(line, "\n") + "\n")
 	}
 	secs := make([]string, 0, len(bySection))
 	for sec := range bySection {
 		secs = append(secs, sec)
 	}
 	sort.Strings(secs)
-	var b bytes.Buffer
-	b.Write(old)
-	if len(old) == 0 {
-		b.WriteString("# Spellings chosen in the library-manager UI, per song folder ([folder name]).\n")
-	} else if !bytes.HasSuffix(old, []byte("\n")) {
-		b.WriteByte('\n')
-	}
 	for _, sec := range secs {
 		fmt.Fprintf(&b, "[%s]\n", sec)
-		for _, f := range bySection[sec] {
-			b.WriteString(f + "\n")
+		for _, c := range bySection[sec] {
+			b.WriteString(c.Form + "\n")
 		}
 	}
 	b.WriteString("[*]\n")

@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/repairtxt"
 )
 
 // dedupeLibrary is a library with one song in two versions (the one with a cover wins)
@@ -449,5 +451,41 @@ func TestFits(t *testing.T) {
 		if got := fits(tt.word, tt.form); got != tt.want {
 			t.Errorf("fits(%q, %q) = %v", tt.word, tt.form, got)
 		}
+	}
+}
+
+// A changed choice replaces the earlier one for the same damaged word of that folder;
+// other sections, other words and hand-written lines stay.
+func TestWriteChoicesReplacesEarlierSpelling(t *testing.T) {
+	lib, out := damagedLib(t)
+	path := filepath.Join(out, uiWordsName)
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := "# mine\n[A - Weg]\nsörprise für\n[*]\nglobal\n[A - Other]\nsörprise"
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ops := fsops.New(false)
+	weg := filepath.Join("A - Weg", "song.txt")
+	if err := writeChoices(ops, path, []repairChoice{{Path: weg, Word: "s" + R + "rprise", Form: "sürprise"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	want := "# mine\n[A - Weg]\nfür\n[*]\nglobal\n[A - Other]\nsörprise\n[A - Weg]\nsürprise\n[*]\n"
+	if string(got) != want {
+		t.Errorf("words file:\n%s\nwant:\n%s", got, want)
+	}
+
+	// The repair follows the new choice.
+	cfg, err := config.New(lib, out, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repairtxt.Run(cfg, ops, repairtxt.Options{Words: []string{path}}); err != nil {
+		t.Fatal(err)
+	}
+	if txt, _ := os.ReadFile(filepath.Join(lib, weg)); !strings.Contains(string(txt), "sürprise") {
+		t.Errorf("not repaired with the new choice:\n%s", txt)
 	}
 }
