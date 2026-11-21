@@ -31,16 +31,6 @@ func skipIfRoot(t *testing.T) {
 	}
 }
 
-// sameDevice reports whether a and b are on the same file system.
-func sameDevice(t *testing.T, a, b string) bool {
-	t.Helper()
-	var sa, sb syscall.Stat_t
-	if syscall.Stat(a, &sa) != nil || syscall.Stat(b, &sb) != nil {
-		return true
-	}
-	return sa.Dev == sb.Dev
-}
-
 // makeWritable makes every folder below the roots writable, so they can be removed.
 func makeWritable(roots ...string) {
 	for _, root := range roots {
@@ -232,7 +222,7 @@ func TestMoveCrossDeviceCopyFailureRestoresSource(t *testing.T) {
 	srcRoot, dstRoot := t.TempDir(), t.TempDir()
 	src := filepath.Join(srcRoot, "Song")
 	writeFile(t, filepath.Join(src, "a.txt"), "x", 0o644)
-	if err := syscall.Mkfifo(filepath.Join(src, "z.fifo"), 0o644); err != nil {
+	if err := mkfifo(filepath.Join(src, "z.fifo"), 0o644); err != nil {
 		t.Skip("mkfifo:", err)
 	}
 	before := snapshot(t, src)
@@ -477,7 +467,7 @@ func TestCopyTreeReadOnlyDir(t *testing.T) {
 func TestCopyTreeRejectsFIFO(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "Song")
 	writeFile(t, filepath.Join(src, "a.txt"), "x", 0o644)
-	if err := syscall.Mkfifo(filepath.Join(src, "pipe"), 0o644); err != nil {
+	if err := mkfifo(filepath.Join(src, "pipe"), 0o644); err != nil {
 		t.Skip("mkfifo:", err)
 	}
 	if err := copyTree(src, filepath.Join(t.TempDir(), "copy")); err == nil ||
