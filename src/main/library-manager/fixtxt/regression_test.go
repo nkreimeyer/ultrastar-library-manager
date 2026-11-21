@@ -389,6 +389,10 @@ func TestRunChoosesVideoLikeAudio(t *testing.T) {
 	if !strings.Contains(got, "#VIDEO:b.mp4\n") || strings.Contains(report, "#VIDEO") {
 		t.Errorf("#VIDEO should follow #MP3:\n%s\nreport:\n%s", got, report)
 	}
+	got, report, _ = fixSong(t, "X", "x.txt", map[string]string{"b.mp4": "v", "a.mp4": "v"}, []string{"#AUDIO:b.mp4"})
+	if !strings.Contains(got, "#VIDEO:b.mp4\n") || strings.Contains(report, "#VIDEO") {
+		t.Errorf("#VIDEO should follow #AUDIO:\n%s\nreport:\n%s", got, report)
+	}
 }
 
 // A single video is used for #VIDEO and for the #MP3 of a video-only song.
