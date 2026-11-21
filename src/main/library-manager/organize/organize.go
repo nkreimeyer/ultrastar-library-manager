@@ -266,18 +266,18 @@ func newCandidate(cfg config.OrganizeConfig, src config.Source, folder string, i
 	}
 	if in.Song != nil {
 		var markedArtist, markedTitle bool
-		c.Artist, markedArtist = StripCopySuffix(lastTag(in.Song, "ARTIST"), false)
-		c.Title, markedTitle = StripCopySuffix(lastTag(in.Song, "TITLE"), false)
+		c.Artist, markedArtist = StripCopySuffix(tagValue(in.Song, "ARTIST"), false)
+		c.Title, markedTitle = StripCopySuffix(tagValue(in.Song, "TITLE"), false)
 		c.MarkedCopy = c.MarkedCopy || markedArtist || markedTitle
 		for _, tag := range []string{"AUDIO", "MP3", "VIDEO"} {
-			if _, marked := StripCopySuffix(lastTag(in.Song, tag), true); marked {
+			if _, marked := StripCopySuffix(tagValue(in.Song, tag), true); marked {
 				c.MarkedCopy = true
 			}
 		}
 		c.Duet = len(in.Song.Players) > 0 || IsDuetTitle(c.Title)
 		c.ContentHash = ContentHash(in.Song)
 		c.Profile = NewProfile(in.Song)
-		c.Quality.HasVersion = lastTag(in.Song, "VERSION") != ""
+		c.Quality.HasVersion = tagValue(in.Song, "VERSION") != ""
 	}
 	m := in.Media
 	c.Quality.SongWarnings = check.SongWarnings(in.Findings)
@@ -287,14 +287,9 @@ func newCandidate(cfg config.OrganizeConfig, src config.Source, folder string, i
 	return c
 }
 
-// lastTag returns the value of the last occurrence of the tag, the one players use.
-func lastTag(s *songtxt.Song, key string) string {
-	v := ""
-	for _, t := range s.Tags {
-		if strings.EqualFold(t.Key, key) {
-			v = t.Value
-		}
-	}
+// tagValue returns the value of the tag a player uses (the last occurrence), "" if absent.
+func tagValue(s *songtxt.Song, key string) string {
+	v, _ := s.Tag(key)
 	return v
 }
 

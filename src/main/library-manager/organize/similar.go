@@ -63,7 +63,7 @@ func NewProfile(s *songtxt.Song) *Profile {
 	if s == nil || len(s.Notes) < minContentNotes {
 		return nil
 	}
-	bpm, err := songtxt.ParseNumber(lastTag(s, "BPM"))
+	bpm, err := songtxt.ParseNumber(tagValue(s, "BPM"))
 	if err != nil || bpm <= 0 {
 		return nil
 	}

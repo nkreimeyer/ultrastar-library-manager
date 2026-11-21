@@ -880,3 +880,12 @@ func TestLoadReviewedMergesSections(t *testing.T) {
 		t.Error("merged section not used")
 	}
 }
+
+// A repeated #LANGUAGE resolves to its last occurrence, the one UltraStar uses.
+func TestLanguagesRepeatedTag(t *testing.T) {
+	p := &planner{lex: corpus("de", "ich bin hier")}
+	song, _ := songtxt.Parse("#TITLE:X\n#ARTIST:Y\n#LANGUAGE:English\n#LANGUAGE:German\n: 0 1 0 a\n")
+	if codes, how := p.languages(song, nil); !slices.Equal(codes, []string{"de"}) || how != "tag" {
+		t.Errorf("languages = %v (%s), want [de] from the last #LANGUAGE", codes, how)
+	}
+}

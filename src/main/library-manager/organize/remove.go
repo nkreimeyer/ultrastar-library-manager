@@ -227,8 +227,8 @@ func readRemoveSong(ops *fsops.Ops, lib, folder string) removeSong {
 	song, _ := songtxt.Parse(d.Text)
 	s.NoTags = false
 	s.EncodingProblem = d.Problem != ""
-	s.Artist, _ = StripCopySuffix(lastTag(song, "ARTIST"), false)
-	s.Title, _ = StripCopySuffix(lastTag(song, "TITLE"), false)
+	s.Artist, _ = StripCopySuffix(tagValue(song, "ARTIST"), false)
+	s.Title, _ = StripCopySuffix(tagValue(song, "TITLE"), false)
 	if f := utils.TagsFromFolderName(filepath.Base(folder), s.Artist, s.Title); f.FillArtist || f.FillTitle {
 		if f.FillArtist {
 			s.Artist, _ = StripCopySuffix(f.Artist, false)

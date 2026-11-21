@@ -314,8 +314,19 @@ func TestDuplicates(t *testing.T) {
 	if got, want := s.Duplicates(), []string{"MP3", "TITLE"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("Duplicates = %v, want %v", got, want)
 	}
-	if v, _ := s.Tag("title"); v != "a" {
-		t.Errorf("Tag(title) = %q, want first occurrence", v)
+	if v, _ := s.Tag("title"); v != "b" {
+		t.Errorf("Tag(title) = %q, want the last occurrence", v)
+	}
+	if v, _ := s.Tag("#MP3"); v != "z" {
+		t.Errorf("Tag(#MP3) = %q, want the last occurrence", v)
+	}
+	// The accessors read the last occurrence too, as UltraStar does.
+	r := mustParse(t, "#BPM:100\n#GAP:10\n#BPM:200\n#GAP:20\n: 0 1 0 a\n")
+	if bpm, err := r.BPM(); err != nil || bpm != 200 {
+		t.Errorf("BPM = %v, %v; want the last #BPM 200", bpm, err)
+	}
+	if gap, err := r.GapMs(); err != nil || gap != 20 {
+		t.Errorf("GapMs = %v, %v; want the last #GAP 20", gap, err)
 	}
 	if got := mustParse(t, "#TITLE:a\n#ARTIST:b").Duplicates(); len(got) != 0 {
 		t.Errorf("Duplicates = %v, want none", got)

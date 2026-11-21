@@ -297,14 +297,14 @@ func nextField(s string) (field, rest string) {
 	return s[:i], s[i:]
 }
 
-// Tag returns the value of the first tag with the given key (case-insensitive, a leading
-// '#' in key is ignored). Note that players use the last occurrence of a repeated tag
-// (check.playerView resolves repeated tags that way).
+// Tag returns the value of the tag with the given key (case-insensitive, a leading '#' in
+// key is ignored). A repeated tag resolves to its last occurrence, as in UltraStar, so
+// every accessor (BPM, GapMs, ...) reads the values a player uses.
 func (s *Song) Tag(key string) (string, bool) {
 	key = strings.TrimPrefix(key, "#")
-	for _, t := range s.Tags {
-		if strings.EqualFold(t.Key, key) {
-			return t.Value, true
+	for i := len(s.Tags) - 1; i >= 0; i-- {
+		if strings.EqualFold(s.Tags[i].Key, key) {
+			return s.Tags[i].Value, true
 		}
 	}
 	return "", false
