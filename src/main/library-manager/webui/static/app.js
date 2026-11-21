@@ -66,6 +66,10 @@ const TASKS = {
     title: "Add new songs to my library",
     desc: "Bring songs from other folders into the library. Songs it already has are compared, and only the best version is kept.",
   },
+  check: {
+    title: "Check my songs for problems",
+    desc: "Find songs that cannot be played or have problems, such as missing audio, damaged files or notes that do not fit the music. Nothing is changed.",
+  },
   remove: {
     title: "Remove songs from my library",
     desc: "Set aside every song of the artists or songs you name. Nothing is deleted: the songs are moved out of the library and can be put back.",
@@ -138,6 +142,8 @@ const JOB_TITLES = {
   "organize-analyse": "Checking first. Nothing is changed yet.",
   "organize-apply": "Moving songs",
   "organize-undo": "Undoing the last run",
+  "check-analyse": "Checking the songs. Nothing is changed.",
+  "check-apply": "Checking and setting aside broken songs",
   "remove-analyse": "Checking first. Nothing is changed yet.",
   "remove-apply": "Removing songs",
 };
@@ -147,6 +153,7 @@ const STOP_HINTS = {
   "organize-apply": "Stopping finishes the current move; undo puts back what was moved.",
   "organize-undo": "Stopping finishes the current move; undo again to move back the rest.",
   "remove-apply": "Stopping finishes the current move; undo puts back what was moved.",
+  "check-apply": "Stopping finishes the current move. Nothing is moved if you stop before the check is done.",
 };
 
 const emptyForm = () => ({
@@ -180,6 +187,7 @@ const S = {
   handled: new Set(),
   org: null, // organize review view
   rem: null, // remove review view
+  chk: null, // check report view
   open: new Set(), // open review sections
   notice: null,
   done: null,
@@ -198,14 +206,14 @@ const saveForm = () => localStorage.setItem("lm-form", JSON.stringify(S.f));
 const app = document.getElementById("app");
 
 function render() {
-  app.classList.toggle("wide", advanced() && S.view === "review" && !!S.org && !S.rem);
+  app.classList.toggle("wide", advanced() && S.view === "review" && !!S.org && !S.rem && !S.chk);
   let content;
   switch (S.view) {
     case "running":
       content = viewRunning();
       break;
     case "review":
-      content = S.rem ? viewRemoveReview() : viewOrganizeReview();
+      content = S.chk ? viewCheckReview() : S.rem ? viewRemoveReview() : viewOrganizeReview();
       break;
     case "done":
       content = viewDone();
@@ -479,6 +487,9 @@ function organizeRequest(withTidy) {
   if (S.task === "remove") {
     return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "", patterns: S.f.patterns };
   }
+  if (S.task === "check") {
+    return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "", deep: advanced() && S.f.deep };
+  }
   return {
     tidy: withTidy && S.task === "dedupe" ? tidyRequest() : undefined,
     mode: S.task,
@@ -508,7 +519,7 @@ async function validate() {
     return;
   }
   try {
-    const res = await post(S.task === "remove" ? "/api/remove/validate" : "/api/organize/validate", organizeRequest());
+    const res = await post(`/api/${S.task === "remove" ? "remove" : S.task === "check" ? "check" : "organize"}/validate`, organizeRequest());
     if (seq !== validateSeq) return;
     S.resolved = res;
     S.resolveError = null;
@@ -542,7 +553,7 @@ function updateResolved() {
   } else if (S.resolved) {
     const out = S.resolved.outDir;
     el.replaceChildren(
-      "Set-aside songs, reports and the record for undoing go to ",
+      S.task === "check" ? "The reports go to " : "Set-aside songs, reports and the record for undoing go to ",
       h("span", { class: "path" }, out),
       ".",
     );
@@ -583,6 +594,9 @@ function viewSetup() {
       fields.append(folderField("Your library", "library", "The songs end up here, sorted into a folder per first letter."));
       fields.append(tiersField("Folders with new songs"));
       break;
+    case "check":
+      fields.append(folderField("Your library", "library", "The folder that holds your songs. It is only read, never changed."));
+      break;
     case "remove":
       fields.append(folderField("Your library", "library", "The folder that holds your songs. The songs you name are moved out of it."));
       fields.append(patternsField());
@@ -613,8 +627,10 @@ function viewSetup() {
       render();
       window.scrollTo(0, 0);
     } }, "Next")
-    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: startAnalysis }, "Check first"),
-  h("span", { class: "muted small" }, S.task === "dedupe" ? "Next you choose what to tidy up." : "Nothing is changed yet. You see what would happen and decide then."),
+    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: startAnalysis }, S.task === "check" ? "Check songs" : "Check first"),
+  h("span", { class: "muted small" }, S.task === "dedupe" ? "Next you choose what to tidy up."
+    : S.task === "check" ? "Nothing in the library is changed. It can take a while for a big library."
+    : "Nothing is changed yet. You see what would happen and decide then."),
   ));
   if (advanced()) {
     add(frag, h("h2", null, "Earlier runs"), h("div", { id: "history" }, historyList()));
@@ -652,7 +668,7 @@ async function startJob(path, body) {
 }
 
 function startAnalysis() {
-  startJob(S.task === "remove" ? "/api/remove/analyse" : "/api/organize/analyse", organizeRequest(true));
+  startJob(`/api/${S.task === "remove" ? "remove" : S.task === "check" ? "check" : "organize"}/analyse`, organizeRequest(true));
 }
 
 // patternsField is the text box of the remove task: one artist or "Artist - Title" per line.
@@ -841,7 +857,7 @@ async function onJobEnd(j) {
   try {
     switch (j.kind.replace(/^tidy-/, "organize-")) {
       case "organize-analyse":
-        S.rem = null;
+        S.rem = S.chk = null;
         if (j.state === "done") {
           S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`);
           S.open = new Set();
@@ -852,7 +868,7 @@ async function onJobEnd(j) {
         }
         break;
       case "organize-apply":
-        S.rem = null;
+        S.rem = S.chk = null;
         if (j.state === "done" || j.state === "cancelled") {
           // From the result: after a reload S.org is not loaded.
           if (!S.org && j.result?.analysis) S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`).catch(() => null);
@@ -880,10 +896,31 @@ async function onJobEnd(j) {
           S.notice = failed("Moving did not finish");
         }
         break;
+      case "check-analyse":
+        if (j.state === "done") {
+          S.chk = await get(`/api/check/analysis?id=${encodeURIComponent(j.result.analysis)}`);
+          S.rem = S.org = null;
+          S.open = new Set();
+          S.view = "review";
+        } else {
+          S.view = "setup";
+          S.notice = j.state === "cancelled" ? { kind: "", title: "Stopped." } : failed("The check did not finish");
+        }
+        break;
+      case "check-apply":
+        if (j.state === "done" || j.state === "cancelled" || (j.stats?.moved && resultFolders(j))) {
+          S.done = { kind: "organize", check: true, job: j, stopped: j.state !== "done", cfg: resultFolders(j) || S.chk?.config };
+          S.view = "done";
+          if (j.state === "failed") S.notice = failed("Not everything could be done");
+        } else {
+          S.view = S.chk ? "review" : "setup";
+          S.notice = failed("The check did not finish");
+        }
+        break;
       case "remove-analyse":
         if (j.state === "done") {
           S.rem = await get(`/api/remove/analysis?id=${encodeURIComponent(j.result.analysis)}`);
-          S.org = null;
+          S.org = S.chk = null;
           S.open = new Set();
           S.view = "review";
         } else {
@@ -1166,6 +1203,57 @@ function viewOrganizeReview() {
   return frag;
 }
 
+function viewCheckReview() {
+  const v = S.chk;
+  const rep = v.report;
+  const frag = h("div");
+  const broken = rep.songs.filter((x) => x.status === "broken");
+  const warned = rep.songs.filter((x) => x.status === "suspicious");
+  const ok = rep.checked - broken.length - warned.length;
+  add(frag, h("h1", null, broken.length || warned.length ? "Some songs have problems" : "No problems found"));
+  add(frag, noticeBox(S.notice));
+  add(frag, h("p", null, `${plural(rep.checked, "song", "songs")} checked in `, h("span", { class: "path" }, v.config.library), `: ${fmt(ok)} fine, ${fmt(broken.length)} broken, ${fmt(warned.length)} with warnings.`));
+  for (const n of rep.notes || []) add(frag, noticeBox({ kind: "", title: n }));
+  const song = (x) => h("li", null, h("strong", null, x.path),
+    x.notMoved ? h("span", { class: "muted small" }, ` (stays: ${x.notMoved})`) : null,
+    h("ul", { class: "findings" }, x.findings.map((f) => h("li", { class: `sev-${f.severity}` },
+      f.message, advanced() ? h("span", { class: "muted small" }, ` [${f.code}${f.line ? `, line ${f.line}` : ""}]`) : null))));
+  const tally = h("ul", { class: "tally" });
+  tally.append(tallyItem("ck-broken", "move", broken.length, broken.length === 1 ? "song is broken (it has errors)" : "songs are broken (they have errors)",
+    () => cappedList(broken, song, "ck-broken")));
+  tally.append(tallyItem("ck-warned", "stay", warned.length, warned.length === 1 ? "song has warnings only" : "songs have warnings only",
+    () => cappedList(warned, song, "ck-warned")));
+  add(frag, tally);
+  if (advanced()) {
+    const counts = new Map();
+    for (const x of rep.songs) for (const f of x.findings) counts.set(f.code, (counts.get(f.code) || 0) + 1);
+    if (counts.size) {
+      add(frag, h("h2", null, "Problems by kind"), h("ul", { class: "history" }, [...counts].sort((a, b) => b[1] - a[1]).map(([code, n]) =>
+        h("li", null, h("span", null, code), h("span", { class: "num" }, fmt(n))))));
+    }
+  }
+  const out = v.config.outDir;
+  add(frag, h("p", { class: "muted" }, "The full report is in ", h("span", { class: "path" }, `${out}/check_report.txt`), " and check_report.json."));
+  const movable = broken.filter((x) => !x.notMoved && !x.moved);
+  add(frag, h("div", { class: "actions" },
+    advanced() && movable.length ? h("button", { class: "btn primary", type: "button", disabled: v.applied, onclick: async () => {
+      const go = await confirmDialog(`Set aside ${plural(movable.length, "broken song", "broken songs")}?`, [
+        `The check runs again, and every song with errors goes to ${out}/invalid. Nothing is deleted.`,
+        "This is not part of undo: move a folder back by hand if you want it again.",
+      ], "Set them aside");
+      if (go) startJob("/api/check/apply", { analysis: v.id });
+    } }, `Set aside ${plural(movable.length, "broken song", "broken songs")}…`) : null,
+    h("button", { class: movable.length && advanced() ? "btn" : "btn primary", type: "button", onclick: startAnalysis }, "Check again"),
+    h("button", { class: "btn", type: "button", onclick: () => {
+      S.view = "setup";
+      S.notice = null;
+      render();
+      validate();
+    } }, "Change folders"),
+  ));
+  return frag;
+}
+
 function viewRemoveReview() {
   const v = S.rem;
   const rep = v.report;
@@ -1294,6 +1382,13 @@ function viewDone() {
     add(frag, h("div", { class: "actions" },
       songsMoved && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Put back the set-aside songs") : null,
       again));
+  } else if (d.check) {
+    add(frag, h("h1", null, d.stopped ? "Stopped part-way" : "Done"));
+    add(frag, noticeBox(S.notice));
+    add(frag, h("p", null, `${plural(st.moved, "broken song folder", "broken song folders")} moved to invalid.`));
+    if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "move", "moves")} failed`, text: advanced() ? "The log below says why." : "Switch to Advanced to see the log." }));
+    if (d.cfg) add(frag, h("p", null, "They are in ", h("span", { class: "path" }, `${d.cfg.outDir}/invalid`), ". This cannot be undone with one click: move a folder back by hand if you want it again."));
+    add(frag, h("div", { class: "actions" }, again));
   } else if (d.kind === "organize") {
     add(frag, h("h1", null, d.stopped ? "Stopped part-way" : "Done"));
     add(frag, noticeBox(S.notice));

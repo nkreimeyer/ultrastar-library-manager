@@ -68,6 +68,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               Host/Origin/JSON checks, CSP, routes),
                               jobs.go (one job at a time, logrus hook, SSE /api/job/events), system.go (tools, folder lister),
                               organize.go (validate/analyse/exclude/apply/history/undo),
+                              check.go (the Check task: a dry-run check.Run shown as a report; "set aside broken songs" re-runs it
+                              with MoveBroken, not journaled so not covered by undo),
                               remove.go (the Remove task: validate/analyse/apply over organize.Remove, patterns as text; apply
                               re-plans as a dry run and stops if the removed songs differ; undo is the shared organize undo),
                               tidy.go (the tidy-up options and stepRun: the steps of one job on one ops),

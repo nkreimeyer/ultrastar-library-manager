@@ -33,6 +33,11 @@ type Options struct {
 	Deep bool
 	// MoveBroken moves songs with at least one error to invalid/.
 	MoveBroken bool
+	// Ctx stops the run: no further folder is checked, running probes are killed, and Run
+	// returns ctx.Err() without writing a report or moving anything. nil = never stopped.
+	Ctx context.Context
+	// Progress is called after each song folder with the number done and the total; may be nil.
+	Progress func(done, total int)
 }
 
 const maxWorkers = 16
@@ -86,10 +91,15 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 		return fmt.Errorf("finding song folders in %q: %w", cfg.SongDir, err)
 	}
 
-	insp, notes := NewInspector(context.Background(), ops, opts.Deep)
+	ctx := opts.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	insp, notes := NewInspector(ctx, ops, opts.Deep)
 	c := &checker{cfg: cfg}
-	_ = utils.ForEachParallel(context.Background(), folders, utils.Parallel{
-		Workers: workers,
+	_ = utils.ForEachParallel(ctx, folders, utils.Parallel{
+		Workers:  workers,
+		Progress: opts.Progress,
 		OnPanic: func(i int, _ any) {
 			log.Errorf("check: %s not checked: internal error (logged above)", folders[i])
 			ops.Fail()
@@ -102,6 +112,9 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 		c.record(songResult{folder: folder, txt: res.Txt, findings: res.Findings, encodingProblem: res.EncodingProblem})
 	})
 
+	if err := ctx.Err(); err != nil {
+		return err // stopped: a partial report would look complete
+	}
 	results := c.results
 	sortResults(results)
 	if opts.MoveBroken {
