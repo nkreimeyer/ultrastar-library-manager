@@ -282,7 +282,7 @@ type folderRequest struct {
 }
 
 func (q folderRequest) config() (config.OrganizeConfig, error) {
-	return config.NewOrganize(nil, q.Library, q.Out, q.DryRun)
+	return organize.NewUndoConfig(q.Library, q.Out, q.DryRun)
 }
 
 // handleOrganizeHistory lists the runs of the journal in the output folder.

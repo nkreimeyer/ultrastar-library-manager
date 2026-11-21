@@ -122,7 +122,7 @@ func journaledRun(name string, undo bool, library, outDir string, dryRun bool,
 	var cfg config.OrganizeConfig
 	var err error
 	if undo {
-		cfg, err = config.NewOrganize(nil, library, outDir, dryRun)
+		cfg, err = organize.NewUndoConfig(library, outDir, dryRun)
 	} else {
 		cfg, err = newConfig()
 	}

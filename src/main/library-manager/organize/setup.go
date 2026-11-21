@@ -11,7 +11,7 @@ import (
 // (config.NewDedupe), add puts the library in front of the first tier (config.NewAdd),
 // organize needs at least one source and a library (config.NewOrganize). The CLI checks
 // its flags before (with their names in the message); the checks here give the UI the same
-// rules. An undo run takes config.NewOrganize(nil, library, outDir, dryRun) instead.
+// rules. An undo run takes NewUndoConfig instead.
 func NewConfig(m Mode, tiers [][]string, library, outDir string, dryRun bool) (config.OrganizeConfig, error) {
 	switch m {
 	case ModeDedupe, ModeRemove:
@@ -26,6 +26,13 @@ func NewConfig(m Mode, tiers [][]string, library, outDir string, dryRun bool) (c
 		return config.OrganizeConfig{}, fmt.Errorf("a library folder is required")
 	}
 	return config.NewOrganize(tiers, library, outDir, dryRun)
+}
+
+// NewUndoConfig returns the configuration of -undo and the UI's history and undo: no
+// sources; the journal is found in outDir, or by default in organize-output/ next to
+// library.
+func NewUndoConfig(library, outDir string, dryRun bool) (config.OrganizeConfig, error) {
+	return config.NewOrganize(nil, library, outDir, dryRun)
 }
 
 // NewOptions returns the options of an organize, dedupe or add run. dedupe has a single
