@@ -138,6 +138,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/organize/analyse", s.handleOrganizeAnalyse)
 	s.mux.HandleFunc("GET /api/organize/analysis", s.handleOrganizeAnalysis)
 	s.mux.HandleFunc("POST /api/organize/exclude", s.handleOrganizeExclude)
+	s.mux.HandleFunc("POST /api/organize/join", s.handleOrganizeJoin)
 	s.mux.HandleFunc("POST /api/organize/apply", s.handleOrganizeApply)
 	s.mux.HandleFunc("POST /api/organize/history", s.handleOrganizeHistory)
 	s.mux.HandleFunc("POST /api/organize/undo", s.handleOrganizeUndo)

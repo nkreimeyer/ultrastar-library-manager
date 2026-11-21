@@ -1123,6 +1123,19 @@ async function setExcluded(refs, on) {
   window.scrollTo(0, y);
 }
 
+// setJoined sets the pairs of songs treated as one song (the whole list) and plans again.
+async function setJoined(pairs) {
+  try {
+    S.org = await post("/api/organize/join", { analysis: S.org.id, join: pairs });
+    S.notice = null;
+  } catch (e) {
+    S.notice = { kind: "bad", title: e.message };
+  }
+  const y = window.scrollY;
+  render();
+  window.scrollTo(0, y);
+}
+
 function cappedList(items, renderItem, key) {
   const limit = S.open.has(`${key}:all`) ? Infinity : 200;
   const ul = h("ul", { class: "songs" }, items.slice(0, limit).map(renderItem));
@@ -1258,12 +1271,22 @@ function viewOrganizeReview() {
   }
   if (songsShown && (!t || t.options.dedupe)) tally.append(tallyItem("similar", "stay", pairs.length, pairs.length === 1 ? "pair of songs looks alike but is kept apart" : "pairs of songs look alike but are kept apart",
     () => h("div", null,
-      h("p", { class: "muted small" }, "Both songs of each pair are kept. If they are the same song, remove one by hand later."),
+      h("p", { class: "muted small" }, "Both songs of each pair are kept. If they are the same song, say so: the better version is kept and the other one is set aside."),
       cappedList(pairs, (p) => h("li", null,
         h("div", { class: "song-name" }, songName(songs[p.a]), " and ", songName(songs[p.b])),
         h("div", { class: "song-meta" }, where(songs[p.a]), " / ", where(songs[p.b])),
         h("div", { class: "song-meta" }, p.evidence),
+        h("button", { class: "link", type: "button", onclick: () => setJoined([...v.joined, [songs[p.a].ref, songs[p.b].ref]]) }, "Same song, keep only the better version"),
       ), "similar"))));
+  if (v.joined.length) {
+    tally.append(tallyItem("joined", "move", v.joined.length, v.joined.length === 1 ? "pair you chose to treat as the same song" : "pairs you chose to treat as the same song",
+      () => h("ul", { class: "songs" }, v.joined.map((pair, k) => {
+        const [a, b] = pair.map((ref) => songs.find((x) => x.ref === ref));
+        return h("li", null,
+          h("div", { class: "song-name" }, a ? songName(a) : pair[0], " and ", b ? songName(b) : pair[1]),
+          h("button", { class: "link", type: "button", onclick: () => setJoined(v.joined.filter((_, n) => n !== k)) }, "Keep them apart again"));
+      }))));
+  }
   if (tally.childNodes.length) add(frag, tally);
   if (media.length) {
     add(frag, h("h2", null, "Audio and video"),

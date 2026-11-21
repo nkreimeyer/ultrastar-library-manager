@@ -118,6 +118,7 @@ type organizeAnalysis struct {
 	cfg     configView
 	review  *organize.Review
 	exclude map[string]bool
+	join    [][2]string   // pairs of refs the reviewer treats as one song
 	plan    organize.Plan // review.Plan with exclude applied; review is nil if no song step ran
 	applied bool
 	// tidy is what a tidy-up's text and cleanup steps would change (nil for other runs);
@@ -220,7 +221,7 @@ func (s *Server) handleOrganizeExclude(w http.ResponseWriter, r *http.Request) {
 		ex[ref] = true
 	}
 	s.mu.Lock()
-	rv, applied := a.review, a.applied
+	rv, applied, join := a.review, a.applied, a.join
 	s.mu.Unlock()
 	if applied {
 		writeError(w, http.StatusConflict, fmt.Errorf("this plan was applied already"))
@@ -230,7 +231,7 @@ func (s *Server) handleOrganizeExclude(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, fmt.Errorf("this check moves no song folders, so there is none to leave alone"))
 		return
 	}
-	plan := rv.Replan(ex) // in memory (only buckets no plan needed yet are read), may take a moment for a big library
+	plan := rv.ReplanWith(ex, join) // in memory (only buckets no plan needed yet are read), may take a moment for a big library
 	s.mu.Lock()
 	if a.review != rv {
 		s.mu.Unlock()
@@ -238,6 +239,55 @@ func (s *Server) handleOrganizeExclude(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.exclude, a.plan = ex, plan
+	v := buildOrganizeView(a)
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, v)
+}
+
+// handleOrganizeJoin sets the pairs of songs that are treated as the same song and plans
+// again. The pairs are the whole list: an empty list keeps every pair apart.
+func (s *Server) handleOrganizeJoin(w http.ResponseWriter, r *http.Request) {
+	var q struct {
+		Analysis string      `json:"analysis"`
+		Join     [][2]string `json:"join"`
+	}
+	if !readJSON(w, r, &q) {
+		return
+	}
+	a, err := s.analysis(q.Analysis)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	s.mu.Lock()
+	rv, applied, ex := a.review, a.applied, a.exclude
+	s.mu.Unlock()
+	if applied {
+		writeError(w, http.StatusConflict, fmt.Errorf("this plan was applied already"))
+		return
+	}
+	if rv == nil {
+		writeError(w, http.StatusConflict, fmt.Errorf("this check moves no song folders, so there is nothing to join"))
+		return
+	}
+	known := map[string]bool{}
+	for i := range rv.Cands {
+		known[rv.Cands[i].Ref()] = true
+	}
+	for _, p := range q.Join {
+		if !known[p[0]] || !known[p[1]] || p[0] == p[1] {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("unknown or identical songs %q and %q", p[0], p[1]))
+			return
+		}
+	}
+	plan := rv.ReplanWith(ex, q.Join)
+	s.mu.Lock()
+	if a.review != rv {
+		s.mu.Unlock()
+		writeError(w, http.StatusConflict, fmt.Errorf("the plan changed meanwhile; review it again"))
+		return
+	}
+	a.join, a.plan = q.Join, plan
 	v := buildOrganizeView(a)
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, v)
@@ -262,7 +312,7 @@ func (s *Server) handleOrganizeApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	applied, exclude := a.applied, a.exclude
+	applied, exclude, join := a.applied, a.exclude, a.join
 	s.mu.Unlock()
 	if applied {
 		writeError(w, http.StatusConflict, fmt.Errorf("this plan was applied already; check again for a new plan"))
@@ -280,7 +330,7 @@ func (s *Server) handleOrganizeApply(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		run := &stepRun{tidy: a.req.Tidy, cfg: cfg, ops: ops, ctx: ctx, c: c, songs: a.req.options(m)}
-		run.songs.Exclude = exclude
+		run.songs.Exclude, run.songs.Join = exclude, join
 		var changed map[string]any // the result of a changed plan
 		run.songs.Review = func(rv *organize.Review) error {
 			s.mu.Lock()
@@ -463,6 +513,7 @@ type organizeView struct {
 	PossibleDuplicates [][]int         `json:"possibleDuplicates"`
 	Similar            []similarView   `json:"similar"`
 	Excluded           []string        `json:"excluded"`
+	Joined             [][2]string     `json:"joined"` // pairs of song refs treated as one song
 	Applied            bool            `json:"applied"`
 	Tidy               *tidyView       `json:"tidy,omitempty"`
 }
@@ -511,7 +562,10 @@ func buildOrganizeView(a *organizeAnalysis) organizeView {
 	v := organizeView{
 		ID: a.id, Mode: a.req.Mode, Config: a.cfg, Notes: notes, Summary: summarize(cands, p),
 		Songs: make([]songView, len(cands)), PossibleDuplicates: p.PossibleDuplicates, Similar: []similarView{},
-		Excluded: []string{}, Applied: a.applied,
+		Excluded: []string{}, Joined: [][2]string{}, Applied: a.applied,
+	}
+	if a.join != nil {
+		v.Joined = a.join
 	}
 	if v.Notes == nil {
 		v.Notes = []string{}

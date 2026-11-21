@@ -66,6 +66,9 @@ type Options struct {
 	// Exclude lists candidates (by Ref) that are left where they are ("excluded in
 	// review"); see PlanOptions.Exclude.
 	Exclude map[string]bool
+	// Join lists pairs of candidates (by Ref) that are treated as one song, whatever their
+	// tags and charts say; see PlanOptions.Join.
+	Join [][2]string
 	// Review, if set, is called with the plan before any report is written or anything is
 	// moved. An error it returns stops Run with that error.
 	Review func(*Review) error
@@ -101,6 +104,8 @@ type Review struct {
 	// then, but a bucket only the new plan reaches (another keeper's artist) is read from
 	// the disk now, and its problems are logged and counted on Run's ops.
 	Replan func(exclude map[string]bool) Plan
+	// ReplanWith is Replan with other joined pairs as well (Options.Join is what Plan used).
+	ReplanWith func(exclude map[string]bool, join [][2]string) Plan
 }
 
 // ctx is the Ctx, with nil as context.Background().
@@ -197,7 +202,7 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 
 	planOpts := PlanOptions{
 		Priority: opts.Priority, IgnoreThe: opts.IgnoreThe, Occupied: libraryOccupant(ops, cfg.Library),
-		LibraryInPlace: opts.mode() != ModeOrganize, Exclude: opts.Exclude,
+		LibraryInPlace: opts.mode() != ModeOrganize, Exclude: opts.Exclude, Join: opts.Join,
 		Broken: opts.Broken, KeepDuplicates: opts.KeepDuplicates,
 	}
 	for _, src := range cfg.Sources {
@@ -208,12 +213,13 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 	plan := MakePlan(cands, planOpts)
 	logPlan(cands, plan)
 	if opts.Review != nil {
-		replan := func(exclude map[string]bool) Plan {
+		replanWith := func(exclude map[string]bool, join [][2]string) Plan {
 			po := planOpts
-			po.Exclude = exclude
+			po.Exclude, po.Join = exclude, join
 			return MakePlan(cands, po)
 		}
-		if err := opts.Review(&Review{Cands: cands, Plan: plan, Notes: notes, Replan: replan}); err != nil {
+		replan := func(exclude map[string]bool) Plan { return replanWith(exclude, planOpts.Join) }
+		if err := opts.Review(&Review{Cands: cands, Plan: plan, Notes: notes, Replan: replan, ReplanWith: replanWith}); err != nil {
 			return err
 		}
 	}

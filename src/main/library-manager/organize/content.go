@@ -131,5 +131,8 @@ const joinedByContent = "; the tags differ, but the notes, timing and lyrics are
 // joinedBySimilar: the version is in the group because of the similarity check.
 const joinedBySimilar = "; the tags differ, but the chart (timing and melody, within 30 ms) and at least 90 % of the lyrics match another version of this song"
 
+// joinedByUser: the version is in the group because the reviewer said so.
+const joinedByUser = "; the tags differ, but you chose to treat it as the same song as another version"
+
 // joinedViaGroup: the version has the tags of a version that was joined by its notes.
 const joinedViaGroup = "; the tags differ, but a version with the same tags matches this song by its notes"

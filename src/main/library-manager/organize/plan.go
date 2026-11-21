@@ -137,6 +137,11 @@ type PlanOptions struct {
 	// song are planned without it (one of them may become the keeper); to leave a whole
 	// song alone, exclude all of its versions.
 	Exclude map[string]bool
+	// Join lists pairs of candidates (by Ref) that are treated as one song, as if their
+	// tags were the same: they get one keeper, and the other versions of both become
+	// duplicates. A pair with a candidate that is excluded, broken or unreadable has no
+	// effect. It is what a reviewer decides about a Plan.Similar pair.
+	Join [][2]string
 	// Broken says what happens to broken songs.
 	Broken BrokenRule
 	// KeepDuplicates (dedupe only: every candidate must be InLibrary, with LibraryInPlace):
@@ -282,6 +287,25 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 			for _, i := range []int{sp.A, sp.B} {
 				if joinedBy[i] == "" {
 					joinedBy[i] = joinedBySimilar
+				}
+			}
+		}
+	}
+	if len(opts.Join) > 0 {
+		byRef := map[string]int{}
+		for _, i := range working {
+			byRef[cands[i].Ref()] = i
+		}
+		for _, pair := range opts.Join {
+			a, okA := byRef[pair[0]]
+			b, okB := byRef[pair[1]]
+			if !okA || !okB {
+				continue
+			}
+			uf.union(songKey[a], songKey[b])
+			for _, i := range []int{a, b} {
+				if joinedBy[i] == "" {
+					joinedBy[i] = joinedByUser
 				}
 			}
 		}

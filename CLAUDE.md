@@ -81,7 +81,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               content.go (ContentHash, union-find joining of groups by content),
                               remove.go (Pattern, ParsePatternFile, planRemove (pure), Remove, remove_plan.json/.txt),
                               similar.go (Profile, findSimilar, similarJoin, review evidence),
-                              plan.go also BrokenRule (BrokenByMode, BrokenKeep, BrokenSetAside) and KeepDuplicates (dedupe only);
+                              plan.go also BrokenRule (BrokenByMode, BrokenKeep, BrokenSetAside) and KeepDuplicates (dedupe only), Join (pairs of Refs
+                              the reviewer treats as one song; Review.ReplanWith; the UI's "Same song" on a Similar pair);
                               setup.go (NewConfig per Mode, NewUndoConfig, NewOptions: shared by the CLI and the UI;
                               dedupe drops -priority/-ignore-the), quality.go (keeper order), plan.go (MakePlan, orderMoves; pure), organize.go (Run, Undo),
                               journal.go (organize-journal.jsonl), report.go (organize_plan.json/.txt;
