@@ -254,10 +254,10 @@ func TestVideoBitrateIgnoresContainerRate(t *testing.T) {
 	if video.BitRate != "" || probe.HasStream("audio") || container <= BitrateThreshold {
 		t.Fatalf("fixture = %+v, want a video-only stream without bit_rate in a container above the threshold", probe)
 	}
-	if got, err := videoBitrate(padded, probe); err != nil || got <= 0 || got > BitrateThreshold {
+	if got, err := videoBitrate(nil, padded, probe); err != nil || got <= 0 || got > BitrateThreshold {
 		t.Errorf("videoBitrate(padded MPEG-TS) = %d, %v; want the packet sum, below %d (container %d)", got, err, BitrateThreshold, container)
 	}
-	if needsReEncode(padded, "h264", probe) {
+	if needsReEncode(nil, padded, "h264", probe) {
 		t.Error("a 300 kbit/s H.264 video must not be re-encoded because of its container's padding")
 	}
 
@@ -265,7 +265,7 @@ func TestVideoBitrateIgnoresContainerRate(t *testing.T) {
 	makeMediaFrom(t, withAudio, "testsrc2=size=320x240:rate=25:duration=1", "-c:v", "libx264", "-c:a", "pcm_s16le")
 	probe = probeOf(withAudio)
 	container, _ = strconv.Atoi(probe.Format.BitRate)
-	if got, err := videoBitrate(withAudio, probe); err != nil || got <= 0 || got >= container {
+	if got, err := videoBitrate(nil, withAudio, probe); err != nil || got <= 0 || got >= container {
 		t.Errorf("videoBitrate(with audio) = %d, %v; want the packet sum, below the container rate %d", got, err, container)
 	}
 }
@@ -445,7 +445,7 @@ func TestTagByRemuxNeedsKnownDuration(t *testing.T) {
 		t.Skipf("cannot generate test media (%v): %s", err, stderr.String())
 	}
 	f.Close()
-	if m, err := probeMarker(context.Background(), video); err != nil || m.duration != 0 {
+	if m, err := probeMarker(context.Background(), nil, video); err != nil || m.duration != 0 {
 		t.Fatalf("fixture probe = %+v, %v; want an unknown duration", m, err)
 	}
 	before := testutil.Snapshot(t, songDir)

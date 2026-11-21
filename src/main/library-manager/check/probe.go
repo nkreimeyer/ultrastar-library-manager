@@ -35,7 +35,14 @@ const estimatedMsg = "Estimating duration from bitrate"
 // duration is replaced by a measured one (measureDuration); if that fails,
 // DurationEstimated is set. An error wrapping errToolFailed means ffprobe could not run;
 // any other error means the file is unreadable.
-func probeMedia(ctx context.Context, path string) (mediaInfo, error) {
+//
+// fileResult reports whether the result depends only on the file (and the tool versions),
+// so it may be cached (mediacache): a successful probe, or ffprobe failing on the file
+// (mediatools.FileFailure). It is false for a tool that could not run or was killed by a
+// signal, a system error such as a NAS read error in the tool's messages (also of ffmpeg
+// for the measurement: the duration stays estimated only because of that run), unparsable
+// ffprobe output and a stopped ctx.
+func probeMedia(ctx context.Context, path string) (info mediaInfo, fileResult bool, err error) {
 	probe, err := mediatools.Probe(ctx, path)
 	if err != nil {
 		var probeErr *mediatools.ProbeError
@@ -45,35 +52,43 @@ func probeMedia(ctx context.Context, path string) (mediaInfo, error) {
 			if msg == "" {
 				msg = probeErr.Err.Error()
 			}
-			return mediaInfo{}, errors.New(msg)
+			return mediaInfo{}, ctx.Err() == nil && mediatools.FileFailure(probeErr.Err, probeErr.Stderr), errors.New(msg)
 		case errors.Is(err, mediatools.ErrNotRun):
-			return mediaInfo{}, fmt.Errorf("%w: %v", errToolFailed, err)
+			return mediaInfo{}, false, fmt.Errorf("%w: %v", errToolFailed, err)
 		}
-		return mediaInfo{}, err // unparsable output
+		return mediaInfo{}, false, err // unparsable output
 	}
-	info := fromProbe(probe)
+	info = fromProbe(probe)
+	fileResult = !mediatools.SystemError(probe.Log)
 	if info.HasAudio && strings.Contains(probe.Log, estimatedMsg) {
-		if d, ok := measureDuration(ctx, path); ok {
+		d, ok, measured := measureDuration(ctx, path)
+		if ok {
 			info.DurationSec, info.HasDuration = d, true
 		} else {
 			info.DurationEstimated = true
 		}
+		fileResult = fileResult && measured
 	}
-	return info, nil
+	return info, fileResult && ctx.Err() == nil, nil
 }
 
 // measureDuration returns the length of the first audio stream of path by reading all of
 // its packets (demuxing only, no decoding: fast). ok is false if it cannot be measured.
-func measureDuration(ctx context.Context, path string) (sec float64, ok bool) {
+// fileResult reports whether the outcome is a property of the file: false if ffmpeg could
+// not be started, was killed by a signal or names a system error (mediatools.FileFailure,
+// SystemError: a read that failed or stopped early on the file system).
+func measureDuration(ctx context.Context, path string) (sec float64, ok, fileResult bool) {
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-i", path,
 		"-map", "0:a:0", "-c", "copy", "-f", "null", "-progress", "pipe:1", "-nostats", "-")
 	cmd.WaitDelay = mediatools.WaitDelay
-	cmd.Stderr = capStderr()
+	stderr := capStderr()
+	cmd.Stderr = stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return 0, false
+		return 0, false, mediatools.FileFailure(err, stderr.String())
 	}
-	return parseProgressDuration(string(out))
+	sec, ok = parseProgressDuration(string(out))
+	return sec, ok, !mediatools.SystemError(stderr.String())
 }
 
 // parseProgressDuration returns the last out_time_us of ffmpeg -progress output, in seconds.
@@ -127,12 +142,14 @@ func fromProbe(probe mediatools.ProbeInfo) mediaInfo {
 // decodeCheck decodes the whole file with ffmpeg. decodeErr is set if ffmpeg failed,
 // decodeWarn if it succeeded but reported errors (typically a truncated or partly
 // corrupt file, which ffmpeg decodes as far as it can). An error wrapping errToolFailed
-// means ffmpeg could not run.
+// means ffmpeg could not run. fileResult reports whether the outcome is a property of the
+// file and may be cached: false for an ffmpeg killed by a signal or naming a system error
+// (mediatools.FileFailure, SystemError).
 //
 // The decoder runs single-threaded: frame-threaded video decoders report the errors of
 // a corrupt file in a different order on every run, which would make the report differ.
 // It also keeps the memory and CPU use of the parallel workers bounded.
-func decodeCheck(ctx context.Context, path string) (decodeErr, decodeWarn string, err error) {
+func decodeCheck(ctx context.Context, path string) (decodeErr, decodeWarn string, fileResult bool, err error) {
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-threads", "1", "-i", path, "-f", "null", "-")
 	cmd.WaitDelay = mediatools.WaitDelay
 	stderr := capStderr()
@@ -144,11 +161,11 @@ func decodeCheck(ctx context.Context, path string) (decodeErr, decodeWarn string
 			if msg == "" {
 				msg = err.Error()
 			}
-			return msg, "", nil
+			return msg, "", mediatools.FileFailure(err, stderr.String()), nil
 		}
-		return "", "", fmt.Errorf("%w: ffmpeg: %v", errToolFailed, err)
+		return "", "", false, fmt.Errorf("%w: ffmpeg: %v", errToolFailed, err)
 	}
-	return "", toolMessage(dropNullMuxerLines(stderr.Head()), path, 3), nil
+	return "", toolMessage(dropNullMuxerLines(stderr.Head()), path, 3), !mediatools.SystemError(stderr.String()), nil
 }
 
 // dropNullMuxerLines removes the messages of ffmpeg's null output muxer ("[null @ 0x…]

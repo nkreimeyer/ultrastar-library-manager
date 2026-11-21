@@ -58,6 +58,7 @@ library-manager remove -l <library> -artist <name> | -song "Artist - Title" | -f
 | `-move-broken` | off | With `-k`: move songs with errors to `invalid/` |
 | `-m` | off | Video module (re-encoding) |
 | `-a` | off | Audio module (stereo downmix, normalization) |
+| `-no-cache` | off | Probe every media file again: neither read nor write the media cache (see "Media cache") |
 | `-v <level>` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 
 `-t` and `-c` are enabled by default. Bool flags are disabled with `=`, e.g. `-t=false`;
@@ -86,6 +87,30 @@ by the video and audio modules are only listed and counted, not applied in the d
 This includes the `#VIDEO` update of a conversion that changes the file name
 (`.avi` → `.mp4`). No later module depends on them today: the audio module, the only one
 after the video module, handles audio files and the `#VOCALS`/`#INSTRUMENTAL` tags only.
+The one file a dry run writes into the library is the hidden media cache (see below).
+
+### Media cache
+
+Probing the media files (ffprobe, ffmpeg measurements) is most of the time a check, a
+dedupe or a tidy-up takes. The results are kept in a hidden file in the root of the library
+(`-s`, or `-l` for organize, dedupe and add, and the library in the UI):
+`.library-manager-cache.json.gz` (gzip-compressed JSON, grouped by song folder, with the
+time of the last run). The next run probes only the files that changed: a file counts as
+unchanged while its size and modification time are the same. Songs moved with their
+modification times (organize's own moves, `mv`, `rsync -a`) keep their results. A new
+ffmpeg/ffprobe version discards all results. Song `.txt` files are always read anew.
+A failure that may be passing (ffprobe or ffmpeg killed, or a read error such as
+`Input/output error` while a network share drops for a moment) is never kept: the next run
+tries that file again. A file the tools really cannot read stays recorded until it changes.
+
+The file is written in dry runs too, and it is never moved by cleanup (it is outside every
+song folder). If a run is killed while it writes the file, a hidden
+`.library-manager-cache.json.gz.<random>.tmp` can stay next to it; the next run that saves
+the cache removes such files once they are an hour old. When organize or add created the
+library folder, `-undo` removes it again together with the cache file. The cache is used
+by the check task of the UI as well. It is safe to delete at any time: the next run probes
+everything again and writes a new one. `-no-cache` (main command, organize, dedupe, add) neither reads nor writes
+it. A library root that is itself a song folder gets no cache.
 
 ### What the modules do
 
@@ -205,7 +230,8 @@ program with exit code 1.
 The UI covers `dedupe`, `add` and `organize`:
 
 1. Choose what to do and pick the folders (a folder picker or a pasted path).
-2. **Check first**: a dry run. Nothing in the library changes.
+2. **Check first**: a dry run. Nothing in the library changes except the hidden media cache
+   (see "Media cache"), so the move after it does not probe the media again.
 3. Review the outcome: which songs move into the library, which duplicates and broken songs
    are set aside (and why), which stay where they are. **Leave this song alone** takes a
    song (or one version of it) out of the plan; the plan updates at once.
@@ -242,7 +268,7 @@ sources:
 ```
 
 ```bash
-library-manager organize -s <dir>[:<dir>...] [-s ...] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n] [-v level]
+library-manager organize -s <dir>[:<dir>...] [-s ...] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-no-cache] [-n] [-v level]
 library-manager organize -undo [-o <out> | -l <library>] [-n] [-v level]
 ```
 
@@ -271,6 +297,7 @@ recorded in a journal and can be undone with `-undo`.
 | `-ignore-the` | off | Sort "The Beatles" under `B` (the folder name keeps "The") |
 | `-deep` | off | Fully decode every referenced audio/video file while checking the songs (slow) |
 | `-n` | off | Dry run: write the plan report only; nothing is moved and no journal entry is written |
+| `-no-cache` | off | Probe every media file again: neither read nor write the media cache (see "Media cache") |
 | `-undo` | off | Undo the most recent organize run that was not undone yet |
 | `-v <level>` | `info` | Log level |
 
@@ -433,7 +460,7 @@ sources have the same name).
 ## Removing duplicates in place (`dedupe`)
 
 ```bash
-library-manager dedupe -l <library> [-o <out>] [-deep] [-n] [-v level]
+library-manager dedupe -l <library> [-o <out>] [-deep] [-no-cache] [-n] [-v level]
 library-manager dedupe -undo [-o <out> | -l <library>] [-n] [-v level]
 ```
 
@@ -449,7 +476,7 @@ encoding problem and unreadable folders stay. Nothing is renamed or re-bucketed.
 ## Adding songs to a library (`add`)
 
 ```bash
-library-manager add -s <dir>[:<dir>...] [-s ...] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n] [-v level]
+library-manager add -s <dir>[:<dir>...] [-s ...] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-no-cache] [-n] [-v level]
 library-manager add -undo [-o <out> | -l <library>] [-n] [-v level]
 ```
 

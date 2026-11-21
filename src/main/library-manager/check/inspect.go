@@ -10,6 +10,7 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/mediacache"
 	"github.com/nkreimeyer/library-manager/mediatools"
 	"github.com/nkreimeyer/library-manager/songtxt"
 	"github.com/nkreimeyer/library-manager/utils"
@@ -24,6 +25,7 @@ type Inspector struct {
 	media   bool // ffprobe is available
 	deep    bool // deep requested and ffmpeg (and ffprobe) are available
 	deepSem chan struct{}
+	cache   *mediacache.Cache // nil = no cache (UseCache)
 }
 
 // Inspection is the outcome of inspecting one song folder.
@@ -116,6 +118,14 @@ func NewInspector(ctx context.Context, ops *fsops.Ops, deep bool) (*Inspector, [
 	}
 	return i, notes
 }
+
+// UseCache makes the inspector reuse the media results stored in c (nil = no cache, the
+// default) and store new ones there: the ffprobe result of every referenced audio/video
+// file (with the duration measurement of an estimated mp3) and, with -deep, its decode
+// result, each valid while the file keeps its size and mtime (see mediacache). Failures of
+// the tools themselves and results of a stopped inspection are never stored. Call it before
+// the first Inspect; it is not safe to call concurrently with Inspect.
+func (i *Inspector) UseCache(c *mediacache.Cache) { i.cache = c }
 
 // MediaChecked reports whether media files are probed (ffprobe is available).
 func (i *Inspector) MediaChecked() bool { return i.media }

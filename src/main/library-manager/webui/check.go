@@ -13,6 +13,7 @@ import (
 	"github.com/nkreimeyer/library-manager/check"
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/mediacache"
 	"github.com/nkreimeyer/library-manager/organize"
 )
 
@@ -87,7 +88,13 @@ func (s *Server) handleCheckAnalyse(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		log.Infof("Checking the songs (nothing is changed); library %s, output %s", cfg.SongDir, cfg.OutDir)
-		err := check.Run(cfg, ops, check.Options{Deep: q.Deep, Ctx: ctx, Progress: func(done, total int) { c.Progress("inspect", done, total) }})
+		// The media cache of the library, as for the CLI's -k: the apply job reuses these
+		// probes (and -deep decodes), and later checks those of every unchanged file. It is
+		// saved also after a stop or a failure (the results it holds are valid).
+		cache := mediacache.Open(ctx, cfg.SongDir)
+		defer func() { _ = cache.Save(ops) }() // a failure is logged; it is no failed operation
+		err := check.Run(cfg, ops, check.Options{Deep: q.Deep, Ctx: ctx, Cache: cache,
+			Progress: func(done, total int) { c.Progress("inspect", done, total) }})
 		if err != nil {
 			return nil, err
 		}
@@ -161,7 +168,9 @@ func (s *Server) handleCheckApply(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		a.applied = true
 		s.mu.Unlock()
-		runErr := check.Run(cfg, ops, check.Options{Deep: a.req.Deep, MoveBroken: true, Ctx: ctx,
+		cache := mediacache.Open(ctx, cfg.SongDir) // see handleCheckAnalyse
+		defer func() { _ = cache.Save(ops) }()
+		runErr := check.Run(cfg, ops, check.Options{Deep: a.req.Deep, MoveBroken: true, Ctx: ctx, Cache: cache,
 			Progress: func(done, total int) { c.Progress("inspect", done, total) }})
 		res := map[string]any{"analysis": a.id, "outDir": cv.OutDir, "library": cv.Library}
 		if data, err := os.ReadFile(cfg.ReportPath(checkReportFile)); err == nil && runErr == nil {

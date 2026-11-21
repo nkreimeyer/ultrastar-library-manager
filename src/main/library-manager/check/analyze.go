@@ -204,25 +204,28 @@ func playerView(s *songtxt.Song, refs []ref) *songtxt.Song {
 }
 
 // mediaInfo is what ffprobe reports about a media file.
+//
+// It is stored in the media cache (mediaResult): renaming a JSON name needs a new kindMedia.
 type mediaInfo struct {
-	DurationSec float64 // valid if HasDuration
-	HasDuration bool
+	DurationSec float64 `json:"durationSec,omitempty"` // valid if HasDuration
+	HasDuration bool    `json:"hasDuration,omitempty"`
 	// DurationEstimated: ffprobe only estimated the duration from the bitrate (a VBR mp3
 	// without Xing/VBRI header) and measuring it failed, so it may be far off.
-	DurationEstimated bool
-	HasAudio          bool
-	HasVideo          bool // a video stream that is not an attached picture (cover art)
+	DurationEstimated bool `json:"durationEstimated,omitempty"`
+	HasAudio          bool `json:"hasAudio,omitempty"`
+	HasVideo          bool `json:"hasVideo,omitempty"` // a video stream that is not an attached picture (cover art)
 	// AudioBitrate in bit/s: of the first audio stream, else of the container if the
 	// file has no moving video stream (the container rate would include the video); 0 if
 	// unknown.
-	AudioBitrate int64
+	AudioBitrate int64 `json:"audioBitrate,omitempty"`
 	// VideoWidth and VideoHeight of the first video stream that is not an attached
 	// picture; 0 if there is none.
-	VideoWidth, VideoHeight int
+	VideoWidth  int `json:"videoWidth,omitempty"`
+	VideoHeight int `json:"videoHeight,omitempty"`
 	// VideoBitrate in bit/s of that stream, by mediatools.VideoBitrate: its bit_rate, else
 	// its BPS/BPS-<lang> tag (Matroska), else the container bit_rate if the file has no
 	// audio stream; 0 if unknown.
-	VideoBitrate int64
+	VideoBitrate int64 `json:"videoBitrate,omitempty"`
 }
 
 // fileObs are the observations about one referenced file, gathered by the checker.

@@ -53,7 +53,7 @@ func TestRunUsage(t *testing.T) {
 
 func TestModuleOrder(t *testing.T) {
 	var names []string
-	for _, m := range moduleList(true, true, true, false, true, check.Options{}) {
+	for _, m := range moduleList(true, true, true, false, true, check.Options{}, nil) {
 		names = append(names, m.name)
 		if m.enabled != (m.name != "fixvideos") {
 			t.Errorf("%s enabled = %v", m.name, m.enabled)

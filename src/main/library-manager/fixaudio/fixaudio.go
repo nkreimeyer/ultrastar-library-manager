@@ -27,6 +27,7 @@ import (
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
 	"github.com/nkreimeyer/library-manager/journal"
+	"github.com/nkreimeyer/library-manager/mediacache"
 	"github.com/nkreimeyer/library-manager/mediatools"
 	"github.com/nkreimeyer/library-manager/utils"
 	log "github.com/sirupsen/logrus"
@@ -86,6 +87,9 @@ var coverExts = map[string]bool{".mp3": true, ".m4a": true, ".flac": true}
 type Options struct {
 	Ctx      context.Context       // nil = Background; once done no further file starts (running ffmpeg encodes finish)
 	Progress func(done, total int) // called after each song folder; may be nil
+	// Cache holds probe and peak results of unchanged files from earlier runs (nil = no
+	// cache: every file is probed and measured). The caller opens and saves it.
+	Cache *mediacache.Cache
 }
 
 // Run processes all audio files of all song folders below cfg.SongDir, without a stop
@@ -124,7 +128,7 @@ func RunWith(cfg config.Config, ops *fsops.Ops, opts Options) error {
 		return fmt.Errorf("opening media journal: %w", err)
 	}
 
-	p := &processor{cfg: cfg, ops: ops, journal: j, ctx: ctx}
+	p := &processor{cfg: cfg, ops: ops, journal: j, ctx: ctx, cache: opts.Cache}
 	poolErr := utils.ForEachParallel(ctx, folders, utils.Parallel{
 		Workers:  workers,
 		Progress: opts.Progress,
@@ -162,6 +166,9 @@ type processor struct {
 	// records that a file was left out because of it.
 	ctx     context.Context
 	stopped atomic.Bool
+	// cache serves the probe and the peak of files unchanged since an earlier run (nil =
+	// none). A re-encoded file has a new size and mtime, so its old entries never match.
+	cache *mediacache.Cache
 }
 
 // context returns the run's ctx, Background if none was set.
@@ -251,7 +258,7 @@ func (p *processor) processFile(folder, name string) {
 		return
 	}
 
-	info, err := probeAudio(p.context(), path)
+	info, err := probeAudio(p.context(), p.cache, path)
 	if p.isStop(err) {
 		log.Debugf("Not processing %s: the run was stopped", path)
 		return
@@ -267,7 +274,7 @@ func (p *processor) processFile(folder, name string) {
 	}
 
 	downmix := info.Channels > 2
-	peak, err := measurePeak(path, downmix)
+	peak, err := cachedPeak(p.cache, path, downmix)
 	if err != nil {
 		log.Errorf("Skipping %s: measuring the peak failed: %v", path, err)
 		ops.Fail()
@@ -394,9 +401,10 @@ type audioInfo struct {
 // probeAudio reads codec, channel count, sample format and bitrate of the first audio
 // stream. The stream bitrate is preferred; if the container does not report one (e.g.
 // opus), the overall format bitrate is used instead.
-// A done ctx stops the probe; the error is then ctx.Err().
-func probeAudio(ctx context.Context, path string) (audioInfo, error) {
-	probe, err := mediatools.Probe(ctx, path)
+// A done ctx stops the probe; the error is then ctx.Err(). The probe goes through cache
+// (nil = none, see mediacache.Probe).
+func probeAudio(ctx context.Context, cache *mediacache.Cache, path string) (audioInfo, error) {
+	probe, err := mediacache.Probe(ctx, cache, path)
 	if err != nil {
 		return audioInfo{}, err
 	}
@@ -425,6 +433,46 @@ func audioFromProbe(probe mediatools.ProbeInfo) (audioInfo, error) {
 	return info, nil
 }
 
+// kindPeak is the cache kind of measurePeak's result.
+const kindPeak = "fixaudio.peak/1"
+
+// peakResult is a cached measurePeak result. JSON has no -Inf, so silence is a flag.
+type peakResult struct {
+	Downmix bool    `json:"downmix"` // measured on the stereo downmix
+	Silent  bool    `json:"silent,omitempty"`
+	PeakDB  float64 `json:"peakDb"`
+}
+
+// cachedPeak is measurePeak through cache (nil = none): a full decode, the most expensive
+// step for a file that needs no change. Only successful measurements are stored, and a
+// stored one is used only if it was measured with the same downmix.
+func cachedPeak(cache *mediacache.Cache, path string, downmix bool) (float64, error) {
+	var r peakResult
+	st, ok := cache.Lookup(path, kindPeak, &r)
+	if ok && r.Downmix == downmix {
+		if r.Silent {
+			return math.Inf(-1), nil
+		}
+		return r.PeakDB, nil
+	}
+	peak, fileResult, err := measurePeakResult(path, downmix)
+	if err != nil {
+		return 0, err
+	}
+	if !fileResult {
+		return peak, nil // ffmpeg named a system error (a NAS read error): maybe partial, not stored
+	}
+	r = peakResult{Downmix: downmix, Silent: math.IsInf(peak, -1)}
+	if !r.Silent {
+		if math.IsNaN(peak) || math.IsInf(peak, 0) {
+			return peak, nil // not representable in JSON; not stored
+		}
+		r.PeakDB = peak
+	}
+	cache.Store(st, kindPeak, r)
+	return peak, nil
+}
+
 // peakLevelRe matches astats' result line, e.g. "Peak level dB: -12.345678" or "-inf".
 var peakLevelRe = regexp.MustCompile(`Peak level dB:\s*(\S+)`)
 
@@ -432,6 +480,15 @@ var peakLevelRe = regexp.MustCompile(`Peak level dB:\s*(\S+)`)
 // samples so that peaks above 0 dBFS are not clamped. If downmix is set, the peak of the
 // stereo downmix is measured, because that is what will be encoded.
 func measurePeak(path string, downmix bool) (float64, error) {
+	peak, _, err := measurePeakResult(path, downmix)
+	return peak, err
+}
+
+// measurePeakResult is measurePeak that also reports whether the peak is a property of
+// the file and may be cached: false if ffmpeg's output names a system error
+// (mediatools.SystemError, e.g. a read error on a NAS), after which the decode may have
+// stopped early.
+func measurePeakResult(path string, downmix bool) (float64, bool, error) {
 	filter := strings.Join(append(baseFilters(downmix), peakFilter), ",")
 	// astats prints its result when the graph closes, so it is in the kept end of the
 	// output even if a damaged file made the decoder print megabytes before it.
@@ -444,11 +501,11 @@ func measurePeak(path string, downmix bool) (float64, error) {
 	peak, perr := parsePeakLevel(string(out))
 	if perr != nil {
 		if err != nil {
-			return 0, fmt.Errorf("ffmpeg astats: %v: %s", err, lastLines(string(out), 3))
+			return 0, false, fmt.Errorf("ffmpeg astats: %v: %s", err, lastLines(string(out), 3))
 		}
-		return 0, perr
+		return 0, false, perr
 	}
-	return peak, nil
+	return peak, err == nil && !mediatools.SystemError(string(out)), nil
 }
 
 // parsePeakLevel returns the last peak level in astats output, i.e. the overall one if

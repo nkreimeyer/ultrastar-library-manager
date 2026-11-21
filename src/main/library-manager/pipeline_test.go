@@ -17,6 +17,7 @@ import (
 	"github.com/nkreimeyer/library-manager/fixtxt"
 	"github.com/nkreimeyer/library-manager/fsops"
 	"github.com/nkreimeyer/library-manager/internal/testutil"
+	"github.com/nkreimeyer/library-manager/mediacache"
 )
 
 // library is a small fixture exercising the interplay of fixtxt and cleanup.
@@ -389,4 +390,29 @@ func checkSongs(t *testing.T, cfg config.Config) string {
 		t.Fatal(err)
 	}
 	return string(out)
+}
+
+// TestPipelineLeavesCacheFile: the media cache in the song dir root (and one a run on a
+// category left there) is hidden and outside every song folder, so fixtxt and cleanup with
+// every option never touch it, also when the library holds broken songs.
+func TestPipelineLeavesCacheFile(t *testing.T) {
+	cfg := writeLibrary(t)
+	files := []string{filepath.Join(cfg.SongDir, mediacache.FileName), filepath.Join(cfg.SongDir, "Cat", mediacache.FileName)}
+	for _, f := range files {
+		testutil.WriteFile(t, f, "cache")
+	}
+	runPipeline(t, cfg)
+	for _, f := range files {
+		if got := testutil.ReadFile(t, f); got != "cache" {
+			t.Errorf("%s = %q", f, got)
+		}
+	}
+	for _, dir := range []string{cfg.ExtraFilesDir(), cfg.InvalidDir()} {
+		_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err == nil && d.Name() == mediacache.FileName {
+				t.Errorf("cache file set aside: %s", path)
+			}
+			return nil
+		})
+	}
 }

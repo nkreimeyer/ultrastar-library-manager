@@ -23,6 +23,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/mediacache"
 	"github.com/nkreimeyer/library-manager/songtxt"
 	"github.com/nkreimeyer/library-manager/utils"
 )
@@ -38,6 +39,9 @@ type Options struct {
 	Ctx context.Context
 	// Progress is called after each song folder with the number done and the total; may be nil.
 	Progress func(done, total int)
+	// Cache keeps the media results (probe, -deep decode) between runs; nil = none. The
+	// caller opens and saves it (see Inspector.UseCache).
+	Cache *mediacache.Cache
 }
 
 const maxWorkers = 16
@@ -96,6 +100,7 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 		ctx = context.Background()
 	}
 	insp, notes := NewInspector(ctx, ops, opts.Deep)
+	insp.UseCache(opts.Cache)
 	c := &checker{cfg: cfg}
 	_ = utils.ForEachParallel(ctx, folders, utils.Parallel{
 		Workers:  workers,
@@ -253,44 +258,85 @@ func (i *Inspector) observeFile(path string, kind refKind) fileObs {
 		}
 		return o
 	}
-	if !i.media {
-		return o
+	if !i.media || i.ctx.Err() != nil {
+		return o // a stopped inspection is thrown away, also with cached results
 	}
-	info, err := probeMedia(i.ctx, path)
-	switch {
-	case i.ctx.Err() != nil:
-		return o // stopped: the result is thrown away
-	case errors.Is(err, errToolFailed):
-		log.Errorf("Checking %s: %v", path, err)
-		i.ops.Fail()
-		return o
-	case err != nil:
-		o.Probed, o.ProbeErr = true, err.Error()
-		return o
-	}
-	o.Probed, o.Media = true, info
-	if i.deep {
-		decErr, decWarn, err := i.deepDecode(path)
-		if i.ctx.Err() != nil {
-			return o
-		}
-		if err != nil {
+	var mr mediaResult
+	stamp, hit := i.cache.Lookup(path, kindMedia, &mr)
+	if !hit {
+		info, fileResult, err := probeMedia(i.ctx, path)
+		switch {
+		case i.ctx.Err() != nil:
+			return o // stopped: the result is thrown away
+		case errors.Is(err, errToolFailed):
 			log.Errorf("Checking %s: %v", path, err)
 			i.ops.Fail()
 			return o
+		case err != nil:
+			msg := err.Error()
+			mr = mediaResult{ProbeErr: &msg}
+		default:
+			mr = mediaResult{Info: info}
 		}
-		o.DecodeErr, o.DecodeWarn = decErr, decWarn
+		if fileResult {
+			i.cache.Store(stamp, kindMedia, mr)
+		}
+	}
+	if mr.ProbeErr != nil {
+		o.Probed, o.ProbeErr = true, *mr.ProbeErr
+		return o
+	}
+	o.Probed, o.Media = true, mr.Info
+	if i.deep {
+		var dr decodeResult
+		stamp, hit := i.cache.Lookup(path, kindDecode, &dr)
+		if !hit {
+			decErr, decWarn, fileResult, err := i.deepDecode(path)
+			if i.ctx.Err() != nil {
+				return o
+			}
+			if err != nil {
+				log.Errorf("Checking %s: %v", path, err)
+				i.ops.Fail()
+				return o
+			}
+			dr = decodeResult{DecodeErr: decErr, DecodeWarn: decWarn}
+			if fileResult {
+				i.cache.Store(stamp, kindDecode, dr)
+			}
+		}
+		o.DecodeErr, o.DecodeWarn = dr.DecodeErr, dr.DecodeWarn
 	}
 	return o
 }
 
+// The mediacache kinds of the results check stores. Bump the version when the way a
+// result is computed changes (fromProbe, measureDuration, toolMessage, decodeCheck).
+const (
+	kindMedia  = "check.media/1"
+	kindDecode = "check.decode/1"
+)
+
+// mediaResult is the cached outcome of probeMedia on one file: its info, or the message
+// of ffprobe failing on it.
+type mediaResult struct {
+	Info     mediaInfo `json:"info"`
+	ProbeErr *string   `json:"probeErr,omitempty"`
+}
+
+// decodeResult is the cached outcome of the -deep decode of one file.
+type decodeResult struct {
+	DecodeErr  string `json:"decodeErr,omitempty"`
+	DecodeWarn string `json:"decodeWarn,omitempty"`
+}
+
 // deepDecode runs decodeCheck in one of the maxDeepDecodes slots. The slot is released by
 // defer, so a panic the worker pool recovers does not keep it.
-func (i *Inspector) deepDecode(path string) (decodeErr, decodeWarn string, err error) {
+func (i *Inspector) deepDecode(path string) (decodeErr, decodeWarn string, fileResult bool, err error) {
 	select {
 	case i.deepSem <- struct{}{}:
 	case <-i.ctx.Done():
-		return "", "", i.ctx.Err()
+		return "", "", false, i.ctx.Err()
 	}
 	defer func() { <-i.deepSem }()
 	return decodeCheck(i.ctx, path)

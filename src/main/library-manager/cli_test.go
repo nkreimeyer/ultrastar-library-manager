@@ -173,7 +173,7 @@ func TestModuleListEnabled(t *testing.T) {
 	}
 	for _, p := range patterns {
 		got := map[string]bool{}
-		for _, m := range moduleList(p[0], p[1], p[2], p[3], p[4], check.Options{}) {
+		for _, m := range moduleList(p[0], p[1], p[2], p[3], p[4], check.Options{}, nil) {
 			got[m.name] = m.enabled
 		}
 		want := map[string]bool{"fixtxt": p[0], "cleanup": p[1], "check": p[2], "fixvideos": p[3], "fixaudio": p[4]}

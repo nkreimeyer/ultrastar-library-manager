@@ -814,7 +814,7 @@ func lowerLimits(t *testing.T, w, h int) {
 
 func assertTagged(t *testing.T, file string, want bool) {
 	t.Helper()
-	m, err := probeMarker(context.Background(), file)
+	m, err := probeMarker(context.Background(), nil, file)
 	if err != nil {
 		t.Fatalf("probing %s: %v", file, err)
 	}

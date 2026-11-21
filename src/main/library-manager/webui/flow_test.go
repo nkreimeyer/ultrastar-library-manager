@@ -12,6 +12,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/fsops"
 	"github.com/nkreimeyer/library-manager/internal/testutil"
+	"github.com/nkreimeyer/library-manager/mediacache"
 	"github.com/nkreimeyer/library-manager/organize"
 )
 
@@ -25,6 +26,15 @@ func dedupeLibrary(t *testing.T) (lib, out string) {
 	writeSong(t, filepath.Join(lib, "Pop", "ABBA - SOS"), "ABBA", "SOS", nil)
 	writeSong(t, filepath.Join(lib, "Q", "Queen - Rock"), "Queen", "Rock", nil)
 	return lib, out
+}
+
+// libTree is testutil.Tree of the library without the media cache, the one file a check
+// (a dry run) may write there.
+func libTree(t *testing.T, lib string) map[string]string {
+	t.Helper()
+	tree := testutil.Tree(t, lib)
+	delete(tree, mediacache.FileName)
+	return tree
 }
 
 func analyseOrganize(t *testing.T, s *testServer, q organizeRequest) organizeView {
@@ -83,12 +93,15 @@ func TestOrganizeValidate(t *testing.T) {
 func TestOrganizeFlow(t *testing.T) {
 	s := newTestServer(t)
 	lib, out := dedupeLibrary(t)
-	before := testutil.Tree(t, lib)
+	before := libTree(t, lib)
 	q := organizeRequest{Mode: "dedupe", Library: lib, Out: out}
 
 	v := analyseOrganize(t, s, q)
-	if !maps.Equal(testutil.Tree(t, lib), before) {
+	if !maps.Equal(libTree(t, lib), before) {
 		t.Fatal("the analysis changed the library")
+	}
+	if _, err := os.Stat(filepath.Join(lib, mediacache.FileName)); err != nil {
+		t.Errorf("the analysis saved no media cache: %v", err)
 	}
 	if v.Summary.Songs != 3 || v.Summary.InPlace != 2 || v.Summary.Duplicates != 1 || len(v.Notes) == 0 || v.Applied {
 		t.Errorf("summary = %+v, notes %v", v.Summary, v.Notes)
@@ -163,7 +176,7 @@ func TestOrganizeFlow(t *testing.T) {
 	if res, _ := j.Result.(map[string]any); res["library"] != lib || res["outDir"] != out {
 		t.Errorf("undo result = %#v, want library %s and outDir %s", j.Result, lib, out)
 	}
-	if !maps.Equal(testutil.Tree(t, lib), before) {
+	if !maps.Equal(libTree(t, lib), before) {
 		t.Error("undo did not restore the library")
 	}
 	s.do("POST", "/api/organize/history", folderRequest{Library: lib, Out: out}, &hist)
@@ -190,7 +203,7 @@ func planChanged(t *testing.T, s *testServer) (v organizeView, j Job, lib string
 	// A better version appears after the review: it would become the keeper.
 	writeSong(t, filepath.Join(lib, "New", "ABBA - SOS"), "ABBA", "SOS", map[string]string{"cover.png": "x"})
 	writeSong(t, filepath.Join(lib, "R", "Roxette - Joy"), "Roxette", "Joy", nil)
-	before = testutil.Tree(t, lib)
+	before = libTree(t, lib)
 	s.do("POST", "/api/organize/apply", map[string]any{"analysis": v.ID}, &j)
 	return v, s.wait(), lib, before
 }
@@ -225,7 +238,7 @@ func TestOrganizeApplyPlanChanged(t *testing.T) {
 	if res, _ := j.Result.(map[string]any); res["planChanged"] != true || res["analysis"] != v.ID {
 		t.Errorf("result = %v", j.Result)
 	}
-	if !maps.Equal(testutil.Tree(t, lib), before) {
+	if !maps.Equal(libTree(t, lib), before) {
 		t.Error("a changed plan moved something")
 	}
 	// The analysis now holds the new plan; applying it works.

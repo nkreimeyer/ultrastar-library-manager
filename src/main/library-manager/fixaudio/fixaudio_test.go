@@ -173,7 +173,7 @@ func quietMP3(t *testing.T, path string, seconds string) {
 
 func probe(t *testing.T, path string) audioInfo {
 	t.Helper()
-	info, err := probeAudio(context.Background(), path)
+	info, err := probeAudio(context.Background(), nil, path)
 	if err != nil {
 		t.Fatalf("probing %s: %v", path, err)
 	}

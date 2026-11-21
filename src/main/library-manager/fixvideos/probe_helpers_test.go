@@ -15,7 +15,7 @@ func probeOf(file string) mediatools.ProbeInfo {
 }
 
 func getNeedsReEncode(file, codec string) bool {
-	return needsReEncode(file, codec, probeOf(file))
+	return needsReEncode(nil, file, codec, probeOf(file))
 }
 
 func getVideoBitrate(file string) (int, error) {
@@ -23,7 +23,7 @@ func getVideoBitrate(file string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return videoBitrate(file, probe)
+	return videoBitrate(nil, file, probe)
 }
 
 func estimatedSizeOfReEncodedVideo(file string) (int64, error) {

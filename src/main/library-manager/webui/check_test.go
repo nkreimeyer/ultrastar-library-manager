@@ -5,9 +5,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/nkreimeyer/library-manager/internal/testutil"
+	"github.com/nkreimeyer/library-manager/mediacache"
 )
 
 // checkLibrary has two working songs and one without its audio file (an error).
@@ -45,7 +48,7 @@ func TestCheckValidate(t *testing.T) {
 func TestCheckFlow(t *testing.T) {
 	s := newTestServer(t)
 	lib, out := checkLibrary(t)
-	before := testutil.Tree(t, lib)
+	before := libTree(t, lib)
 
 	var j Job
 	if got := s.do("POST", "/api/check/analyse", checkRequest{Library: lib, Out: out}, &j); got != http.StatusAccepted {
@@ -54,7 +57,7 @@ func TestCheckFlow(t *testing.T) {
 	if j = s.wait(); j.State != stateDone || !j.DryRun {
 		t.Fatalf("analyse job: %+v", j)
 	}
-	if !maps.Equal(testutil.Tree(t, lib), before) {
+	if !maps.Equal(libTree(t, lib), before) {
 		t.Fatal("the check changed the library")
 	}
 	id := j.Result.(map[string]any)["analysis"].(string)
@@ -95,5 +98,57 @@ func TestCheckFlow(t *testing.T) {
 	var e apiError
 	if got := s.do("POST", "/api/check/apply", map[string]any{"analysis": id}, &e); got != http.StatusConflict {
 		t.Errorf("second apply: %d", got)
+	}
+}
+
+// The check jobs use the library's media cache: the apply job reuses the probes of the
+// check right before it, and the cache file is written by the check (a dry run) too.
+func TestCheckReusesProbes(t *testing.T) {
+	path := os.Getenv("PATH")
+	s := newTestServer(t)
+	t.Setenv("PATH", path)
+	testutil.RequireFFmpeg(t)
+	lib, out := checkLibrary(t)
+	for _, rel := range []string{"A/ABBA - SOS/song.mp3", "Q/Queen - Rock/song.mp3"} {
+		testutil.GenerateMediaAt(t, filepath.Join(lib, rel), "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-c:a", "libmp3lame")
+		old := time.Now().Add(-time.Hour) // older than mediacache.RacyWindow
+		if err := os.Chtimes(filepath.Join(lib, rel), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hook := testutil.CaptureLogs(t)
+	summary := func() string {
+		t.Helper()
+		defer hook.Reset()
+		var got string
+		for _, e := range hook.AllEntries() {
+			if strings.HasPrefix(e.Message, "Media cache: ") {
+				got = e.Message
+			}
+		}
+		return got
+	}
+	var j Job
+	if got := s.do("POST", "/api/check/analyse", checkRequest{Library: lib, Out: out}, &j); got != http.StatusAccepted {
+		t.Fatalf("analyse: %d", got)
+	}
+	if j = s.wait(); j.State != stateDone {
+		t.Fatalf("analyse job: %+v", j)
+	}
+	if got := summary(); got != "Media cache: 0 reused, 2 scanned, 2 stored" {
+		t.Errorf("check: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(lib, mediacache.FileName)); err != nil {
+		t.Errorf("the check saved no cache: %v", err)
+	}
+	id := j.Result.(map[string]any)["analysis"].(string)
+	if got := s.do("POST", "/api/check/apply", map[string]any{"analysis": id}, &j); got != http.StatusAccepted {
+		t.Fatalf("apply: %d", got)
+	}
+	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 1 {
+		t.Fatalf("apply job: %+v", j)
+	}
+	if got := summary(); got != "Media cache: 2 reused, 0 scanned, 0 stored" {
+		t.Errorf("apply: %q", got)
 	}
 }

@@ -57,8 +57,8 @@ func TestProbeMediaFakeTools(t *testing.T) {
 
 	t.Run("ffprobe cannot run", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
-		if _, err := probeMedia(context.Background(), path); !errors.Is(err, errToolFailed) {
-			t.Errorf("err = %v, want errToolFailed", err)
+		if _, fileResult, err := probeMedia(context.Background(), path); !errors.Is(err, errToolFailed) || fileResult {
+			t.Errorf("err = %v, file result %v, want errToolFailed and no file result", err, fileResult)
 		}
 	})
 	t.Run("stderr of a failed probe is cleaned and cut to 2 lines", func(t *testing.T) {
@@ -69,47 +69,57 @@ echo "second" >&2
 echo "third" >&2
 exit 1
 `})
-		_, err := probeMedia(context.Background(), path)
-		if err == nil || errors.Is(err, errToolFailed) || err.Error() != "[mp3] Header missing in x.mp3 | second" {
-			t.Errorf("err = %v", err)
+		_, fileResult, err := probeMedia(context.Background(), path)
+		if err == nil || errors.Is(err, errToolFailed) || err.Error() != "[mp3] Header missing in x.mp3 | second" || !fileResult {
+			t.Errorf("err = %v, file result %v", err, fileResult)
 		}
 	})
 	t.Run("failed probe without stderr", func(t *testing.T) {
 		fakeTools(t, map[string]string{"ffprobe": "exit 3\n"})
-		if _, err := probeMedia(context.Background(), path); err == nil || errors.Is(err, errToolFailed) || err.Error() != "exit status 3" {
-			t.Errorf("err = %v, want exit status 3", err)
+		if _, fileResult, err := probeMedia(context.Background(), path); err == nil || errors.Is(err, errToolFailed) || err.Error() != "exit status 3" || !fileResult {
+			t.Errorf("err = %v, file result %v, want exit status 3 as a file result", err, fileResult)
 		}
 	})
 	t.Run("invalid json", func(t *testing.T) {
 		fakeTools(t, map[string]string{"ffprobe": "echo nope\n"})
-		if _, err := probeMedia(context.Background(), path); err == nil || errors.Is(err, errToolFailed) || !strings.Contains(err.Error(), "parsing ffprobe output") {
-			t.Errorf("err = %v", err)
+		if _, fileResult, err := probeMedia(context.Background(), path); err == nil || errors.Is(err, errToolFailed) ||
+			!strings.Contains(err.Error(), "parsing ffprobe output") || fileResult {
+			t.Errorf("err = %v, file result %v", err, fileResult)
 		}
 	})
 
 	tests := []struct {
 		name          string
 		json, stderr  string
-		ffmpeg        string // "" = no ffmpeg on PATH
+		ffmpeg        string // "" = no ffmpeg on PATH; "broken" = cannot be started
 		wantSec       float64
 		wantEstimated bool
+		// wantFileResult: cacheable; not when ffmpeg could not run for the measurement
+		wantFileResult bool
 	}{
-		{"estimated, measuring fails", audioJSON, estimatedMsg, "exit 1\n", 2, true},
-		{"estimated, no ffmpeg", audioJSON, estimatedMsg, "", 2, true},
-		{"estimated, measured", audioJSON, estimatedMsg, "echo out_time_us=5000000\n", 5, false},
-		{"not estimated: not measured", audioJSON, "", "echo out_time_us=5000000\n", 2, false},
-		{"estimated video without audio: not measured", videoJSON, estimatedMsg, "echo out_time_us=5000000\n", 2, false},
+		{"estimated, measuring fails", audioJSON, estimatedMsg, "exit 1\n", 2, true, true},
+		{"estimated, no output", audioJSON, estimatedMsg, "exit 0\n", 2, true, true},
+		{"estimated, no ffmpeg", audioJSON, estimatedMsg, "", 2, true, false},
+		{"estimated, ffmpeg cannot start", audioJSON, estimatedMsg, "broken", 2, true, false},
+		{"estimated, measured", audioJSON, estimatedMsg, "echo out_time_us=5000000\n", 5, false, true},
+		{"not estimated: not measured", audioJSON, "", "echo out_time_us=5000000\n", 2, false, true},
+		{"estimated video without audio: not measured", videoJSON, estimatedMsg, "echo out_time_us=5000000\n", 2, false, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			scripts := map[string]string{"ffprobe": printJSON(tt.json, tt.stderr)}
-			if tt.ffmpeg != "" {
+			if tt.ffmpeg != "" && tt.ffmpeg != "broken" {
 				scripts["ffmpeg"] = tt.ffmpeg
 			}
-			fakeTools(t, scripts)
-			info, err := probeMedia(context.Background(), path)
-			if err != nil || info.DurationSec != tt.wantSec || info.DurationEstimated != tt.wantEstimated || !info.HasDuration {
-				t.Errorf("probeMedia = %+v, %v, want %v s, estimated %v", info, err, tt.wantSec, tt.wantEstimated)
+			dir := fakeTools(t, scripts)
+			if tt.ffmpeg == "broken" {
+				writeBrokenTool(t, dir, "ffmpeg")
+			}
+			info, fileResult, err := probeMedia(context.Background(), path)
+			if err != nil || info.DurationSec != tt.wantSec || info.DurationEstimated != tt.wantEstimated || !info.HasDuration ||
+				fileResult != tt.wantFileResult {
+				t.Errorf("probeMedia = %+v, %v, %v, want %v s, estimated %v, file result %v",
+					info, fileResult, err, tt.wantSec, tt.wantEstimated, tt.wantFileResult)
 			}
 		})
 	}
@@ -119,7 +129,7 @@ func TestDecodeCheckFakeTools(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.mp4")
 	t.Run("ffmpeg cannot run", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
-		if _, _, err := decodeCheck(context.Background(), path); !errors.Is(err, errToolFailed) {
+		if _, _, _, err := decodeCheck(context.Background(), path); !errors.Is(err, errToolFailed) {
 			t.Errorf("err = %v, want errToolFailed", err)
 		}
 	})
@@ -137,7 +147,7 @@ func TestDecodeCheckFakeTools(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fakeTools(t, map[string]string{"ffmpeg": tt.script})
-			decErr, decWarn, err := decodeCheck(context.Background(), path)
+			decErr, decWarn, _, err := decodeCheck(context.Background(), path)
 			if err != nil || decErr != tt.wantErr || decWarn != tt.wantWarn {
 				t.Errorf("decodeCheck = %q, %q, %v, want %q, %q", decErr, decWarn, err, tt.wantErr, tt.wantWarn)
 			}
@@ -151,7 +161,7 @@ func TestDecodeCheckGarbage(t *testing.T) {
 	if err := os.WriteFile(path, []byte(garbage(4000)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	decErr, decWarn, err := decodeCheck(context.Background(), path)
+	decErr, decWarn, _, err := decodeCheck(context.Background(), path)
 	if err != nil || decErr == "" || decWarn != "" || strings.Contains(decErr, filepath.Dir(path)) {
 		t.Errorf("decodeCheck = %q, %q, %v, want a decode error only", decErr, decWarn, err)
 	}

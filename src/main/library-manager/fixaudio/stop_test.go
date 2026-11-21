@@ -161,7 +161,7 @@ func TestRunWithStopAfterFirstFolder(t *testing.T) {
 func TestProbeAudioStopped(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := probeAudio(ctx, filepath.Join(t.TempDir(), "a.mp3")); !errors.Is(err, context.Canceled) {
+	if _, err := probeAudio(ctx, nil, filepath.Join(t.TempDir(), "a.mp3")); !errors.Is(err, context.Canceled) {
 		t.Errorf("probeAudio = %v, want context.Canceled", err)
 	}
 }

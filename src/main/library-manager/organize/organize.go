@@ -18,6 +18,7 @@ import (
 	"github.com/nkreimeyer/library-manager/check"
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/mediacache"
 	"github.com/nkreimeyer/library-manager/songtxt"
 	"github.com/nkreimeyer/library-manager/utils"
 )
@@ -72,6 +73,9 @@ type Options struct {
 	// Review, if set, is called with the plan before any report is written or anything is
 	// moved. An error it returns stops Run with that error.
 	Review func(*Review) error
+	// Cache holds the media scan results of unchanged files from earlier runs (nil = none;
+	// the caller opens and saves it). The inspection of the songs uses it.
+	Cache *mediacache.Cache
 }
 
 // Phases reported to Options.Progress.
@@ -174,6 +178,7 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 	}
 
 	insp, notes := check.NewInspector(opts.ctx(), ops, opts.Deep)
+	insp.UseCache(opts.Cache)
 	if !insp.MediaChecked() {
 		notes = append(notes, noteNoMediaQuality)
 	}
@@ -865,8 +870,9 @@ func Undo(cfg config.OrganizeConfig, ops *fsops.Ops, opts UndoOptions) error {
 	unrecorded := 0 // reverted moves the journal could not record
 	undoEntry := func(n int, e journalEntry) {
 		if e.Op == opMkdir {
-			// A folder the run created; something else may have been put there since.
-			if removed, err := ops.RemoveEmptyDir(e.Dst); err != nil {
+			// A folder the run created; something else may have been put there since. The
+			// media cache the run saved into a library root it created goes with it.
+			if removed, err := ops.RemoveEmptyDirWithCache(e.Dst, mediacache.FileName); err != nil {
 				log.Errorf("Undo: %v", err) // counted by ops
 			} else if !removed {
 				log.Debugf("Undo: folder %s created by the run is not empty or gone; left alone", e.Dst)

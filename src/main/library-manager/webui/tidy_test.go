@@ -9,10 +9,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/nkreimeyer/library-manager/fsops"
 	"github.com/nkreimeyer/library-manager/internal/testutil"
+	"github.com/nkreimeyer/library-manager/mediacache"
 	"github.com/nkreimeyer/library-manager/organize"
 )
 
@@ -51,11 +53,11 @@ func tidyLibrary(t *testing.T) (lib, out string) {
 func TestTidyFlow(t *testing.T) {
 	s := newTestServer(t)
 	lib, out := tidyLibrary(t)
-	before := testutil.Tree(t, lib)
+	before := libTree(t, lib)
 	q := organizeRequest{Mode: "dedupe", Library: lib, Out: out, Tidy: allTidy()}
 
 	v := analyseOrganize(t, s, q)
-	if !maps.Equal(testutil.Tree(t, lib), before) {
+	if !maps.Equal(libTree(t, lib), before) {
 		t.Fatal("the check changed the library")
 	}
 	td := v.Tidy
@@ -164,13 +166,13 @@ func TestTidyOptionsOff(t *testing.T) {
 	if got := s.do("POST", "/api/organize/exclude", map[string]any{"analysis": v.ID, "exclude": []string{"library:A/ABBA - SOS"}}, &e); got != http.StatusConflict {
 		t.Errorf("exclude without a song plan: %d %q", got, e.Error)
 	}
-	before := testutil.Tree(t, lib)
+	before := libTree(t, lib)
 	var j Job
 	s.do("POST", "/api/organize/apply", map[string]any{"analysis": v.ID}, &j)
 	if j = s.wait(); j.State != stateDone || j.Stats.Written == 0 || j.Stats.Moved != 0 {
 		t.Fatalf("apply: %+v", j)
 	}
-	if after := testutil.Tree(t, lib); len(after) != len(before) {
+	if after := libTree(t, lib); len(after) != len(before) {
 		t.Error("a text-only tidy-up moved files")
 	}
 	if got := s.do("POST", "/api/organize/apply", map[string]any{"analysis": v.ID}, &e); got != http.StatusConflict {
@@ -223,6 +225,24 @@ func TestTidySongStepFailureSkipsMedia(t *testing.T) {
 	if err == nil || !slices.Equal(names, []string{stepText, stepCleanup, stepSongs}) || steps[2].Error == "" {
 		t.Errorf("steps %v (%+v), err %v; want the run to end at the failed song step", names, steps, err)
 	}
+	// The job's media cache is saved also after a failed step.
+	if _, err := os.Stat(filepath.Join(lib, mediacache.FileName)); err != nil {
+		t.Errorf("no media cache saved after the failure: %v", err)
+	}
+}
+
+// A job of text steps only probes no media: it opens no cache.
+func TestTidyTextOnlyOpensNoCache(t *testing.T) {
+	s := newTestServer(t)
+	lib, out := tidyLibrary(t)
+	analyseOrganize(t, s, organizeRequest{Mode: "dedupe", Library: lib, Out: out, Tidy: &tidyOptions{UTF8: true}})
+	if _, err := os.Stat(filepath.Join(lib, mediacache.FileName)); !os.IsNotExist(err) {
+		t.Errorf("a text-only check wrote a media cache (%v)", err)
+	}
+	analyseOrganize(t, s, organizeRequest{Mode: "dedupe", Library: lib, Out: out, Tidy: &tidyOptions{Dedupe: true}})
+	if _, err := os.Stat(filepath.Join(lib, mediacache.FileName)); err != nil {
+		t.Errorf("a check with the song step saved no media cache: %v", err)
+	}
 }
 
 // A tidy-up whose song plan changed after the text and cleanup steps ran says that no song
@@ -248,5 +268,45 @@ func TestTidyApplyPlanChanged(t *testing.T) {
 	s.do("GET", "/api/organize/analysis?id="+v.ID, nil, &v2)
 	if !v2.Tidy.Done || len(v2.Tidy.TextFiles) != 0 {
 		t.Errorf("tidy view after the changed plan: %+v", v2.Tidy)
+	}
+}
+
+// The apply job reuses the probes its check (a dry run) saved in the library's cache.
+func TestApplyReusesCheckProbes(t *testing.T) {
+	path := os.Getenv("PATH")
+	s := newTestServer(t)
+	t.Setenv("PATH", path)
+	testutil.RequireFFmpeg(t)
+	lib, out := dedupeLibrary(t)
+	for _, rel := range []string{"A/ABBA - SOS/song.mp3", "Pop/ABBA - SOS/song.mp3", "Q/Queen - Rock/song.mp3"} {
+		testutil.GenerateMediaAt(t, filepath.Join(lib, rel), "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-c:a", "libmp3lame")
+		old := time.Now().Add(-time.Hour) // older than mediacache.RacyWindow
+		if err := os.Chtimes(filepath.Join(lib, rel), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hook := testutil.CaptureLogs(t)
+	summary := func() string {
+		t.Helper()
+		defer hook.Reset()
+		var got string
+		for _, e := range hook.AllEntries() {
+			if strings.HasPrefix(e.Message, "Media cache: ") {
+				got = e.Message
+			}
+		}
+		return got
+	}
+	v := analyseOrganize(t, s, organizeRequest{Mode: "dedupe", Library: lib, Out: out, Tidy: allTidy()})
+	if got := summary(); got != "Media cache: 0 reused, 3 scanned, 3 stored" {
+		t.Errorf("check: %q", got)
+	}
+	var j Job
+	s.do("POST", "/api/organize/apply", map[string]any{"analysis": v.ID}, &j)
+	if j = s.wait(); j.State != stateDone {
+		t.Fatalf("apply job: %+v", j)
+	}
+	if got := summary(); got != "Media cache: 3 reused, 0 scanned, 0 stored" {
+		t.Errorf("apply: %q", got)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unicode/utf8"
 
 	log "github.com/sirupsen/logrus"
@@ -248,6 +249,130 @@ func (o *Ops) WriteReport(path string, data []byte) error {
 		return o.fail(fmt.Errorf("writing report %s: %w", path, err))
 	}
 	return nil
+}
+
+// WriteCacheFile atomically writes the hidden scan cache (mediacache.FileName) at path:
+// a temporary file in the same directory, fsynced, then renamed over path, so a crash
+// never leaves a truncated cache. The mode of an existing file is kept (else 0644). The
+// directory must exist: it is never created.
+//
+// It is the single documented exception to the dry-run rule: the cache is written in a
+// dry run too, because it changes no song (it only records media scan results). It does
+// not count in Stats (the UI shows those as library changes) and a failure is not counted
+// as a failed operation: it is only returned, because a cache that cannot be saved does
+// not change the result of a run.
+//
+// Temp files of earlier writes that were interrupted (killed between creating and renaming
+// the temp file) and are older than StaleCacheTemp are removed first: they lie in the
+// library root, outside every song folder, so no cleanup run would ever collect them.
+func (o *Ops) WriteCacheFile(path string, data []byte) error {
+	mode := os.FileMode(0o644)
+	if st, err := os.Stat(path); err == nil {
+		mode = st.Mode().Perm()
+	}
+	removeCacheTemps(path, time.Now().Add(-StaleCacheTemp))
+	prefix, suffix := cacheTempAffixes(path)
+	tmp, err := os.CreateTemp(filepath.Dir(path), prefix+"*"+suffix)
+	if err != nil {
+		return fmt.Errorf("writing cache %s: %w", path, err)
+	}
+	_, werr := tmp.Write(data)
+	if err := errors.Join(werr, tmp.Chmod(mode), tmp.Sync(), tmp.Close()); err != nil {
+		os.Remove(tmp.Name())
+		return fmt.Errorf("writing cache %s: %w", path, err)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return fmt.Errorf("writing cache %s: %w", path, err)
+	}
+	log.Debugf("Wrote %s", path)
+	return nil
+}
+
+// StaleCacheTemp is how old a temp file of WriteCacheFile must be to count as the leftover
+// of an interrupted write: a younger one may belong to a write of another process running
+// on the same library right now.
+const StaleCacheTemp = time.Hour
+
+// cacheTempAffixes returns the prefix and suffix of the temp file names WriteCacheFile uses
+// for path: "." + name + "." … ".tmp".
+func cacheTempAffixes(path string) (prefix, suffix string) {
+	return "." + tempBase(strings.TrimPrefix(filepath.Base(path), ".")) + ".", ".tmp"
+}
+
+// removeCacheTemps removes the regular temp files of WriteCacheFile for path last modified
+// before (the zero time = all of them). Errors are only logged: a leftover temp file is
+// clutter, not a failure.
+func removeCacheTemps(path string, before time.Time) {
+	dir := filepath.Dir(path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	prefix, suffix := cacheTempAffixes(path)
+	for _, e := range entries {
+		name := e.Name()
+		if len(name) <= len(prefix)+len(suffix) || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || !info.Mode().IsRegular() || (!before.IsZero() && !info.ModTime().Before(before)) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			log.Warnf("Cannot remove the leftover cache temp file %s: %v", filepath.Join(dir, name), err)
+		} else {
+			log.Debugf("Removed the leftover cache temp file %s", filepath.Join(dir, name))
+		}
+	}
+}
+
+// RemoveEmptyDirWithCache is RemoveEmptyDir for a folder that may also hold the scan cache
+// file cacheName (written by WriteCacheFile) and temp files of its writes: if nothing else
+// is in it (in a dry run: nothing else that is not planned away), those are removed first
+// and then the folder. organize's undo uses it for a library root its run created, into
+// which the run saved the cache. Removing the cache files does not count in Stats; a
+// failure is counted, like a failure of RemoveEmptyDir. In a dry run nothing is removed:
+// the cache files are only planned away, so the folder counts as empty, as in a real run.
+func (o *Ops) RemoveEmptyDirWithCache(path, cacheName string) (bool, error) {
+	path = filepath.Clean(path)
+	cache := filepath.Join(path, cacheName)
+	prefix, suffix := cacheTempAffixes(cache)
+	isCache := func(name string) bool {
+		return name == cacheName || len(name) > len(prefix)+len(suffix) && strings.HasPrefix(name, prefix) && strings.HasSuffix(name, suffix)
+	}
+	if st, err := os.Lstat(path); err != nil || !st.IsDir() || !o.exists(path) {
+		return false, nil
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, o.fail(fmt.Errorf("reading %s: %w", path, err))
+	}
+	var caches []string
+	for _, e := range entries {
+		p := filepath.Join(path, e.Name())
+		if !o.exists(p) {
+			continue
+		}
+		if !isCache(e.Name()) || !e.Type().IsRegular() {
+			return false, nil // something else is in it: RemoveEmptyDir would keep it too
+		}
+		caches = append(caches, p)
+	}
+	for _, p := range caches {
+		if o.DryRun {
+			o.plannedMu.Lock()
+			o.plannedPresent[p] = false
+			o.plannedMu.Unlock()
+			log.Debugf("[dry-run] would remove the cache file %s", p)
+			continue
+		}
+		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return false, o.fail(fmt.Errorf("removing cache %s: %w", p, err))
+		}
+		log.Debugf("Removed the cache file %s", p)
+	}
+	return o.RemoveEmptyDir(path)
 }
 
 // MarshalReport encodes v the way every JSON report is written: indented by two spaces,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/nkreimeyer/library-manager/fixtxt"
 	"github.com/nkreimeyer/library-manager/fixvideos"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/mediacache"
 	"github.com/nkreimeyer/library-manager/organize"
 
 	log "github.com/sirupsen/logrus"
@@ -33,14 +35,20 @@ type module struct {
 
 // moduleList returns the modules in the order they run: fixtxt, cleanup, check,
 // fixvideos, fixaudio. check reports on the songs as fixtxt and cleanup left them, and
-// with -move-broken removes broken songs before the slow re-encoding modules run.
-func moduleList(fixTxt, cleanupOn, checkOn, videos, audio bool, checkOpts check.Options) []module {
+// with -move-broken removes broken songs before the slow re-encoding modules run. The
+// media modules share cache (nil = none).
+func moduleList(fixTxt, cleanupOn, checkOn, videos, audio bool, checkOpts check.Options, cache *mediacache.Cache) []module {
+	checkOpts.Cache = cache
 	return []module{
 		{"fixtxt", fixTxt, fixtxt.Run},
 		{"cleanup", cleanupOn, cleanup.Run},
 		{"check", checkOn, func(cfg config.Config, ops *fsops.Ops) error { return check.Run(cfg, ops, checkOpts) }},
-		{"fixvideos", videos, fixvideos.Run},
-		{"fixaudio", audio, fixaudio.Run},
+		{"fixvideos", videos, func(cfg config.Config, ops *fsops.Ops) error {
+			return fixvideos.RunWith(cfg, ops, fixvideos.Options{Cache: cache})
+		}},
+		{"fixaudio", audio, func(cfg config.Config, ops *fsops.Ops) error {
+			return fixaudio.RunWith(cfg, ops, fixaudio.Options{Cache: cache})
+		}},
 	}
 }
 
@@ -75,6 +83,7 @@ func run() int {
 	moveBroken := flag.Bool("move-broken", false, "With -k: move songs with errors to invalid/")
 	runFixVideos := flag.Bool("m", false, "Run the video-fixing and re-encoding module")
 	runFixAudio := flag.Bool("a", false, "Run the audio-fixing and re-encoding module")
+	noCache := flag.Bool("no-cache", false, "Probe every media file again: neither read nor write the media cache ("+mediacache.FileName+" in -s)")
 	logLevel := flag.String("v", "info", "Log level (debug, info, warn, error)")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s -s <song-dir> [flags]\n       %s organize -s <dir>[%c<dir>...] [-s ...] -l <library> [flags]   (see %s organize -h)\n       %s dedupe -l <library> [flags]   (see %s dedupe -h)\n       %s add -s <dir>[%c<dir>...] [-s ...] -l <library> [flags]   (see %s add -h)\n       %s remove -l <library> [-artist <name>] [-song \"Artist - Title\"] [-from <file>] [flags]   (see %s remove -h)\n       %s ui [-addr 127.0.0.1:0] [-no-browser]   (browser UI; also started without any argument)\n\nModules run in this order: fixtxt (-t), cleanup (-c), check (-k), fixvideos (-m), fixaudio (-a).\n\nFlags:\n", os.Args[0], os.Args[0], filepath.ListSeparator, os.Args[0], os.Args[0], os.Args[0], os.Args[0], filepath.ListSeparator, os.Args[0], os.Args[0], os.Args[0], os.Args[0])
@@ -116,8 +125,17 @@ func run() int {
 	log.Infof("Song dir: %s", cfg.SongDir)
 	log.Infof("Output dir: %s", cfg.OutDir)
 
+	// The media modules reuse the scan results of unchanged files (saved also in a dry run
+	// and after a failed module).
+	var cache *mediacache.Cache
+	if !*noCache && (*runCheck || *runFixVideos || *runFixAudio) {
+		cache = mediacache.Open(context.Background(), cfg.SongDir)
+		if cache != nil && cfg.DryRun {
+			log.Infof("Dry run: only the media cache %s is updated", cache.Path())
+		}
+	}
 	modules := moduleList(*runFixTxt, *runCleanup, *runCheck, *runFixVideos, *runFixAudio,
-		check.Options{Deep: *deepCheck, MoveBroken: *moveBroken})
+		check.Options{Deep: *deepCheck, MoveBroken: *moveBroken}, cache)
 
 	moduleErrors := 0
 	for _, m := range modules {
@@ -131,6 +149,7 @@ func run() int {
 		}
 	}
 
+	_ = cache.Save(ops) // a failure is logged; it is no failed operation
 	st := ops.Stats()
 	log.Infof("Done%s: %d written, %d moved, %d replaced, %d backed up, %d removed, %d failed operations, %d failed modules",
 		plannedSuffix(cfg.DryRun), st.Written, st.Moved, st.Replaced, st.Copied, st.Removed, st.Failed, moduleErrors)

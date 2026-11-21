@@ -28,6 +28,7 @@ import (
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
 	"github.com/nkreimeyer/library-manager/journal"
+	"github.com/nkreimeyer/library-manager/mediacache"
 	"github.com/nkreimeyer/library-manager/mediatools"
 	"github.com/nkreimeyer/library-manager/utils"
 
@@ -95,6 +96,11 @@ type processor struct {
 	ops     *fsops.Ops
 	journal *journal.Journal
 
+	// cache holds the probe and packet-size results of earlier runs (nil = none). Only
+	// library videos as they are found go through it, never a temp file or the output of
+	// an encode (see sameVideoDuration).
+	cache *mediacache.Cache
+
 	// renameMu serializes the extension-change step (rename, txt update, moving the
 	// original), so two videos of one song folder never update its txt concurrently.
 	renameMu sync.Mutex
@@ -138,6 +144,10 @@ func stoppedBy(ctx context.Context, err error) bool {
 type Options struct {
 	Ctx      context.Context       // nil = Background; once done no further file starts (running ffmpeg encodes finish)
 	Progress func(done, total int) // called after each video file; may be nil
+
+	// Cache reuses the probes and packet-size measurements of unchanged videos (nil =
+	// none). A processed video has a new size and mtime, so it is probed again.
+	Cache *mediacache.Cache
 }
 
 // Run processes the videos of all song folders below cfg.SongDir, without a stop or
@@ -182,7 +192,7 @@ func RunWith(cfg config.Config, ops *fsops.Ops, opts Options) error {
 		return fmt.Errorf("reading media journal %q: %w", cfg.JournalPath(), err)
 	}
 
-	p := &processor{cfg: cfg, ops: ops, journal: j, corrupted: map[string]struct{}{}, ctx: ctx}
+	p := &processor{cfg: cfg, ops: ops, journal: j, corrupted: map[string]struct{}{}, ctx: ctx, cache: opts.Cache}
 
 	videos := p.collectVideos(entries)
 	poolErr := utils.ForEachParallel(ctx, videos, utils.Parallel{
@@ -382,7 +392,7 @@ func (p *processor) plan(dir, file string, probe mediatools.ProbeInfo, probeErr 
 		// needs is tried and an ffmpeg failure on it counted, instead of the file
 		// passing as readable.
 		log.Debugf("Video codec for %s: %q", file, video.CodecName)
-		pl.reEncode = needsReEncode(file, video.CodecName, probe)
+		pl.reEncode = needsReEncode(p.cache, file, video.CodecName, probe)
 	}
 
 	pl.removeAudio = needsRemoveAudio(p.ops, dir, file, probe)
@@ -424,7 +434,7 @@ func (p *processor) processVideoFile(dir, file string) {
 		return
 	}
 	// One probe for every decision about the file (plan's codec, bitrate, size and audio).
-	probe, probeErr := mediatools.Probe(p.context(), file)
+	probe, probeErr := mediacache.Probe(p.context(), p.cache, file)
 	if p.isStop(probeErr) {
 		// plan would take it for an unreadable video and encode it.
 		log.Debugf("Not processing %s: the run was stopped", file)
@@ -695,7 +705,7 @@ func (p *processor) markChecked(file string) {
 // tagByRemux replaces file with a stream copy of all its streams that carries markerTag.
 // The copy is only used if it has the tag and the same duration as file.
 func (p *processor) tagByRemux(file string) error {
-	orig, err := probeMarker(p.context(), file)
+	orig, err := probeMarker(p.context(), p.cache, file)
 	if err != nil {
 		return err
 	}
@@ -715,7 +725,7 @@ func (p *processor) tagByRemux(file string) error {
 		os.Remove(tmp) // our own temp file, not a library file
 		return fmt.Errorf("ffmpeg remux: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	got, err := probeMarker(p.context(), tmp)
+	got, err := probeMarker(p.context(), nil, tmp) // our own new file: never from the cache
 	switch {
 	case err != nil:
 	case !got.tagged:
@@ -736,6 +746,10 @@ func (p *processor) tagByRemux(file string) error {
 // original's video stream has no known duration, the container durations are compared
 // when the audio is kept (keepsAudio); with neither known there is nothing to compare and
 // the result counts as matching. An out that ffprobe cannot read never matches.
+//
+// Neither probe goes through the media cache: out is a temp file just written, and in is
+// probed again right before it is replaced for good, so the check never rests on a stored
+// result.
 //
 // stopErr is ctx.Err() if a done ctx stopped a probe: then nothing was compared (an
 // unread original would otherwise count as matching) and ok and why mean nothing.
@@ -866,15 +880,15 @@ func needsRemoveAudio(ops *fsops.Ops, dir, file string, probe mediatools.ProbeIn
 
 // needsReEncode determines if a video with the given codec should be re-encoded based
 // on its bitrate, codec and the estimated size of the re-encoded video. probe is the
-// ffprobe result of file.
-func needsReEncode(file, codec string, probe mediatools.ProbeInfo) bool {
+// ffprobe result of file; c caches the bitrate measurement (nil = none).
+func needsReEncode(c *mediacache.Cache, file, codec string, probe mediatools.ProbeInfo) bool {
 	infoInput, err := os.Stat(file)
 	if err != nil {
 		log.Warnf("Error getting size of %s: %v", file, err)
 		return false
 	}
 
-	bitrate, bitrateErr := videoBitrate(file, probe)
+	bitrate, bitrateErr := videoBitrate(c, file, probe)
 	if bitrateErr != nil {
 		log.Debugf("Error getting bitrate for %s: %v", file, bitrateErr)
 	}
@@ -1040,10 +1054,11 @@ type markerProbe struct {
 	duration float64 // container duration in seconds, 0 if unknown
 }
 
-// probeMarker reads the format and stream tags and the duration of file.
-// A done ctx stops the probe; the error is then ctx.Err().
-func probeMarker(ctx context.Context, file string) (markerProbe, error) {
-	probe, err := mediatools.Probe(ctx, file)
+// probeMarker reads the format and stream tags and the duration of file, through the cache
+// c (nil = none; never pass one for a temp file). A done ctx stops the probe; the error is
+// then ctx.Err().
+func probeMarker(ctx context.Context, c *mediacache.Cache, file string) (markerProbe, error) {
+	probe, err := mediacache.Probe(ctx, c, file)
 	if err != nil {
 		return markerProbe{}, err
 	}
@@ -1066,7 +1081,8 @@ func markerFromProbe(probe mediatools.ProbeInfo) markerProbe {
 // it counts the audio, and without it the padding of a CBR stream, so a low-bitrate video
 // would look high and be re-encoded for nothing. check uses mediatools.VideoBitrate,
 // which falls back to the container rate of a file without audio instead of measuring.
-func videoBitrate(file string, probe mediatools.ProbeInfo) (int, error) {
+// A measured bitrate is kept in the cache c (nil = none) as kindPackets.
+func videoBitrate(c *mediacache.Cache, file string, probe mediatools.ProbeInfo) (int, error) {
 	video, ok := probe.FirstStream("video")
 	if !ok {
 		return 0, errors.New("no video stream")
@@ -1078,11 +1094,34 @@ func videoBitrate(file string, probe mediatools.ProbeInfo) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	out, err := exec.Command("ffprobe", "-v", "error", selectStreams, "v:0", showEntries, "packet=size", "-of", "csv=p=0", "--", filepath.Clean(file)).Output()
-	if err != nil {
-		return 0, err
+	var cached packetResult
+	st, ok := c.Lookup(file, kindPackets, &cached)
+	if ok && cached.Bitrate > 0 {
+		return cached.Bitrate, nil
 	}
-	return packetBitrate(out, duration)
+	cmd := exec.Command("ffprobe", "-v", "error", selectStreams, "v:0", showEntries, "packet=size", "-of", "csv=p=0", "--", filepath.Clean(file))
+	stderr := mediatools.CapOutput()
+	cmd.Stderr = stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, err // not cached: ffprobe may have been killed or missing
+	}
+	bitrate, err := packetBitrate(out, duration)
+	// A read error on the file system (a NAS) may end the packet list early, with exit 0:
+	// such a sum is not stored.
+	if err == nil && !mediatools.SystemError(stderr.String()) {
+		c.Store(st, kindPackets, packetResult{Bitrate: bitrate})
+	}
+	return bitrate, err
+}
+
+// kindPackets is the media cache kind of a video's measured packet bitrate (videoBitrate).
+// The duration it divides by comes from the probe of the same, unchanged file.
+const kindPackets = "fixvideos.packets/1"
+
+// packetResult is the cached result of the packet-size measurement.
+type packetResult struct {
+	Bitrate int `json:"bitrate"` // bit/s, > 0
 }
 
 // packetBitrate returns the bitrate of a stream from its packet sizes (ffprobe

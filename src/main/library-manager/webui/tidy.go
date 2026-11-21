@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -15,6 +16,7 @@ import (
 	"github.com/nkreimeyer/library-manager/fixtxt"
 	"github.com/nkreimeyer/library-manager/fixvideos"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/mediacache"
 	"github.com/nkreimeyer/library-manager/mediatools"
 	"github.com/nkreimeyer/library-manager/organize"
 )
@@ -192,6 +194,14 @@ func (r *stepRun) run() ([]stepResult, error) {
 			return nil, err
 		}
 	}
+	// One media cache for the job, at the library root: the song and media steps reuse the
+	// scan results of unchanged files from earlier jobs and from each other. It is saved
+	// also after a dry run, a stop or a failure (the results it holds are valid).
+	var cache *mediacache.Cache
+	if slices.ContainsFunc(steps, func(s string) bool { return s == stepSongs || s == stepVideo || s == stepAudio }) {
+		cache = mediacache.Open(r.ctx, r.cfg.Library)
+		defer func() { _ = cache.Save(r.ops) }() // a failure is logged; it is no failed operation
+	}
 	progress := func(phase string) func(done, total int) {
 		return func(done, total int) { r.c.Progress(phase, done, total) }
 	}
@@ -218,14 +228,14 @@ func (r *stepRun) run() ([]stepResult, error) {
 			})
 		case stepSongs:
 			opts := r.tidy.organizeOptions(r.songs)
-			opts.Ctx, opts.Progress = r.ctx, r.c.Progress
+			opts.Ctx, opts.Progress, opts.Cache = r.ctx, r.c.Progress, cache
 			err = organize.Run(r.cfg, r.ops, opts)
 		case stepVideo:
 			log.Infof("Converting videos")
-			err = fixvideos.RunWith(modCfg, r.ops, fixvideos.Options{Ctx: r.ctx, Progress: progress(stepVideo)})
+			err = fixvideos.RunWith(modCfg, r.ops, fixvideos.Options{Ctx: r.ctx, Progress: progress(stepVideo), Cache: cache})
 		case stepAudio:
 			log.Infof("Evening out the audio volume")
-			err = fixaudio.RunWith(modCfg, r.ops, fixaudio.Options{Ctx: r.ctx, Progress: progress(stepAudio)})
+			err = fixaudio.RunWith(modCfg, r.ops, fixaudio.Options{Ctx: r.ctx, Progress: progress(stepAudio), Cache: cache})
 		}
 		res := stepResult{Step: step, Stats: r.ops.Stats().Sub(before)}
 		if (step == stepText || step == stepCleanup) && dry && r.onText != nil && err == nil {

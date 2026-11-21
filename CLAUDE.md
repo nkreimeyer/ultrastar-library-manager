@@ -29,7 +29,9 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   fsops/                      the ONLY place that modifies files: dry-run (planned writes/moves visible via ReadFile), atomic writes, moves, stats;
                               planned.go: Stats.Sub, PlannedWrites/PlannedMoves (a dry run's list, for the UI review);
                               MoveTo (exact target, ordered dry-run moves), AppendJournal, RemoveEmptyDir (undo),
-                              WriteJSONReport/MarshalReport (the one JSON report encoding), FailUnreadable (the
+                              RemoveEmptyDirWithCache (undo of a created library root),
+                              WriteJSONReport/MarshalReport (the one JSON report encoding), WriteCacheFile (the media
+                              cache: atomic, also in a dry run, not in Stats, sweeps stale own temps), FailUnreadable (the
                               "unreadable:<path>" FailOnce key), SkipUnreadable ("Skipping <folder>: <err>")
   utils/decode.go             txt decoding (DecodeTxt): UTF-16/UTF-8/#ENCODING/CP1250/CP1252, "when in doubt, Problem"
   utils/txt.go                header tags, song-txt lookup, file references
@@ -57,13 +59,17 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               inspect.go: Inspector (one folder -> findings, broken, MediaSummary), used by Run and organize
   fixvideos/                  ffmpeg: re-encode to H.264 mp4, downscale to fit 1920x1080, strip audio, flag corrupt files (tagged, idempotent)
   fixaudio/                   ffmpeg: downmix to stereo, peak-normalize to -3 dB, originals kept (tagged, idempotent)
-                              (fixaudio and fixvideos: RunWith(Options{Ctx, Progress}); a stop starts no further file,
+                              (fixaudio and fixvideos: RunWith(Options{Ctx, Progress, Cache}); a stop starts no further file,
                               a running encode finishes, a stopped probe is never a failure)
   journal/                    content-fingerprint journal for media formats that cannot carry a marker tag
+  mediacache/                 the hidden scan cache (FileName .library-manager-cache.json.gz in the library root):
+                              Open (never fails; nil = disabled), Lookup/Store (Stamp), Save (prune, WriteCacheFile),
+                              Stats; probe.go: Probe (mediatools.Probe through the cache, kind "probe/1")
   mediatools/                 mediatools.go: Detect, Lookup, Require (ffmpeg/ffprobe on PATH, "-version" parsed: releases,
                               N-… and date git builds; >= 5.1); probe.go: Probe (one ffprobe JSON call -> ProbeInfo),
                               FirstStream/HasStream, HasTag (marker tags), VideoBitrate (the one bitrate rule);
-                              output.go: OutputCap/CombinedOutput (head 16 KiB + tail 48 KiB of ffmpeg output)
+                              output.go: OutputCap/CombinedOutput (head 16 KiB + tail 48 KiB of ffmpeg output);
+                              failure.go: FileFailure/SystemError (may a tool result be cached?)
   webui/                      browser UI: server.go (single-use token -> session cookie lm_session_<port>, CheckAddr,
                               Host/Origin/JSON checks, CSP, routes),
                               jobs.go (one job at a time, logrus hook, SSE /api/job/events), system.go (tools, folder lister),
@@ -116,14 +122,14 @@ cd ../../../test-assets && ./mybin -s songs -n     # dry run; outputs go to test
 
 Flags: `-s <songdir>` (required) · `-o <outdir>` (default `sanitizer-output/` next to the resolved `-s`) ·
 `-n` dry run · `-t` fixtxt (default **on**) · `-c` cleanup (default **on**) · `-k` check
-(`-deep`, `-move-broken` only with `-k`) · `-m` fixvideos · `-a` fixaudio · `-v <level>`.
+(`-deep`, `-move-broken` only with `-k`) · `-m` fixvideos · `-a` fixaudio · `-no-cache` · `-v <level>`.
 Order is always fixtxt → cleanup → check → fixvideos → fixaudio. Bool
 flags are turned off with `-t=false`; leftover arguments (`-t false`) are rejected. Exit codes:
 0 ok, 1 some operation failed, 2 usage error. See README.md for user-facing details.
 
-Subcommands: `organize -s <dir>[:<dir>…] [-s …] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n]`,
-`dedupe -l <library> [-o <out>] [-deep] [-n]` (in place: the library is the only source, keepers stay),
-`add -s … -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n]` (the library is always the first
+Subcommands: `organize -s <dir>[:<dir>…] [-s …] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-no-cache] [-n]`,
+`dedupe -l <library> [-o <out>] [-deep] [-no-cache] [-n]` (in place: the library is the only source, keepers stay),
+`add -s … -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-no-cache] [-n]` (the library is always the first
 source of the first tier, library keepers stay, new keepers go to their bucket),
 `remove -l <library> [-artist <name>]… [-song "Artist - Title"]… [-from <file>]… [-o <out>] [-n]` (matching songs
 go to `<out>/removed/<rel>`; artist patterns match a subset of the collaboration names (`artistNames`), song
@@ -149,7 +155,11 @@ Same exit codes and leftover-argument rule.
   moves only (`<out>/duplicates/<label>/`, `<out>/invalid/<label>/`, the library), journals
   every move, and its undo removes only the empty folders its run created.
 - **Dry-run** must leave `cfg.SongDir` byte-identical. Probes (ffprobe, volumedetect) are
-  fine. Planned media changes are recorded with `ops.PlanReplace`.
+  fine. Planned media changes are recorded with `ops.PlanReplace`. The one exception is the
+  media cache file in the library root (`mediacache.FileName`, written by
+  `ops.WriteCacheFile`, which also removes stale temp files of its own interrupted writes);
+  dry-run tests that run with a cache compare the library without it (and without the
+  root folder's own mtime). Nothing else may use `WriteCacheFile`.
 - **Read txts through `ops.ReadFile`** (and the ops-aware `utils.IsSongTxt`, `SongTxtFiles`,
   `FindSongTxt`, `ReadSongTags`, `IsFileReferenced`, `ReplaceFileReference`,
   `FindCoverImage`/`FindBackgroundImage`; `nil` ops = plain disk reads). In a dry run
@@ -352,6 +362,47 @@ Same exit codes and leftover-argument rule.
   visible there after `signal.Reset`. `runSafely`
   turns a panic in the job goroutine into a job error, and a panic in a module's pool counts
   in the job's `Stats.Failed`; a panic in any other goroutine still ends the program.
+- mediacache: callers open one cache per run at the library root and save it at the end,
+  also after a dry run, a failed module or a stop (the CLI only with `-k`/`-m`/`-a`, at
+  `-s`; organize/dedupe/add at `-l`, not for `-undo` and `remove`; the UI's `stepRun` for
+  the whole job if it has a song or media step, and both check jobs at the library);
+  `-no-cache` opens none. A nil `*Cache`
+  disables it everywhere. A file is unchanged if (path, size, mtime ns) equal the stored
+  ones; a path miss (or a stale entry) looks up the secondary index (base name, size, mtime
+  ns): a hit is re-keyed to the new path (copied if the old file is still there), so
+  organize's moves into buckets keep their results. Store needs a fresh stat equal to the
+  Stamp taken before the work and an mtime at least `RacyWindow` (2 s) old (git's racy-clean
+  rule; FAT has 2 s); tests age media with `os.Chtimes`. The header holds the ffprobe and
+  ffmpeg version strings; other versions drop every entry (and a run that then stores
+  nothing does not overwrite the file, so a run without ffprobe on PATH keeps it; a done ctx
+  at Open disables the cache for the same reason). Kinds carry a version (`probe/1`,
+  `check.media/1` (probe result incl. measured duration, or the error message),
+  `check.decode/1` (`-deep`), `fixaudio.peak/1`, `fixvideos.packets/1`): a change in how a
+  result is computed bumps the kind. `mediacache.Probe` caches successes (with `Log`) and
+  `*mediatools.ProbeError` (rebuilt with a plain `Err` of the same message); never
+  `ErrNotRun`, ctx errors, parse errors, tool failures or stopped runs. A failure is only
+  cached if it is about the file (`mediatools.FileFailure`: a normal non-zero exit, not a
+  signal such as the OOM killer, and no system error in the output); a result whose tool
+  output names a system error (`mediatools.SystemError`: `Input/output error`, a dropped
+  connection, `Permission denied`, out of memory, …; ffprobe may exit 0 with partial
+  results) is never cached, in every kind. Otherwise a NAS hiccup during one run would
+  make a good file "unreadable" until it changes. fixvideos never
+  uses the cache for its temp files or `sameVideoDuration` (the final check before a
+  replace). Save prunes entries not seen in this run whose file is gone (a folder that
+  cannot be listed keeps them; files seen in this run are kept even if gone, for the
+  secondary lookup), and skips a root that does not exist. The prune lists the folders
+  with unseen entries in parallel (16) outside the lock: after an `-a`-only run that is
+  nearly every folder (its video). A folder renamed only in case (the old spelling still
+  resolves on NTFS/APFS) is a move, not a copy: Lookup and prune compare the paths
+  case/NFC-insensitively plus `os.SameFile` (tested with hard links on Linux). The file is
+  rewritten on every Save (it records when the library was last seen).
+  `ops.WriteCacheFile` first removes its own temp files older than `fsops.StaleCacheTemp`
+  (1 h; left by a kill during the write, also in a dry run: they are in the root, which
+  no cleanup visits). organize's undo removes a folder its run created that holds only
+  the cache file (`ops.RemoveEmptyDirWithCache`: the library root a run created and saved
+  the cache into). Open returns nil for a root that
+  is itself a song folder (cleanup would move the hidden file). Save errors are warnings,
+  never `ops.Fail`s. Txts are never cached.
 - webui tidy-up ("Tidy up my library" = dedupe with `organizeRequest.Tidy`): the options page sends
   `tidyOptions`; `stepRun` runs fixtxt → cleanup → organize (dedupe; `Broken` = SetAside or Keep; `Folders` = fixtxt's MoveBroken and cleanup's BrokenFolders, apart from `Broken`,
   `KeepDuplicates` = !dedupe) → fixvideos → fixaudio on ONE ops, the modules with a `config.Config`
