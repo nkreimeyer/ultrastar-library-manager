@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/nkreimeyer/library-manager/config"
+	"github.com/nkreimeyer/library-manager/fsops"
 )
 
 // Report file names in the output dir.
@@ -33,6 +34,19 @@ const (
 	noteJournalFailed = "the journal could not be written"
 	noteStopped       = "the run was stopped"
 )
+
+// textReport is a report with a readable text form next to its JSON (planReport,
+// removeReport).
+type textReport interface{ text() []byte }
+
+// writeReportFiles writes rep as JSON to jsonName and as text to txtName in the output
+// dir (organize_plan.* and remove_plan.*).
+func writeReportFiles(cfg config.OrganizeConfig, ops *fsops.Ops, jsonName, txtName string, rep textReport) error {
+	if err := ops.WriteJSONReport(cfg.ReportPath(jsonName), rep); err != nil {
+		return err
+	}
+	return ops.WriteReport(cfg.ReportPath(txtName), rep.text())
+}
 
 // planReport is the content of organize_plan.json. It is deterministic: no timestamps,
 // every list sorted.

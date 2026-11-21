@@ -206,7 +206,7 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 				in.outcomes[i] = moveOutcome{Status: outcomePending}
 			}
 		}
-		if err := writeReports(cfg, ops, buildReport(in)); err != nil {
+		if err := writeReportFiles(cfg, ops, reportJSON, reportTxt, buildReport(in)); err != nil {
 			return err
 		}
 	}
@@ -218,7 +218,7 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 		in.emptyLeft = emptiedCategories(cfg, cands, in.outcomes)
 	}
 	rep := buildReport(in)
-	if err := writeReports(cfg, ops, rep); err != nil {
+	if err := writeReportFiles(cfg, ops, reportJSON, reportTxt, rep); err != nil {
 		return err
 	}
 	verb := "moved"
@@ -247,13 +247,6 @@ func (o Options) mode() Mode {
 }
 
 func movesSong(a Action) bool { return a == ActMove || a == ActDuplicate || a == ActInvalid }
-
-func writeReports(cfg config.OrganizeConfig, ops *fsops.Ops, rep planReport) error {
-	if err := ops.WriteJSONReport(cfg.ReportPath(reportJSON), rep); err != nil {
-		return err
-	}
-	return ops.WriteReport(cfg.ReportPath(reportTxt), rep.text())
-}
 
 // newCandidate builds the candidate of one song folder from its inspection (err: the
 // folder or txt could not be read).

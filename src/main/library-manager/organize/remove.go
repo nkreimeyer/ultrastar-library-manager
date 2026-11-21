@@ -273,7 +273,7 @@ func Remove(cfg config.OrganizeConfig, ops *fsops.Ops, patterns []Pattern) error
 				outcomes[i] = moveOutcome{Status: outcomePending}
 			}
 		}
-		if err := writeRemoveReports(cfg, ops, buildRemoveReport(in)); err != nil {
+		if err := writeReportFiles(cfg, ops, removeReportJSON, removeReportTxt, buildRemoveReport(in)); err != nil {
 			return err
 		}
 	}
@@ -293,7 +293,7 @@ func Remove(cfg config.OrganizeConfig, ops *fsops.Ops, patterns []Pattern) error
 		a.journalMove(songs[i].Folder, dst)
 	}
 	rep := buildRemoveReport(in)
-	if err := writeRemoveReports(cfg, ops, rep); err != nil {
+	if err := writeReportFiles(cfg, ops, removeReportJSON, removeReportTxt, rep); err != nil {
 		return err
 	}
 	verb := "moved"
@@ -427,11 +427,4 @@ func (r removeReport) text() []byte {
 		fmt.Fprintf(&b, "%s\n", u)
 	}
 	return b.Bytes()
-}
-
-func writeRemoveReports(cfg config.OrganizeConfig, ops *fsops.Ops, rep removeReport) error {
-	if err := ops.WriteJSONReport(cfg.ReportPath(removeReportJSON), rep); err != nil {
-		return err
-	}
-	return ops.WriteReport(cfg.ReportPath(removeReportTxt), rep.text())
 }
