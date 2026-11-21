@@ -1,15 +1,16 @@
 package check
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
-	"os/exec"
 	"path/filepath"
 
 	log "github.com/sirupsen/logrus"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/mediatools"
 	"github.com/nkreimeyer/library-manager/songtxt"
 	"github.com/nkreimeyer/library-manager/utils"
 )
@@ -67,22 +68,42 @@ type MediaSummary struct {
 
 // NewInspector returns an inspector. deep requests a full decode of every referenced
 // audio and video file (-deep). The notes describe the checks that cannot run (no
-// ffprobe/ffmpeg on PATH); they are also logged as warnings.
+// ffprobe/ffmpeg on PATH) or run with a tool older than the tested minimum
+// (mediatools.MinMajor.MinMinor); they are also logged as warnings.
+//
+// The tools are looked up with mediatools.Lookup, as the web UI does. An old version is
+// still used: check only probes and decodes, which old releases do the same way, while
+// skipping the media checks would let broken media pass. A tool that is found but fails
+// to run is used too: its failures are counted (see errToolFailed), as before.
 func NewInspector(ops *fsops.Ops, deep bool) (*Inspector, []string) {
 	i := &Inspector{ops: ops, deepSem: make(chan struct{}, maxDeepDecodes)}
 	var notes []string
-	if _, err := exec.LookPath("ffprobe"); err != nil {
+	oldTool := func(t mediatools.Tool, what string) {
+		if t.TooOld() {
+			note := fmt.Sprintf("%s %s is older than %d.%d, the oldest tested release: %s may differ", t.Name, t.Version,
+				mediatools.MinMajor, mediatools.MinMinor, what)
+			log.Warnf("%s", note)
+			notes = append(notes, note)
+		}
+	}
+	probe := mediatools.Lookup(context.Background(), "ffprobe")
+	if !probe.Found {
 		log.Warnf("ffprobe not found on PATH: media files are not checked")
 		notes = append(notes, noteNoFFprobe)
 	} else {
 		i.media = true
+		oldTool(probe, "the media checks")
 	}
 	if deep {
-		if _, err := exec.LookPath("ffmpeg"); err != nil {
+		ffmpeg := mediatools.Lookup(context.Background(), "ffmpeg")
+		if !ffmpeg.Found {
 			log.Warnf("ffmpeg not found on PATH: the deep decode check is skipped")
 			notes = append(notes, noteNoFFmpeg)
 		} else {
 			i.deep = i.media // without ffprobe nothing is known to be a readable media file
+			if i.deep {
+				oldTool(ffmpeg, "the deep decode checks")
+			}
 		}
 	}
 	return i, notes

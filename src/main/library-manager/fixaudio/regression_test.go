@@ -666,7 +666,7 @@ func TestRunErrors(t *testing.T) {
 	t.Run("no ffmpeg", func(t *testing.T) {
 		cfg, ops := newLibrary(t, false)
 		t.Setenv("PATH", t.TempDir())
-		if err := Run(cfg, ops); err == nil || !strings.Contains(err.Error(), "ffmpeg not found") {
+		if err := Run(cfg, ops); err == nil || !strings.Contains(err.Error(), "ffmpeg was not found") {
 			t.Errorf("err = %v, want ffmpeg not found", err)
 		}
 	})
@@ -678,7 +678,7 @@ func TestRunErrors(t *testing.T) {
 		}
 		cfg, ops := newLibrary(t, false)
 		t.Setenv("PATH", bin)
-		if err := Run(cfg, ops); err == nil || !strings.Contains(err.Error(), "ffprobe not found") {
+		if err := Run(cfg, ops); err == nil || !strings.Contains(err.Error(), "ffprobe was not found") {
 			t.Errorf("err = %v, want ffprobe not found", err)
 		}
 	})

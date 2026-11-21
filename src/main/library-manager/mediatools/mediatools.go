@@ -7,10 +7,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -50,6 +52,41 @@ func Detect(ctx context.Context) []Tool {
 		tools[i] = detect(ctx, name)
 	}
 	return tools
+}
+
+// Lookup finds the tool name on PATH and runs "<name> -version", like Detect.
+func Lookup(ctx context.Context, name string) Tool { return detect(ctx, name) }
+
+// Require looks up the named tools (see Lookup) and returns an error naming each one
+// that is not OK: missing, failing to run or known to be too old. A tool whose version
+// cannot be read is OK, as in Detect. The media modules that encode (fixvideos,
+// fixaudio) need it: they use options of the minimum release.
+func Require(ctx context.Context, names ...string) error {
+	var problems []string
+	for _, name := range names {
+		if err := Lookup(ctx, name).Err(); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+	if len(problems) > 0 {
+		return errors.New(strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// TooOld reports whether the tool was found and its version is known to be older than
+// MinMajor.MinMinor.
+func (t Tool) TooOld() bool { return t.Found && t.Known && !t.OK }
+
+// Err returns nil if the tool is OK, else its Problem as an error that names the tool.
+func (t Tool) Err() error {
+	if t.OK {
+		return nil
+	}
+	if strings.HasPrefix(t.Problem, t.Name+" ") {
+		return errors.New(t.Problem)
+	}
+	return fmt.Errorf("%s: %s", t.Name, t.Problem)
 }
 
 // AllOK reports whether every tool is OK.

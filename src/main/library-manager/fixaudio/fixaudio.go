@@ -84,10 +84,10 @@ var coverExts = map[string]bool{".mp3": true, ".m4a": true, ".flac": true}
 // Run processes all audio files of all song folders below cfg.SongDir. A panic in one
 // folder is logged and counted as a failure, and the other folders are still processed.
 func Run(cfg config.Config, ops *fsops.Ops) error {
-	for _, tool := range []string{"ffmpeg", "ffprobe"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			return fmt.Errorf("%s not found on PATH: %w", tool, err)
-		}
+	// The filters use options of the minimum release (aresample's ochl is new in 5.1);
+	// an older ffmpeg would fail on every file.
+	if err := mediatools.Require(context.Background(), mediatools.Names...); err != nil {
+		return fmt.Errorf("the audio module needs ffmpeg and ffprobe %d.%d or newer: %w", mediatools.MinMajor, mediatools.MinMinor, err)
 	}
 
 	folders, err := utils.GetAllSongFolders(ops, cfg.SongDir)

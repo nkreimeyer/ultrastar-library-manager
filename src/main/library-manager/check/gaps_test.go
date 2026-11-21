@@ -267,6 +267,30 @@ func TestNewInspectorTools(t *testing.T) {
 	}
 }
 
+// An ffprobe/ffmpeg older than the tested minimum is still used by check (it only probes
+// and decodes), with a note in the report; a missing one is skipped as before.
+func TestNewInspectorOldTools(t *testing.T) {
+	version := func(name, v string) string {
+		return "echo '" + name + " version " + v + " Copyright (c) the FFmpeg developers'\n"
+	}
+	fakeTools(t, map[string]string{"ffprobe": version("ffprobe", "4.4.2"), "ffmpeg": version("ffmpeg", "5.0.3")})
+	insp, notes := NewInspector(fsops.New(false), true)
+	want := []string{
+		"ffprobe 4.4.2 is older than 5.1, the oldest tested release: the media checks may differ",
+		"ffmpeg 5.0.3 is older than 5.1, the oldest tested release: the deep decode checks may differ",
+	}
+	if !insp.MediaChecked() || !insp.DeepChecked() || !reflect.DeepEqual(notes, want) {
+		t.Errorf("media %v, deep %v, notes %q; want both checks with notes %q", insp.MediaChecked(), insp.DeepChecked(), notes, want)
+	}
+	if insp, notes := NewInspector(fsops.New(false), false); !insp.MediaChecked() || insp.DeepChecked() || !reflect.DeepEqual(notes, want[:1]) {
+		t.Errorf("not deep: media %v, deep %v, notes %q", insp.MediaChecked(), insp.DeepChecked(), notes)
+	}
+	fakeTools(t, map[string]string{"ffprobe": version("ffprobe", "7.1"), "ffmpeg": version("ffmpeg", "n6.0")})
+	if insp, notes := NewInspector(fsops.New(false), true); !insp.DeepChecked() || len(notes) != 0 {
+		t.Errorf("new tools: deep %v, notes %q; want no notes", insp.DeepChecked(), notes)
+	}
+}
+
 // observeFile: a referenced name that is a folder or a dangling symlink is a missing file
 // with the reason in the message.
 func TestRunReferenceNotAFile(t *testing.T) {
@@ -329,7 +353,8 @@ func TestRunToolCannotStart(t *testing.T) {
 // file as a media tag still gets its own image observation.
 func TestObserveFilesProbeOnce(t *testing.T) {
 	logFile := filepath.Join(t.TempDir(), "calls")
-	fakeTools(t, map[string]string{"ffprobe": "echo call >> '" + logFile + "'\n" +
+	// NewInspector's version check ("-version") is no probe of a file.
+	fakeTools(t, map[string]string{"ffprobe": "[ \"$1\" = -version ] || echo call >> '" + logFile + "'\n" +
 		printJSON(`{"streams":[{"codec_type":"video","width":64,"height":48},{"codec_type":"audio"}],"format":{"duration":"2.0"}}`, "")})
 	lib := filepath.Join(t.TempDir(), "songs")
 	writeFiles(t, lib, map[string]string{

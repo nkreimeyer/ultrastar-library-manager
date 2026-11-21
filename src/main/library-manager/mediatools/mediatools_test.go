@@ -141,3 +141,41 @@ func TestInstallHint(t *testing.T) {
 		}
 	}
 }
+
+func TestRequire(t *testing.T) {
+	t.Run("ok, also with an unreadable version", func(t *testing.T) {
+		fakeTools(t, map[string]string{"ffmpeg": versionScript("ffmpeg", "5.1.6"), "ffprobe": "#!/bin/sh\necho hello\n"})
+		if err := Require(context.Background(), Names...); err != nil {
+			t.Errorf("Require = %v", err)
+		}
+		if tool := Lookup(context.Background(), "ffmpeg"); !tool.OK || tool.TooOld() || tool.Err() != nil {
+			t.Errorf("Lookup = %+v, want ok", tool)
+		}
+	})
+	t.Run("too old, missing", func(t *testing.T) {
+		fakeTools(t, map[string]string{"ffmpeg": versionScript("ffmpeg", "4.4.2")})
+		err := Require(context.Background(), Names...)
+		want := "ffmpeg: version 4.4.2 is too old, 5.1 or newer is needed; ffprobe was not found on PATH"
+		if err == nil || err.Error() != want {
+			t.Errorf("Require = %v, want %q", err, want)
+		}
+		if tool := Lookup(context.Background(), "ffmpeg"); !tool.TooOld() {
+			t.Errorf("Lookup = %+v, want too old", tool)
+		}
+		if tool := Lookup(context.Background(), "ffprobe"); tool.TooOld() || tool.Found {
+			t.Errorf("Lookup = %+v, want missing (not too old)", tool)
+		}
+		if err := Require(context.Background()); err != nil {
+			t.Errorf("Require() = %v, want nil for no tools", err)
+		}
+	})
+	t.Run("fails to run", func(t *testing.T) {
+		fakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\nexit 3\n"})
+		if err := Require(context.Background(), "ffprobe"); err == nil || !strings.HasPrefix(err.Error(), "ffprobe -version failed: ") {
+			t.Errorf("Require = %v, want the failure", err)
+		}
+		if tool := Lookup(context.Background(), "ffprobe"); tool.TooOld() {
+			t.Errorf("Lookup = %+v, a tool that does not run is not too old", tool)
+		}
+	})
+}

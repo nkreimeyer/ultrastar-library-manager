@@ -107,10 +107,10 @@ type processor struct {
 // then writes the corrupted-files report and the media journal. A panic while processing
 // one video is logged and counted as a failure, and the other videos are still processed.
 func Run(cfg config.Config, ops *fsops.Ops) error {
-	for _, tool := range []string{"ffmpeg", "ffprobe"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			return fmt.Errorf("%s is required for the video module: %w", tool, err)
-		}
+	// The encodes use options of the minimum release; an older ffmpeg would fail (or
+	// differ) on every video.
+	if err := mediatools.Require(context.Background(), mediatools.Names...); err != nil {
+		return fmt.Errorf("the video module needs ffmpeg and ffprobe %d.%d or newer: %w", mediatools.MinMajor, mediatools.MinMinor, err)
 	}
 
 	entries, err := utils.GetAllSongFolders(ops, cfg.SongDir)
