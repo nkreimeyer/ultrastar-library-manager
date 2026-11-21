@@ -186,6 +186,48 @@ func TestWriteReport(t *testing.T) {
 	}
 }
 
+// JSON reports keep "&", "<" and ">" literal, are indented by two spaces and end with
+// exactly one newline, in real and dry runs. A value that cannot be encoded writes nothing
+// and is counted as a failure.
+func TestWriteJSONReport(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "out", "nested")
+	type entry struct {
+		Name string `json:"name"`
+	}
+	v := struct {
+		Songs []entry `json:"songs"`
+	}{Songs: []entry{{Name: "Simon & Garfunkel - <3 > 2"}}}
+	want := "{\n  \"songs\": [\n    {\n      \"name\": \"Simon & Garfunkel - <3 > 2\"\n    }\n  ]\n}\n"
+	for _, dry := range []bool{false, true} {
+		path := filepath.Join(out, fmt.Sprintf("report-%v.json", dry))
+		ops := New(dry)
+		if err := ops.WriteJSONReport(path, v); err != nil {
+			t.Fatalf("WriteJSONReport(dry=%v): %v", dry, err)
+		}
+		if got := readFile(t, path); got != want {
+			t.Errorf("dry=%v: report = %q, want %q", dry, got, want)
+		}
+		if s := ops.Stats(); s != (Stats{}) {
+			t.Errorf("dry=%v: Stats = %+v, want zero", dry, s)
+		}
+	}
+
+	ops := New(false)
+	bad := filepath.Join(out, "bad.json")
+	if err := ops.WriteJSONReport(bad, map[string]any{"f": func() {}}); err == nil {
+		t.Error("an unencodable value must return an error")
+	}
+	if _, err := os.Lstat(bad); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("an unencodable value must write nothing: %v", err)
+	}
+	if entries, err := os.ReadDir(out); err != nil || len(entries) != 2 {
+		t.Errorf("out dir = %v (%v), want only the two reports (no temp file)", entries, err)
+	}
+	if s := ops.Stats(); s.Failed != 1 {
+		t.Errorf("Stats = %+v, want Failed=1", s)
+	}
+}
+
 func TestDryRunChangesNothing(t *testing.T) {
 	lib := t.TempDir()
 	out := t.TempDir()

@@ -8,6 +8,7 @@ package fsops
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -222,6 +223,30 @@ func (o *Ops) WriteReport(path string, data []byte) error {
 		return o.fail(fmt.Errorf("writing report %s: %w", path, err))
 	}
 	return nil
+}
+
+// MarshalReport encodes v the way every JSON report is written: indented by two spaces,
+// with one trailing newline and without HTML escaping, so "&", "<" and ">" in song names
+// and messages stay readable.
+func MarshalReport(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil { // Encode appends the final newline
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// WriteJSONReport writes v as a JSON report (MarshalReport) through WriteReport. A value
+// that cannot be encoded writes nothing and counts as a failure, like a failed write.
+func (o *Ops) WriteJSONReport(path string, v any) error {
+	data, err := MarshalReport(v)
+	if err != nil {
+		return o.fail(fmt.Errorf("encoding report %s: %w", path, err))
+	}
+	return o.WriteReport(path, data)
 }
 
 // MoveInto moves src (a file or a folder) to dstDir/relPath, creating parent folders as
