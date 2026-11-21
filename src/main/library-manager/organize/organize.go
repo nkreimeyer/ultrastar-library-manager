@@ -810,8 +810,9 @@ func forEachParallel(n, w int, fn func(int)) {
 // counted as failed and skipped. Each move back is journaled ("reverted"). Then it records
 // the run as undone, unless a move failed that a retry could do or opts.Ctx stopped it:
 // then the next Undo retries this run, skipping the reverted entries, instead of reverting
-// an older run. A dry run only logs the planned moves. Undo
-// returns an error only if the journal cannot be read or opts.Ctx stopped it.
+// an older run. A dry run only logs the planned moves. Undo returns an error if the journal
+// cannot be read, if it could not record moves back of a run that is not recorded as
+// undone (a retry could repeat them), or opts.Ctx.Err() if it stopped.
 func Undo(cfg config.OrganizeConfig, ops *fsops.Ops, opts UndoOptions) error {
 	ctx := opts.Ctx
 	if ctx == nil {
@@ -914,21 +915,25 @@ func Undo(cfg config.OrganizeConfig, ops *fsops.Ops, opts UndoOptions) error {
 		summary += fmt.Sprintf(", %d moved back by an earlier undo", already)
 	}
 	log.Info(summary)
-	if unrecorded > 0 && (stopped != nil || failed > 0) {
-		log.Errorf("Undo: the journal lacks %d of the moves back; check the library before you run the undo again, it could repeat them", unrecorded)
-	}
-	if stopped != nil {
+	recorded := false // the run is recorded as undone
+	switch {
+	case stopped != nil:
 		log.Warnf("Undo: stopped; run %s is not completely undone, run the undo again to finish it", r.ID)
-		return stopped
-	}
-	if failed > 0 {
+	case failed > 0:
 		// Not recorded as undone: the next -undo retries this run (the moves done now
 		// are skipped then), instead of reverting the run before it.
 		log.Warnf("Undo: run %s is not completely undone; fix the cause of the failed move(s) and run the undo again to retry them", r.ID)
-		return nil
+	default:
+		if err := j.append(journalEntry{Op: opUndone, Run: r.ID}); err != nil {
+			log.Errorf("Undo: cannot record run %s as undone: %v", r.ID, err)
+		} else {
+			recorded = true
+		}
 	}
-	if err := j.append(journalEntry{Op: opUndone, Run: r.ID}); err != nil {
-		log.Errorf("Undo: cannot record run %s as undone: %v", r.ID, err)
+	if unrecorded > 0 && !recorded {
+		// A retry would take the moves the journal lacks for undone ones (a swapped pair even
+		// looks like one) and repeat them.
+		return fmt.Errorf("the journal could not record %d move(s) back, so undoing run %s again could repeat them: check the library before you do", unrecorded, r.ID)
 	}
-	return nil
+	return stopped
 }

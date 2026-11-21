@@ -377,6 +377,32 @@ func TestUndoStopped(t *testing.T) {
 	}
 }
 
+// An undo whose journal cannot record the moves back reports an error: the run is not
+// recorded as undone either, and a retry could repeat the moves (here a swap).
+func TestUndoJournalUnwritable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a read-only file")
+	}
+	noFFprobe(t)
+	base := t.TempDir()
+	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
+	writeFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A")))
+	before := tree(t, lib)
+	runOrganize(t, organizeCfg(t, [][]string{{lib}}, lib, out, false), Options{})
+	cfg := organizeCfg(t, nil, lib, out, false)
+	if err := os.Chmod(cfg.JournalPath(), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(cfg.JournalPath(), 0o644) })
+	err := Undo(cfg, fsops.New(false), UndoOptions{})
+	if err == nil || !strings.Contains(err.Error(), "could repeat them") {
+		t.Errorf("Undo = %v, want the unrecorded moves reported", err)
+	}
+	if got := tree(t, lib); !reflect.DeepEqual(got, before) {
+		t.Errorf("the moves back were not done:\n%v", got)
+	}
+}
+
 // A song whose move out of the temporary name fails stays there, and a stop asked for
 // while it was parked applies after that entry: the rest of the run is not undone.
 func TestUndoStopAfterFailedUnpark(t *testing.T) {
