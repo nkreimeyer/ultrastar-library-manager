@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // simulateCrossDevice makes every rename in move() fail with EXDEV, as a move to another
@@ -22,13 +24,6 @@ func simulateCrossDevice(t *testing.T) {
 		return &os.LinkError{Op: "rename", Old: src, New: dst, Err: syscall.EXDEV}
 	}
 	t.Cleanup(func() { rename = os.Rename })
-}
-
-func skipIfRoot(t *testing.T) {
-	t.Helper()
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores permissions")
-	}
 }
 
 // makeWritable makes every folder below the roots writable, so they can be removed.
@@ -66,7 +61,7 @@ func shmDir(t *testing.T) (shm, tmp string) {
 // must fail with nothing changed: no copy at the target and the source complete, just
 // like a rename on the same file system fails.
 func TestMoveCrossDeviceSrcRemovalFails(t *testing.T) {
-	skipIfRoot(t)
+	testutil.SkipIfRoot(t)
 	for _, real := range []bool{false, true} {
 		t.Run(fmt.Sprintf("realDevices=%v", real), func(t *testing.T) {
 			var srcRoot, dstRoot string
@@ -127,7 +122,7 @@ func TestMoveCrossDevice(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := snapshot(t, src)
-			hook := captureWarnings(t)
+			hook := testutil.CaptureLogs(t)
 			ops := New(false)
 			dst := filepath.Join(dstRoot, "lib", "S", "Song")
 			if err := ops.MoveTo(src, dst); err != nil {
@@ -176,7 +171,7 @@ func TestMoveCrossDevice(t *testing.T) {
 // the complete copy is at the target: the move counts as done (recorded, counted, no
 // error), so organize journals it; the leftover of the source stays under a hidden name.
 func TestMoveCrossDeviceLeftoverSource(t *testing.T) {
-	skipIfRoot(t)
+	testutil.SkipIfRoot(t)
 	simulateCrossDevice(t)
 	srcRoot, dstRoot := t.TempDir(), t.TempDir()
 	src := filepath.Join(srcRoot, "Song")
@@ -187,7 +182,7 @@ func TestMoveCrossDeviceLeftoverSource(t *testing.T) {
 	}
 	before := snapshot(t, src)
 	t.Cleanup(func() { makeWritable(srcRoot, dstRoot) })
-	hook := captureWarnings(t)
+	hook := testutil.CaptureLogs(t)
 	ops := New(false)
 	dst := filepath.Join(dstRoot, "lib", "S", "Song")
 	if err := ops.MoveTo(src, dst); err != nil {
@@ -278,7 +273,7 @@ func TestMoveCrossDeviceSourceVisibleDuringCopy(t *testing.T) {
 // If the source cannot be parked after the copy (its folder became read-only), the copy
 // is removed again and the move fails with the source unchanged.
 func TestMoveCrossDeviceParkAfterCopyFails(t *testing.T) {
-	skipIfRoot(t)
+	testutil.SkipIfRoot(t)
 	simulateCrossDevice(t)
 	srcRoot, dstRoot := t.TempDir(), t.TempDir()
 	parent := filepath.Join(srcRoot, "p")
@@ -443,7 +438,7 @@ func TestAppendJournalDirFailure(t *testing.T) {
 }
 
 func TestCopyTreeReadOnlyDir(t *testing.T) {
-	skipIfRoot(t)
+	testutil.SkipIfRoot(t)
 	src := filepath.Join(t.TempDir(), "Song")
 	writeFile(t, filepath.Join(src, "ro", "song.txt"), "x", 0o444)
 	if err := os.Chmod(filepath.Join(src, "ro"), 0o555); err != nil {
@@ -477,7 +472,7 @@ func TestCopyTreeRejectsFIFO(t *testing.T) {
 }
 
 func TestCopyTreeUnreadableSource(t *testing.T) {
-	skipIfRoot(t)
+	testutil.SkipIfRoot(t)
 	src := filepath.Join(t.TempDir(), "Song")
 	writeFile(t, filepath.Join(src, "a.txt"), "x", 0o000)
 	if err := copyTree(src, filepath.Join(t.TempDir(), "copy")); !errors.Is(err, fs.ErrPermission) {
@@ -556,7 +551,7 @@ func TestMoveIntoMergesCategory(t *testing.T) {
 // A failed move of a child aborts the merge: the folder is not removed and the failure is
 // returned (counted once, by the child's move).
 func TestMoveIntoMergeChildFailure(t *testing.T) {
-	skipIfRoot(t)
+	testutil.SkipIfRoot(t)
 	root := t.TempDir()
 	lib, inv := filepath.Join(root, "lib"), filepath.Join(root, "invalid")
 	writeFile(t, filepath.Join(lib, "Cat", "S1", "song.txt"), "s1", 0o644)
@@ -666,7 +661,7 @@ func TestMoveIntoRealFailures(t *testing.T) {
 }
 
 func TestMoveIntoMkdirFailure(t *testing.T) {
-	skipIfRoot(t)
+	testutil.SkipIfRoot(t)
 	root := t.TempDir()
 	src := filepath.Join(root, "a.txt")
 	writeFile(t, src, "a", 0o644)
@@ -736,7 +731,7 @@ func TestRemoveEmptyDirSymlink(t *testing.T) {
 
 // An unreadable folder cannot be checked: a counted failure in both modes, left alone.
 func TestRemoveEmptyDirUnreadable(t *testing.T) {
-	skipIfRoot(t)
+	testutil.SkipIfRoot(t)
 	var results []string
 	for _, dry := range []bool{false, true} {
 		root := t.TempDir()
@@ -763,7 +758,7 @@ func TestRemoveEmptyDirUnreadable(t *testing.T) {
 
 // A real run whose os.Remove of an empty folder fails (its parent is read-only).
 func TestRemoveEmptyDirRemoveFails(t *testing.T) {
-	skipIfRoot(t)
+	testutil.SkipIfRoot(t)
 	root := t.TempDir()
 	dir := filepath.Join(root, "P", "E")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -849,7 +844,7 @@ func TestWriteReportFailures(t *testing.T) {
 }
 
 func TestWriteReportTempFailure(t *testing.T) {
-	skipIfRoot(t)
+	testutil.SkipIfRoot(t)
 	dir := filepath.Join(t.TempDir(), "ro")
 	if err := os.MkdirAll(dir, 0o555); err != nil {
 		t.Fatal(err)
@@ -906,7 +901,7 @@ func TestWriteFileAtomicReadError(t *testing.T) {
 // The temp file cannot be created (a read-only folder): a counted failure, the target
 // is unchanged and nothing is left behind.
 func TestWriteFileAtomicTempFailure(t *testing.T) {
-	skipIfRoot(t)
+	testutil.SkipIfRoot(t)
 	dir := t.TempDir()
 	target := filepath.Join(dir, "song.txt")
 	writeFile(t, target, "old", 0o644)
@@ -966,7 +961,7 @@ func recordSyncs(t *testing.T, err error) *[]string {
 // ffmpeg does not fsync its output and the replaced file is not kept, so the processed
 // file is fsynced before it replaces the original, also when it is read-only.
 func TestReplaceSyncsBeforeRename(t *testing.T) {
-	skipIfRoot(t)
+	testutil.SkipIfRoot(t)
 	dir := t.TempDir()
 	dst, tmp := filepath.Join(dir, "video.mp4"), filepath.Join(dir, ".video.tmp.mp4")
 	writeFile(t, dst, "old", 0o644)

@@ -8,17 +8,10 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
-
-// captureWarnings records the warnings logged during the test.
-func captureWarnings(t *testing.T) *logtest.Hook {
-	t.Helper()
-	hook := logtest.NewGlobal()
-	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(make(log.LevelHooks)) })
-	return hook
-}
 
 // warnings returns the messages of the captured warnings.
 func warnings(hook *logtest.Hook) []string {
@@ -38,7 +31,7 @@ func warnings(hook *logtest.Hook) []string {
 // too; WriteFileAtomic, WriteReport and AppendJournal log nothing in real runs, fixtxt logs
 // its own txt writes.)
 func TestRealRunLogsCopiesRenamesRemovals(t *testing.T) {
-	hook := captureWarnings(t)
+	hook := testutil.CaptureLogs(t)
 	level := log.GetLevel()
 	log.SetLevel(log.DebugLevel)
 	t.Cleanup(func() { log.SetLevel(level) })
