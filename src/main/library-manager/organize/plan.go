@@ -100,6 +100,11 @@ type PlanOptions struct {
 	// other sources move to <Bucket>/<FolderName>. A broken library song stays unless a
 	// working version of the same song replaces it (then it goes to invalid/).
 	LibraryInPlace bool
+	// LibrarySource: the library is one of the sources (Run sets it when a source path
+	// is the library), so every song in it is a candidate and a target taken by a
+	// non-candidate is never a song. A candidate that is InLibrary implies it, but a
+	// library given as a source may hold no song at all (only empty or category folders).
+	LibrarySource bool
 	// Occupied reports whether the library-relative path rel ("A/Artist - Title") is
 	// taken in the library as it is before the run: by an entry with the same NameKey in
 	// the bucket folder, or by a bucket that cannot take songs (not a folder, a song
@@ -320,8 +325,9 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 	}
 	// A keeper left outside the library must not cost the library its own copies: they
 	// stay, which may in turn block other targets.
-	for resolveOccupied(cands, p.Decisions, opts.Occupied, opts.LibraryInPlace); keepLibraryLosers(cands, p.Decisions, groups, groupKeys, opts.LibraryInPlace); {
-		resolveOccupied(cands, p.Decisions, opts.Occupied, opts.LibraryInPlace)
+	librarySource := opts.LibraryInPlace || opts.LibrarySource
+	for resolveOccupied(cands, p.Decisions, opts.Occupied, librarySource); keepLibraryLosers(cands, p.Decisions, groups, groupKeys, opts.LibraryInPlace); {
+		resolveOccupied(cands, p.Decisions, opts.Occupied, librarySource)
 	}
 	p.PossibleDuplicates = possibleDuplicates(cands, groups, groupKeys)
 	keepers := map[int]bool{}
@@ -442,11 +448,10 @@ func isFamilyName(folder, name string) bool {
 // that stays in the library into ActLeft. A target taken by a candidate that moves away
 // is fine: the moves are ordered so it is free in time. Leaving a keeper in place can
 // make the target of another keeper unavailable, so this repeats until nothing changes.
-// With libraryInPlace, or when the library is a source (a candidate is InLibrary),
-// every library song is a candidate, so a target taken by a non-candidate is never a song.
-func resolveOccupied(cands []Candidate, ds []Decision, occupied func(string) (string, string, bool), libraryInPlace bool) {
+// When the library is a source (librarySource, or a candidate is InLibrary), every
+// library song is a candidate, so a target taken by a non-candidate is never a song.
+func resolveOccupied(cands []Candidate, ds []Decision, occupied func(string) (string, string, bool), librarySource bool) {
 	libCand := map[string]int{} // NameKey of the library-relative path -> candidate
-	librarySource := libraryInPlace
 	for i := range cands {
 		if cands[i].InLibrary {
 			libCand[NameKey(cands[i].Rel)] = i

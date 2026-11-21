@@ -758,6 +758,38 @@ func TestRunExistingLibraryNotSource(t *testing.T) {
 	}
 }
 
+// TestRunLibrarySourceWithoutSongs: a library given as a source that holds no song (only
+// an empty folder and an empty category) is still a source, so a target taken by such a
+// folder gets reasonNotASong, never the hint to add the library as a source, in the
+// plan of Run and in Review.Replan (the web UI's exclusions).
+func TestRunLibrarySourceWithoutSongs(t *testing.T) {
+	noFFprobe(t)
+	base := t.TempDir()
+	src, lib := filepath.Join(base, "src"), filepath.Join(base, "lib")
+	for _, d := range []string{filepath.Join(lib, "A", "ABBA - SOS"), filepath.Join(lib, "Pop", "Empty")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFiles(t, src, songFiles("ABBA - SOS", "ABBA", "SOS"))
+	want := fmt.Sprintf(reasonNotASong, "A/ABBA - SOS")
+	var replanned Plan
+	opts := Options{Review: func(rv *Review) error {
+		replanned = rv.Replan(nil)
+		return nil
+	}}
+	_, rep := runOrganize(t, organizeCfg(t, [][]string{{lib}, {src}}, lib, filepath.Join(base, "out"), false), opts)
+	if len(rep.LeftInPlace) != 1 || rep.LeftInPlace[0].Song != "src:ABBA - SOS" || rep.LeftInPlace[0].Reason != want {
+		t.Errorf("left in place = %+v, want src:ABBA - SOS with %q", rep.LeftInPlace, want)
+	}
+	if len(replanned.Decisions) != 1 || replanned.Decisions[0].Reason != want {
+		t.Errorf("Review.Replan = %+v, want reason %q", replanned.Decisions, want)
+	}
+	if _, err := os.Stat(filepath.Join(src, "ABBA - SOS", "song.txt")); err != nil {
+		t.Errorf("the song must stay in its source: %v", err)
+	}
+}
+
 // TestRunUnreadableBucket: a bucket folder that cannot be read is counted as a failure,
 // and the songs bound for it are left in place with that reason.
 func TestRunUnreadableBucket(t *testing.T) {

@@ -180,6 +180,11 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 		Priority: opts.Priority, IgnoreThe: opts.IgnoreThe, Occupied: libraryOccupant(ops, cfg.Library),
 		LibraryInPlace: opts.mode() != ModeOrganize, Exclude: opts.Exclude,
 	}
+	for _, src := range cfg.Sources {
+		if src.Path == cfg.Library {
+			planOpts.LibrarySource = true
+		}
+	}
 	plan := MakePlan(cands, planOpts)
 	logPlan(cands, plan)
 	if opts.Review != nil {
