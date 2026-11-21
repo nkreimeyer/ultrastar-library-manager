@@ -31,7 +31,7 @@ func GetAllSongFolders(ops *fsops.Ops, songDir string) ([]string, error) {
 	}
 	var songFolders []string
 	for _, entry := range entries {
-		if !entry.IsDir() || skipFolder(ops, songDir, entry.Name()) {
+		if !entry.IsDir() || IsNoiseEntry(ops, songDir, entry.Name()) {
 			continue
 		}
 		r := collectSongFolders(ops, filepath.Join(songDir, entry.Name()))
@@ -64,7 +64,7 @@ func collectSongFolders(ops *fsops.Ops, dir string) collected {
 			// (which would move the output folder along with it).
 			return collected{content: true}
 		case e.IsDir():
-			if !skipFolder(ops, dir, name) {
+			if !IsNoiseEntry(ops, dir, name) {
 				subdirs = append(subdirs, filepath.Join(dir, name))
 			}
 		case IsTxtFile(name) && IsRegularFile(dir, e):
@@ -110,8 +110,12 @@ func skipUnreadable(ops *fsops.Ops, path string, err error) {
 	}
 }
 
-// skipFolder reports whether the subfolder name of parent must not be scanned.
-func skipFolder(ops *fsops.Ops, parent, name string) bool {
+// IsNoiseEntry reports whether the entry name of parent is no song content: a hidden file
+// or folder (leftovers of interrupted runs, macOS "._*" files), a Synology "@eaDir" folder,
+// or, in a dry run, an entry an earlier module would have moved away (ops.WouldBeMoved; ops
+// may be nil). Discovery does not scan such folders and cleanup does not count such
+// entries.
+func IsNoiseEntry(ops *fsops.Ops, parent, name string) bool {
 	if IsHidden(name) || name == "@eaDir" {
 		return true
 	}

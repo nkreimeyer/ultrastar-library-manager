@@ -476,3 +476,27 @@ func TestGetAllSongFoldersMatroskaAudio(t *testing.T) {
 		t.Errorf("GetAllSongFolders = %q, want %q", got, want)
 	}
 }
+
+func TestIsNoiseEntry(t *testing.T) {
+	lib, out := t.TempDir(), t.TempDir()
+	for _, d := range []string{"Song", "Planned"} {
+		if err := os.Mkdir(filepath.Join(lib, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ops := fsops.New(true)
+	if _, err := ops.MoveInto(filepath.Join(lib, "Planned"), out, "Planned"); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]bool{
+		".hidden": true, "._song.mp3": true, "@eaDir": true, "Planned": true,
+		"Song": false, "@eaDirX": false, "song.mp3": false,
+	} {
+		if got := IsNoiseEntry(ops, lib, name); got != want {
+			t.Errorf("IsNoiseEntry(%q) = %v, want %v", name, got, want)
+		}
+	}
+	if IsNoiseEntry(nil, lib, "Planned") {
+		t.Error("nil ops: a folder counts as planned to move")
+	}
+}

@@ -415,7 +415,7 @@ func bucketProblem(ops *fsops.Ops, dir string, entries []os.DirEntry) string {
 	media := ""
 	for _, e := range entries {
 		name, p := e.Name(), filepath.Join(dir, e.Name())
-		if utils.IsHidden(name) || e.IsDir() || ops.WouldBeMoved(p) {
+		if e.IsDir() || utils.IsNoiseEntry(ops, dir, name) {
 			continue
 		}
 		switch {

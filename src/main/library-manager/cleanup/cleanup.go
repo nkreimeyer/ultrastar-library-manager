@@ -82,8 +82,7 @@ func filterEntries(cfg config.Config, ops *fsops.Ops, entries []string) []string
 func countEntries(ops *fsops.Ops, dir string, files []os.DirEntry) int {
 	n := 0
 	for _, f := range files {
-		name := f.Name()
-		if utils.IsHidden(name) || name == "@eaDir" || ops.WouldBeMoved(filepath.Join(dir, name)) {
+		if utils.IsNoiseEntry(ops, dir, f.Name()) {
 			continue
 		}
 		n++
