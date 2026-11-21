@@ -577,11 +577,13 @@ func TestReportJSONIsNotHTMLEscaped(t *testing.T) {
 
 // TestRunMissingNameTagsHint: a missing #ARTIST that fixtxt can fill from the folder name
 // is an error (check sees the txt as it is, e.g. with -t=false), and the message names the
-// value fixtxt would fill. fixtxt never fills a txt with a decode problem, a txt in a folder
-// with a non-UTF-8 media file name, or from a reversed folder name: those get no hint.
+// value fixtxt would fill. fixtxt never fills a txt with a decode problem, a symlinked txt
+// (regression: check claimed it did), a txt in a folder with a non-UTF-8 media file name,
+// or from a reversed folder name: those get no hint.
 func TestRunMissingNameTagsHint(t *testing.T) {
 	withoutFFmpeg(t)
 	lib := filepath.Join(t.TempDir(), "songs")
+	pool := filepath.Join(t.TempDir(), "pool")
 	noArtist := "#TITLE:Hypa Hypa\n#MP3:song.mp3\n#BPM:300\n" + notes(10)
 	writeFiles(t, lib, map[string]string{
 		"Electric Callboy - Hypa Hypa/song.txt":  noArtist,
@@ -593,7 +595,12 @@ func TestRunMissingNameTagsHint(t *testing.T) {
 		"Latin1 Name - Hypa Hypa/song.txt":       noArtist,
 		"Latin1 Name - Hypa Hypa/song.mp3":       "x",
 		"Latin1 Name - Hypa Hypa/M\xe4dchen.jpg": "x",
+		"Linked Txt - Hypa Hypa/song.mp3":        "x",
 	})
+	writeFiles(t, pool, map[string]string{"song.txt": noArtist})
+	if err := os.Symlink(filepath.Join(pool, "song.txt"), filepath.Join(lib, "Linked Txt - Hypa Hypa", "song.txt")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
 	fillable := "Electric Callboy - Hypa Hypa"
 	wantMsg := "#ARTIST is missing or empty; fixtxt fills it from the folder name: Electric Callboy"
 	for _, dry := range []bool{true, false} {
@@ -607,7 +614,7 @@ func TestRunMissingNameTagsHint(t *testing.T) {
 			if s.Moved != dry {
 				t.Errorf("fillable song moved = %v, want %v", s.Moved, dry)
 			}
-			for _, p := range []string{"Hypa Hypa - Electric Callboy", "Undecodable - Hypa Hypa", "Latin1 Name - Hypa Hypa"} {
+			for _, p := range []string{"Hypa Hypa - Electric Callboy", "Undecodable - Hypa Hypa", "Latin1 Name - Hypa Hypa", "Linked Txt - Hypa Hypa"} {
 				found := false
 				for _, f := range findSong(t, r, p).Findings {
 					if f.Code == codeMissingTag {

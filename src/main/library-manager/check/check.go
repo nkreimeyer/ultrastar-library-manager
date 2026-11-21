@@ -160,11 +160,15 @@ func (c *checker) record(res songResult) {
 	}
 }
 
-// fixTxtWouldChange reports whether fixtxt rewrites the song txt of folder, so that it
-// fills a missing #ARTIST/#TITLE from the folder name: it never rewrites a txt with a
-// decode Problem, nor any txt of a folder with a media file name that is not valid UTF-8.
-func fixTxtWouldChange(folder string, d utils.DecodedTxt) bool {
+// fixTxtWouldChange reports whether fixtxt rewrites txt, the song txt of folder, so that
+// it fills a missing #ARTIST/#TITLE from the folder name: it never rewrites a txt with a
+// decode Problem, a symlinked txt (it only lists it in missing_files.txt), nor any txt of
+// a folder with a media file name that is not valid UTF-8.
+func fixTxtWouldChange(folder, txt string, d utils.DecodedTxt) bool {
 	if d.Problem != "" {
+		return false
+	}
+	if st, err := os.Lstat(txt); err != nil || st.Mode()&os.ModeSymlink != 0 {
 		return false
 	}
 	entries, err := os.ReadDir(folder)

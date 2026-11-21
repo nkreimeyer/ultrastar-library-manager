@@ -123,7 +123,7 @@ func (i *Inspector) Inspect(folder string) (Inspection, error) {
 
 	d := utils.DecodeTxt(raw)
 	in := songInput{EncodingProblem: d.Problem, Damaged: d.Damaged}
-	if fixTxtWouldChange(folder, d) {
+	if fixTxtWouldChange(folder, txt, d) {
 		in.FolderName = filepath.Base(folder)
 	}
 	if d.Text != "" {
