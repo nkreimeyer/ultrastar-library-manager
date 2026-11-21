@@ -6,6 +6,7 @@ package fixtxt
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -41,8 +42,10 @@ const (
 	flagBackground
 )
 
-// batchSize is the number of song folders processed concurrently.
-const batchSize = 100
+// workers is the number of song folders processed concurrently. It is the size of the
+// batches the module used before its worker pool, so no more folders (and their open
+// files) are worked on at the same time than before; the work is file I/O, not CPU.
+const workers = 100
 
 // Report file names (in the output dir).
 const (
@@ -122,7 +125,8 @@ func (c *collector) leftUnchanged() {
 // review (the report keeps the fills of earlier runs), and a tag that cannot be filled is
 // noted in missing_files.txt. Songs without a cover or background, or with several audio
 // (video) files to choose #MP3 (#VIDEO) from, are listed in missing_files.txt. Folders are
-// processed concurrently, in batches.
+// processed concurrently by a pool of workers; a panic in one folder is logged and
+// counted as a failure, and the other folders are still processed.
 func Run(cfg config.Config, ops *fsops.Ops) error {
 	folders, err := utils.GetAllSongFolders(ops, cfg.SongDir)
 	if err != nil {
@@ -130,17 +134,13 @@ func Run(cfg config.Config, ops *fsops.Ops) error {
 	}
 
 	col := &collector{}
-	for _, batch := range utils.SplitIntoBatches(folders, batchSize) {
-		var wg sync.WaitGroup
-		for _, folder := range batch {
-			wg.Add(1)
-			go func(folder string) {
-				defer wg.Done()
-				handleFolder(cfg, ops, col, folder)
-			}(folder)
-		}
-		wg.Wait()
-	}
+	_ = utils.ForEachParallel(context.Background(), folders, utils.Parallel{
+		Workers: workers,
+		OnPanic: func(i int, _ any) {
+			log.Errorf("fixtxt: %s not finished: internal error (logged above)", folders[i])
+			ops.Fail()
+		},
+	}, func(_ int, folder string) { handleFolder(cfg, ops, col, folder) })
 
 	writeReport(cfg, ops, missingFilesReport, col.missingFiles)
 	writeReport(cfg, ops, encodingIssuesReport, col.encodingIssues)
