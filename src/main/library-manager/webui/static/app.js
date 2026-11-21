@@ -198,6 +198,7 @@ const S = {
   handled: new Set(),
   org: null, // organize review view
   rem: null, // remove review view
+  rmKeep: new Set(), // songs (paths) of the remove review the reviewer keeps
   chk: null, // check report view
   reports: null, // report viewer: { config, files, shown: { name, text, truncated } }
   aside: null, // set-aside browser: { config, items }
@@ -1081,6 +1082,7 @@ async function onJobEnd(j) {
           S.rem = await get(`/api/remove/analysis?id=${encodeURIComponent(j.result.analysis)}`);
           S.org = S.chk = null;
           S.open = new Set();
+          S.rmKeep = new Set();
           S.view = "review";
         } else {
           S.view = "setup";
@@ -1093,6 +1095,7 @@ async function onJobEnd(j) {
           S.view = "done";
         } else if (j.result?.planChanged) {
           S.rem = await get(`/api/remove/analysis?id=${encodeURIComponent(j.result.analysis)}`);
+          S.rmKeep = new Set();
           S.view = "review";
           S.notice = { kind: "bad", title: "Something changed since you checked, so nothing was moved", text: "Here is the new plan. Look through it again before you remove anything.", details: advanced() ? j.details : null };
         } else if (j.stats?.moved && resultFolders(j)) {
@@ -1514,14 +1517,37 @@ function viewRemoveReview() {
   const rep = v.report;
   const frag = h("div");
   const n = rep.removed.length;
-  add(frag, h("h1", null, n ? `${plural(n, "song", "songs")} would be removed` : "Nothing matches"));
+  const title = h("h1", null);
+  add(frag, title);
   add(frag, noticeBox(S.notice));
   add(frag, h("p", { class: "muted" }, `Checked ${plural(rep.summary.songs, "song", "songs")} in `, h("span", { class: "path" }, v.config.library), "."));
   const tally = h("ul", { class: "tally" });
-  const songItem = (e) => h("li", null, h("strong", null, e.name), " ", h("span", { class: "path" }, e.song),
-    advanced() ? h("span", { class: "muted small" }, ` (${e.pattern})`) : null);
+  const removing = () => n - S.rmKeep.size;
+  const update = () => {
+    const k = removing();
+    go.disabled = k === 0 || v.applied;
+    go.textContent = k ? `Remove ${plural(k, "song", "songs")}` : "Nothing to remove";
+    title.textContent = k ? `${plural(k, "song", "songs")} would be removed` : n ? "Nothing would be removed" : "Nothing matches";
+    for (const c of document.querySelectorAll("input[data-song]")) c.checked = !S.rmKeep.has(c.dataset.song);
+    const all = document.getElementById("rm-all");
+    if (all) all.checked = S.rmKeep.size === 0;
+  };
+  const songItem = (e) => h("li", null, h("label", { class: "check" },
+    h("input", { type: "checkbox", "data-song": e.song, checked: !S.rmKeep.has(e.song), onchange: (ev) => {
+      ev.target.checked ? S.rmKeep.delete(e.song) : S.rmKeep.add(e.song);
+      update();
+    } }),
+    h("span", null, h("strong", null, e.name), " ", h("span", { class: "path" }, e.song),
+      advanced() ? h("span", { class: "muted small" }, ` (${e.pattern})`) : null)));
   tally.append(tallyItem("rm-removed", "move", n, n === 1 ? "song is moved out of the library" : "songs are moved out of the library",
-    () => cappedList(rep.removed, songItem, "rm-removed")));
+    () => h("div", null,
+      h("p", { class: "muted small" }, "Untick a song to keep it in the library."),
+      h("label", { class: "check" }, h("input", { type: "checkbox", id: "rm-all", checked: S.rmKeep.size === 0, onchange: (ev) => {
+        if (ev.target.checked) S.rmKeep.clear();
+        else for (const e of rep.removed) S.rmKeep.add(e.song);
+        update();
+      } }), h("span", null, "All songs")),
+      cappedList(rep.removed, songItem, "rm-removed"))));
   const left = rep.leftInPlace;
   if (left.length) {
     tally.append(tallyItem("rm-left", "stay", left.length, left.length === 1 ? "song matches but stays" : "songs match but stay",
@@ -1535,14 +1561,18 @@ function viewRemoveReview() {
   add(frag, tally);
   const out = v.config.outDir;
   add(frag, h("p", { class: "muted" }, "Removed songs go to ", h("span", { class: "path" }, `${out}/removed`), ". Every move is recorded, so you can undo the whole run afterwards."));
+  const go = h("button", { class: "btn primary", type: "button", disabled: true, onclick: async () => {
+    const k = removing();
+    const ok = await confirmDialog(`Remove ${plural(k, "song", "songs")}?`, [
+      `${plural(k, "song folder goes", "song folders go")} to ${out}/removed. Nothing is deleted.`,
+      S.rmKeep.size ? `${plural(S.rmKeep.size, "song stays", "songs stay")} in the library, as you chose.` : "",
+      "If any song changed since the check, nothing is moved and you see the new plan first.",
+    ].filter(Boolean), `Remove ${plural(k, "song", "songs")}`);
+    if (ok) startJob("/api/remove/apply", { analysis: v.id, keep: [...S.rmKeep] });
+  } }, "Remove");
+  queueMicrotask(update);
   add(frag, h("div", { class: "actions" },
-    h("button", { class: "btn primary", type: "button", disabled: !n || v.applied, onclick: async () => {
-      const ok = await confirmDialog(`Remove ${plural(n, "song", "songs")}?`, [
-        `${plural(n, "song folder goes", "song folders go")} to ${out}/removed. Nothing is deleted.`,
-        "If any song changed since the check, nothing is moved and you see the new plan first.",
-      ], `Remove ${plural(n, "song", "songs")}`);
-      if (ok) startJob("/api/remove/apply", { analysis: v.id });
-    } }, n ? `Remove ${plural(n, "song", "songs")}` : "Nothing to remove"),
+    go,
     h("button", { class: "btn", type: "button", onclick: startAnalysis }, "Check again"),
     h("button", { class: "btn", type: "button", onclick: () => {
       S.view = "setup";

@@ -170,6 +170,8 @@ func (s *Server) handleRemoveAnalysis(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRemoveApply(w http.ResponseWriter, r *http.Request) {
 	var q struct {
 		Analysis string `json:"analysis"`
+		// Keep lists songs of the reviewed plan (their path in the library) to leave in place.
+		Keep []string `json:"keep"`
 	}
 	if !readJSON(w, r, &q) {
 		return
@@ -191,6 +193,24 @@ func (s *Server) handleRemoveApply(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	// What the reviewed plan removes, less the songs to keep.
+	s.mu.Lock()
+	reviewed := slices.Clone(a.removed)
+	s.mu.Unlock()
+	keep := map[string]bool{}
+	for _, p := range q.Keep {
+		if !slices.Contains(reviewed, p) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("%q is not a song of the reviewed plan", p))
+			return
+		}
+		keep[p] = true
+	}
+	expected := slices.DeleteFunc(reviewed, func(p string) bool { return keep[p] })
+	if len(expected) == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("every song is kept, so there is nothing to remove"))
+		return
+	}
+	opts := organize.RemoveOptions{Keep: keep}
 	cfg, err := a.req.config(false)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -208,7 +228,7 @@ func (s *Server) handleRemoveApply(w http.ResponseWriter, r *http.Request) {
 		}
 		c.Progress("inspect", 0, 0)
 		// Plan again, without changing anything, and compare with what was reviewed.
-		if err := organize.Remove(dryCfg, fsops.New(true), patterns); err != nil {
+		if err := organize.RemoveWith(dryCfg, fsops.New(true), patterns, opts); err != nil {
 			return nil, err
 		}
 		data, err := os.ReadFile(cfg.ReportPath(removeReportFile))
@@ -222,14 +242,14 @@ func (s *Server) handleRemoveApply(w http.ResponseWriter, r *http.Request) {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if !slices.Equal(now, a.removed) {
+		if !slices.Equal(now, expected) {
 			var diff []string
 			for _, p := range now {
-				if !slices.Contains(a.removed, p) {
+				if !slices.Contains(expected, p) {
 					diff = append(diff, "now removed: "+p)
 				}
 			}
-			for _, p := range a.removed {
+			for _, p := range expected {
 				if !slices.Contains(now, p) {
 					diff = append(diff, "no longer removed: "+p)
 				}
@@ -238,8 +258,21 @@ func (s *Server) handleRemoveApply(w http.ResponseWriter, r *http.Request) {
 			if n > maxDiffLines {
 				diff = append(diff[:maxDiffLines], fmt.Sprintf("… and %d more", n-maxDiffLines))
 			}
+			// The analysis shows the plan without the songs to keep, as a fresh check would find it:
+			// the changed songs matter, the choices of the reviewer are asked for again.
+			if err := organize.Remove(dryCfg, fsops.New(true), patterns); err != nil {
+				return nil, err
+			}
+			full, err := os.ReadFile(cfg.ReportPath(removeReportFile))
+			if err != nil {
+				return nil, fmt.Errorf("the run made no plan: %w", err)
+			}
+			all, err := removedSongs(full)
+			if err != nil {
+				return nil, fmt.Errorf("reading the plan: %w", err)
+			}
 			s.mu.Lock()
-			a.removed, a.report = now, data
+			a.removed, a.report = all, full
 			s.mu.Unlock()
 			return nil, &detailedError{
 				msg:     fmt.Sprintf("%v: %d song(s) would be handled differently, so nothing was moved; review the new plan", organize.ErrPlanChanged, n),
@@ -250,7 +283,7 @@ func (s *Server) handleRemoveApply(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		a.applied = true
 		s.mu.Unlock()
-		runErr := organize.Remove(cfg, ops, patterns)
+		runErr := organize.RemoveWith(cfg, ops, patterns, opts)
 		res := map[string]any{"analysis": a.id, "outDir": cfg.OutDir, "library": cfg.Library}
 		if data, err := os.ReadFile(cfg.ReportPath(removeReportFile)); err == nil {
 			res["report"] = json.RawMessage(data)

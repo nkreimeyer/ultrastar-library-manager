@@ -248,6 +248,21 @@ func readRemoveSong(ops *fsops.Ops, lib, folder string) removeSong {
 // only if the library cannot be listed, or the journal or a report cannot be written;
 // failed moves are counted in ops.
 func Remove(cfg config.OrganizeConfig, ops *fsops.Ops, patterns []Pattern) error {
+	return RemoveWith(cfg, ops, patterns, RemoveOptions{})
+}
+
+// RemoveOptions are the optional parts of RemoveWith.
+type RemoveOptions struct {
+	// Keep lists songs (their path in the library, with "/") that match a pattern but stay:
+	// the report lists them as left in place, with ReasonKept.
+	Keep map[string]bool
+}
+
+// ReasonKept is the reason of a matching song in RemoveOptions.Keep.
+const ReasonKept = "kept on your request"
+
+// RemoveWith is Remove with options.
+func RemoveWith(cfg config.OrganizeConfig, ops *fsops.Ops, patterns []Pattern, opts RemoveOptions) error {
 	if cfg.Library == "" || len(patterns) == 0 {
 		return errors.New("remove needs a library and at least one pattern")
 	}
@@ -267,6 +282,11 @@ func Remove(cfg config.OrganizeConfig, ops *fsops.Ops, patterns []Pattern) error
 	}, func(i int, folder string) { songs[i] = readRemoveSong(ops, cfg.Library, folder) })
 	sort.Slice(songs, func(a, b int) bool { return songs[a].Rel < songs[b].Rel })
 	ds, counts := planRemove(songs, patterns)
+	for i, d := range ds {
+		if d.Pattern >= 0 && !d.Left && opts.Keep[songs[i].Rel] {
+			ds[i].Left, ds[i].Reason = true, ReasonKept
+		}
+	}
 
 	// The applier journals the moves; it only needs the folder, the path and a label.
 	cands := make([]Candidate, len(songs))
