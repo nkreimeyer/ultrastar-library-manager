@@ -10,6 +10,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/nkreimeyer/library-manager/songtxt"
+	"github.com/nkreimeyer/library-manager/utils"
 )
 
 // Level names, as they appear in the report.
@@ -84,7 +85,7 @@ func (p *planner) languages(song *songtxt.Song, segs []segment) ([]string, strin
 	var codes []string
 	how := ""
 	if v, ok := song.Tag("LANGUAGE"); ok {
-		codes = LanguageCodes(v)
+		codes = utils.LanguageCodes(v)
 		if len(codes) > 0 {
 			how = "tag"
 		}

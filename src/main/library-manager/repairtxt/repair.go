@@ -243,7 +243,7 @@ func scan(ctx context.Context, cfg config.Config, ops *fsops.Ops, lex *Lexicon, 
 						}
 						var langs []string
 						if v, ok := song.Tag("LANGUAGE"); ok {
-							langs = LanguageCodes(v)
+							langs = utils.LanguageCodes(v)
 						}
 						for _, rs := range corpusText(segments([]byte(d.Text), song)) {
 							lex.addText(langs, rs)
