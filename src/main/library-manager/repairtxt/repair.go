@@ -131,12 +131,15 @@ type Report struct {
 	Corpus int  `json:"corpus_txts"`
 	// RepairedBefore counts the undamaged txts left out of the corpus because an earlier
 	// run repaired them.
-	RepairedBefore int          `json:"repaired_before,omitempty"`
-	Damaged        int          `json:"damaged_chars"`
-	Fixed          int          `json:"fixed_chars"`
-	Weak           int          `json:"weak_chars"`
-	Files          []FileReport `json:"files"`
-	Skipped        []Skipped    `json:"skipped,omitempty"`
+	RepairedBefore int `json:"repaired_before,omitempty"`
+	Damaged        int `json:"damaged_chars"`
+	// Fixed and Weak count the repairs of the txts written (in a dry run: that would be
+	// written); a FileReport's Fixed is its plan, also when it is not written (Excluded,
+	// stopped, a failed write).
+	Fixed   int          `json:"fixed_chars"`
+	Weak    int          `json:"weak_chars"`
+	Files   []FileReport `json:"files"`
+	Skipped []Skipped    `json:"skipped,omitempty"`
 	// UnmatchedSections are the "[Artist - Title]" sections of the -words files that name
 	// no damaged txt (a typo, or a song repaired already).
 	UnmatchedSections []string `json:"unmatched_sections,omitempty"`
@@ -411,8 +414,10 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 		}
 		opts.progress(PhaseWrite, i+1, len(damaged))
 		rep.Damaged += fr.Damaged
-		rep.Fixed += fr.Fixed
-		rep.Weak += fr.Weak
+		if fr.Written { // in a dry run: would be written
+			rep.Fixed += fr.Fixed
+			rep.Weak += fr.Weak
+		}
 		rep.Files = append(rep.Files, fr)
 	}
 	log.Infof("repair: %d of %d U+FFFD characters repaired (%d weak), %d left", rep.Fixed, rep.Damaged, rep.Weak, rep.Damaged-rep.Fixed)
@@ -473,7 +478,11 @@ func writeReports(cfg config.Config, ops *fsops.Ops, rep Report) error {
 	b.WriteString("Weak = decided without the usual evidence (a single candidate seen once, or a word the song's language never uses); review those.\n\n")
 	b.WriteString("== Damaged txts (U+FFFD before -> left)\n")
 	for _, f := range rep.Files {
-		fmt.Fprintf(&b, "%5d -> %-4d %s\n", f.Damaged, f.Left, f.Path)
+		left := f.Left
+		if !f.Written {
+			left = f.Damaged
+		}
+		fmt.Fprintf(&b, "%5d -> %-4d %s\n", f.Damaged, left, f.Path)
 	}
 	if len(rep.UnmatchedSections) > 0 {
 		b.WriteString("\n== -words sections that match no damaged txt\n")
@@ -502,6 +511,13 @@ func writeReports(cfg config.Config, ops *fsops.Ops, rep Report) error {
 		fmt.Fprintf(&b, "\n== %s\n   language %s%s; %d of %d repaired, %d left", f.Path, lang, lyr, f.Fixed, f.Damaged, f.Left)
 		if f.Outside > 0 {
 			fmt.Fprintf(&b, " (%d outside tags and notes)", f.Outside)
+		}
+		if f.Fixed > 0 && !f.Written {
+			if f.Excluded {
+				b.WriteString("; excluded, not written")
+			} else {
+				b.WriteString("; not written")
+			}
 		}
 		b.WriteString("\n")
 		for _, x := range f.Fixes {

@@ -78,6 +78,37 @@ func TestRunSkipFiles(t *testing.T) {
 	if st := ops.Stats(); st.Written != 1 || st.Copied != 1 {
 		t.Errorf("stats = %+v", st)
 	}
+	// The totals count only the written txt; the excluded one keeps its plan.
+	if rep.Damaged != 2 || rep.Fixed != 1 || rep.Weak != 0 {
+		t.Errorf("totals: damaged %d, fixed %d, weak %d; want 2, 1, 0", rep.Damaged, rep.Fixed, rep.Weak)
+	}
+	txt, err := os.ReadFile(cfg.ReportPath(ReportTxt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{": 1 repaired", "1 left.", "    1 -> 1    " + rel, "excluded, not written"} {
+		if !strings.Contains(string(txt), want) {
+			t.Errorf("%s lacks %q:\n%s", ReportTxt, want, txt)
+		}
+	}
+}
+
+// TestRunSkipFilesDryRun: a dry run counts what it would write, so an excluded txt is
+// left out of the totals there too.
+func TestRunSkipFilesDryRun(t *testing.T) {
+	cfg, paths, orig := twoDamaged(t)
+	cfg.DryRun = true
+	rel := filepath.Join("A", "A - Eins", "song.txt")
+	if err := Run(cfg, fsops.New(true), Options{SkipFiles: map[string]bool{rel: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if !unchanged(t, paths[0], orig[0]) || !unchanged(t, paths[1], orig[1]) {
+		t.Error("the dry run changed a txt")
+	}
+	rep, _ := readReport(t, cfg)
+	if len(rep.Files) != 2 || rep.Files[0].Written || !rep.Files[1].Written || rep.Damaged != 2 || rep.Fixed != 1 {
+		t.Errorf("report: damaged %d, fixed %d, files %+v", rep.Damaged, rep.Fixed, rep.Files)
+	}
 }
 
 type progressLog struct {
@@ -272,6 +303,10 @@ func TestRunCancelled(t *testing.T) {
 		rep, ok := readReport(t, cfg)
 		if !ok || len(rep.Files) != 2 || !rep.Files[0].Written || rep.Files[1].Written {
 			t.Errorf("report = %+v", rep.Files)
+		}
+		// The second txt was planned but not written: the totals count only the first.
+		if rep.Damaged != 2 || rep.Fixed != 1 || rep.Files[1].Fixed != 1 {
+			t.Errorf("totals: damaged %d, fixed %d (file 2 plans %d)", rep.Damaged, rep.Fixed, rep.Files[1].Fixed)
 		}
 	})
 }
