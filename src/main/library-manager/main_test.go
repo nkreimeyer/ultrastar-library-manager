@@ -537,3 +537,21 @@ func TestRunRepairCommand(t *testing.T) {
 		t.Errorf("original not kept: %v", err)
 	}
 }
+
+// The usage names every subcommand.
+func TestUsageNamesSubcommands(t *testing.T) {
+	oldArgs, oldFlags := os.Args, flag.CommandLine
+	t.Cleanup(func() { os.Args, flag.CommandLine = oldArgs, oldFlags })
+	os.Args = []string{"library-manager", "-h"}
+	flag.CommandLine = flag.NewFlagSet("library-manager", flag.ContinueOnError)
+	var buf strings.Builder
+	flag.CommandLine.SetOutput(&buf)
+	if got := run(); got != exitOK && got != exitUsage {
+		t.Fatalf("-h = %d", got)
+	}
+	for _, cmd := range []string{"organize", "dedupe", "add", "remove", "repair", "ui"} {
+		if !strings.Contains(buf.String(), "library-manager "+cmd+" ") {
+			t.Errorf("usage does not name %q:\n%s", cmd, buf.String())
+		}
+	}
+}
