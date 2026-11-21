@@ -4,24 +4,22 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/nkreimeyer/library-manager/fsops"
 
-	log "github.com/sirupsen/logrus"
-	logtest "github.com/sirupsen/logrus/hooks/test"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // checkTrees asserts the files left in the library and the files moved to extra-files.
 func checkTrees(t *testing.T, libRoot, extraRoot string, wantLib, wantExtra []string) {
 	t.Helper()
-	if got := files(tree(t, libRoot)); !reflect.DeepEqual(got, wantLib) {
+	if got := files(testutil.Tree(t, libRoot)); !reflect.DeepEqual(got, wantLib) {
 		t.Errorf("library files = %q, want %q", got, wantLib)
 	}
 	var gotExtra []string
 	if _, err := os.Stat(extraRoot); err == nil {
-		gotExtra = files(tree(t, extraRoot))
+		gotExtra = files(testutil.Tree(t, extraRoot))
 	}
 	if !reflect.DeepEqual(gotExtra, wantExtra) {
 		t.Errorf("extra files = %q, want %q", gotExtra, wantExtra)
@@ -141,11 +139,11 @@ func TestMediaTagsMustNameAnExistingFile(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				cfg := newEnv(t, dry)
-				writeFiles(t, cfg.SongDir, tc.library)
+				testutil.WriteFiles(t, cfg.SongDir, tc.library)
 				for rel, wh := range tc.pngs {
 					writePNG(t, filepath.Join(cfg.SongDir, rel), wh[0], wh[1])
 				}
-				before := tree(t, cfg.SongDir)
+				before := testutil.Tree(t, cfg.SongDir)
 				ops := fsops.New(dry)
 				st := runOps(t, cfg, ops)
 				if st.Failed != 0 {
@@ -155,7 +153,7 @@ func TestMediaTagsMustNameAnExistingFile(t *testing.T) {
 					t.Errorf("moved = %d, want %d", st.Moved, len(tc.wantExtra))
 				}
 				if dry {
-					if after := tree(t, cfg.SongDir); !reflect.DeepEqual(before, after) {
+					if after := testutil.Tree(t, cfg.SongDir); !reflect.DeepEqual(before, after) {
 						t.Errorf("library changed in dry-run:\nbefore %q\nafter  %q", before, after)
 					}
 					return
@@ -170,7 +168,7 @@ func TestMediaTagsMustNameAnExistingFile(t *testing.T) {
 // nothing is known to be unreferenced, and it has too many entries for invalid/.
 func TestFolderWithoutTxtIsLeftAlone(t *testing.T) {
 	cfg := newEnv(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{"Broken/a.mp3": "a", "Broken/b.jpg": "b"})
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{"Broken/a.mp3": "a", "Broken/b.jpg": "b"})
 	ops := fsops.New(false)
 	if st := runOps(t, cfg, ops); st.Failed != 0 || st.Moved != 0 {
 		t.Errorf("stats = %+v, want no moves and no failures", st)
@@ -183,7 +181,7 @@ func TestFolderWithoutTxtIsLeftAlone(t *testing.T) {
 
 func TestUpperCaseUsdbIsKept(t *testing.T) {
 	cfg := newEnv(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Song/Song.txt": songTxt, "Song/song.mp3": "a", "Song/song.USDB": "u", "Song/junk.nfo": "x",
 	})
 	run(t, cfg)
@@ -191,38 +189,14 @@ func TestUpperCaseUsdbIsKept(t *testing.T) {
 		[]string{"Song/Song.txt", "Song/song.USDB", "Song/song.mp3"}, []string{"Song/junk.nfo"})
 }
 
-// errorLogs returns the messages of the error-level entries logged during fn.
-func errorLogs(t *testing.T, fn func()) []string {
-	t.Helper()
-	hook := logtest.NewGlobal()
-	defer log.StandardLogger().ReplaceHooks(make(log.LevelHooks))
-	fn()
-	var msgs []string
-	for _, e := range hook.AllEntries() {
-		if e.Level <= log.ErrorLevel {
-			msgs = append(msgs, e.Message)
-		}
-	}
-	return msgs
-}
-
-func containsPrefix(msgs []string, prefix string) bool {
-	for _, m := range msgs {
-		if strings.HasPrefix(m, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
 // Successful moves to invalid/ and extra-files/ log no error.
 func TestSuccessfulMovesLogNoError(t *testing.T) {
 	cfg := newEnv(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Good/Song.txt": songTxt, "Good/song.mp3": "a", "Good/junk.nfo": "x", "Broken/lonely.mp3": "a",
 	})
 	ops := fsops.New(false)
-	msgs := errorLogs(t, func() { runOps(t, cfg, ops) })
+	msgs := testutil.ErrorLogs(t, func() { runOps(t, cfg, ops) })
 	if st := ops.Stats(); st.Moved != 2 || st.Failed != 0 {
 		t.Errorf("stats = %+v, want 2 moves and no failures", st)
 	}
@@ -248,21 +222,21 @@ func TestFailedMovesAreLoggedAndCounted(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := newEnv(t, false)
-			writeFiles(t, cfg.SongDir, tc.library)
+			testutil.WriteFiles(t, cfg.SongDir, tc.library)
 			// A regular file where the target folder should be makes every move into it fail.
 			if err := os.WriteFile(filepath.Join(cfg.OutDir, tc.blocked), []byte("file"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			before := tree(t, cfg.SongDir)
+			before := testutil.Tree(t, cfg.SongDir)
 			ops := fsops.New(false)
-			msgs := errorLogs(t, func() { runOps(t, cfg, ops) })
+			msgs := testutil.ErrorLogs(t, func() { runOps(t, cfg, ops) })
 			if st := ops.Stats(); st.Failed == 0 || st.Moved != 0 {
 				t.Errorf("stats = %+v, want a failure and no moves", st)
 			}
-			if !containsPrefix(msgs, tc.logPrefix) {
+			if !testutil.ContainsPrefix(msgs, tc.logPrefix) {
 				t.Errorf("error logs %q, want one starting with %q", msgs, tc.logPrefix)
 			}
-			if after := tree(t, cfg.SongDir); !reflect.DeepEqual(before, after) {
+			if after := testutil.Tree(t, cfg.SongDir); !reflect.DeepEqual(before, after) {
 				t.Errorf("library changed:\nbefore %q\nafter  %q", before, after)
 			}
 		})
@@ -272,7 +246,7 @@ func TestFailedMovesAreLoggedAndCounted(t *testing.T) {
 // filterEntries skips a folder it cannot list and counts it once.
 func TestFilterEntriesSkipsUnreadableFolder(t *testing.T) {
 	cfg := newEnv(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{"Good/Song.txt": songTxt, "Good/song.mp3": "a"})
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{"Good/Song.txt": songTxt, "Good/song.mp3": "a"})
 	good, gone := filepath.Join(cfg.SongDir, "Good"), filepath.Join(cfg.SongDir, "Gone")
 	ops := fsops.New(false)
 	for range 2 {

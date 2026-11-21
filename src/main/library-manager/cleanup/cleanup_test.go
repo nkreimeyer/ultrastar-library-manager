@@ -12,23 +12,10 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 const songTxt = "#TITLE:Song\n#ARTIST:Artist\n#MP3:song.mp3\n#COVER:cover.jpg\n: 0 1 0 la\nE\n"
-
-// writeFiles creates the given files (path relative to root -> content) below root.
-func writeFiles(t *testing.T, root string, files map[string]string) {
-	t.Helper()
-	for rel, content := range files {
-		path := filepath.Join(root, rel)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
 
 // newEnv returns a config with a fresh library and a separate fresh output folder.
 func newEnv(t *testing.T, dryRun bool) config.Config {
@@ -50,37 +37,6 @@ func run(t *testing.T, cfg config.Config) {
 	if st := ops.Stats(); st.Failed != 0 {
 		t.Fatalf("%d failed operations", st.Failed)
 	}
-}
-
-// tree returns all paths below root (relative, slash-separated) mapped to their content
-// ("<dir>" for folders).
-func tree(t *testing.T, root string) map[string]string {
-	t.Helper()
-	got := map[string]string{}
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil || rel == "." {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-		if d.IsDir() {
-			got[rel] = "<dir>"
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		got[rel] = string(data)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return got
 }
 
 func files(m map[string]string) []string {
@@ -190,15 +146,15 @@ func TestRun(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := newEnv(t, false)
-			writeFiles(t, cfg.SongDir, tc.library)
+			testutil.WriteFiles(t, cfg.SongDir, tc.library)
 			run(t, cfg)
 
-			if got := files(tree(t, cfg.SongDir)); !reflect.DeepEqual(got, tc.wantLib) {
+			if got := files(testutil.Tree(t, cfg.SongDir)); !reflect.DeepEqual(got, tc.wantLib) {
 				t.Errorf("library files = %q, want %q", got, tc.wantLib)
 			}
 			var gotExtra []string
 			if _, err := os.Stat(cfg.ExtraFilesDir()); err == nil {
-				gotExtra = files(tree(t, cfg.ExtraFilesDir()))
+				gotExtra = files(testutil.Tree(t, cfg.ExtraFilesDir()))
 			}
 			if !reflect.DeepEqual(gotExtra, tc.wantExtra) {
 				t.Errorf("extra files = %q, want %q", gotExtra, tc.wantExtra)
@@ -215,12 +171,12 @@ func TestRun(t *testing.T) {
 func TestInvalidFolderCollision(t *testing.T) {
 	cfg := newEnv(t, false)
 	good := map[string]string{"Cat/Good/Song.txt": songTxt, "Cat/Good/song.mp3": "audio"}
-	writeFiles(t, cfg.SongDir, good)
+	testutil.WriteFiles(t, cfg.SongDir, good)
 
 	for i, want := range []string{"Cat/Broken", "Cat/Broken (2)"} {
-		writeFiles(t, cfg.SongDir, map[string]string{"Cat/Broken/lonely.mp3": "run " + want})
+		testutil.WriteFiles(t, cfg.SongDir, map[string]string{"Cat/Broken/lonely.mp3": "run " + want})
 		run(t, cfg)
-		got := tree(t, cfg.InvalidDir())
+		got := testutil.Tree(t, cfg.InvalidDir())
 		if got[want+"/lonely.mp3"] != "run "+want {
 			t.Fatalf("run %d: invalid tree = %q, want %s/lonely.mp3", i+1, got, want)
 		}
@@ -232,7 +188,7 @@ func TestInvalidFolderCollision(t *testing.T) {
 
 func TestDryRunLeavesLibraryUntouched(t *testing.T) {
 	cfg := newEnv(t, true)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Cat/Song/Song.txt":     songTxt,
 		"Cat/Song/song.mp3":     "audio",
 		"Cat/Song/junk.jpg":     "junk",
@@ -241,9 +197,9 @@ func TestDryRunLeavesLibraryUntouched(t *testing.T) {
 		"Flat/song.mp3":         "audio",
 		"Flat/extra.nfo":        "junk",
 	})
-	before := tree(t, cfg.SongDir)
+	before := testutil.Tree(t, cfg.SongDir)
 	run(t, cfg)
-	if after := tree(t, cfg.SongDir); !reflect.DeepEqual(before, after) {
+	if after := testutil.Tree(t, cfg.SongDir); !reflect.DeepEqual(before, after) {
 		t.Errorf("library changed in dry-run:\nbefore %q\nafter  %q", before, after)
 	}
 	for _, dir := range []string{cfg.InvalidDir(), cfg.ExtraFilesDir()} {
@@ -265,23 +221,23 @@ func runOps(t *testing.T, cfg config.Config, ops *fsops.Ops) fsops.Stats {
 func TestNonUTF8FileNamesAreNotMoved(t *testing.T) {
 	cfg := newEnv(t, false)
 	// The txt was converted to UTF-8, the file name is still CP1252 ("M\xe4dchen").
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Song/Song.txt":       "#TITLE:Mädchen\n#MP3:Mädchen.mp3\n",
 		"Song/M\xe4dchen.mp3": "audio",
 		"Song/junk.jpg":       "junk",
 	})
 	run(t, cfg)
-	if got, want := files(tree(t, cfg.SongDir)), []string{"Song/M\xe4dchen.mp3", "Song/Song.txt"}; !reflect.DeepEqual(got, want) {
+	if got, want := files(testutil.Tree(t, cfg.SongDir)), []string{"Song/M\xe4dchen.mp3", "Song/Song.txt"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("library files = %q, want %q", got, want)
 	}
-	if got, want := files(tree(t, cfg.ExtraFilesDir())), []string{"Song/junk.jpg"}; !reflect.DeepEqual(got, want) {
+	if got, want := files(testutil.Tree(t, cfg.ExtraFilesDir())), []string{"Song/junk.jpg"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("extra files = %q, want %q", got, want)
 	}
 }
 
 func TestHiddenFilesDoNotCountAsSongContent(t *testing.T) {
 	cfg := newEnv(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Cat/Good/Song.txt":           songTxt,
 		"Cat/Good/song.mp3":           "audio",
 		"Cat/Broken/lonely.mp3":       "audio",
@@ -290,14 +246,14 @@ func TestHiddenFilesDoNotCountAsSongContent(t *testing.T) {
 	})
 	run(t, cfg)
 	want := []string{"Cat/Broken/._lonely.mp3", "Cat/Broken/@eaDir/thumb.jpg", "Cat/Broken/lonely.mp3"}
-	if got := files(tree(t, cfg.InvalidDir())); !reflect.DeepEqual(got, want) {
+	if got := files(testutil.Tree(t, cfg.InvalidDir())); !reflect.DeepEqual(got, want) {
 		t.Errorf("invalid files = %q, want %q", got, want)
 	}
 }
 
 func TestSymlinkToFolderIsLeftAlone(t *testing.T) {
 	cfg := newEnv(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{"Song/Song.txt": songTxt, "Song/song.mp3": "audio"})
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{"Song/Song.txt": songTxt, "Song/song.mp3": "audio"})
 	if err := os.Symlink(t.TempDir(), filepath.Join(cfg.SongDir, "Song", "videos")); err != nil {
 		t.Skipf("symlinks not supported: %v", err)
 	}
@@ -314,7 +270,7 @@ func TestSymlinkToFolderIsLeftAlone(t *testing.T) {
 // invalid/Cat/Song: the now empty Cat folder is merged into invalid/Cat.
 func TestEmptiedCategoryIsMerged(t *testing.T) {
 	cfg := newEnv(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Cat/Song/lonely.mp3": "audio",
 		"Other/Good/Song.txt": songTxt,
 		"Other/Good/song.mp3": "audio",
@@ -331,7 +287,7 @@ func TestEmptiedCategoryIsMerged(t *testing.T) {
 		t.Errorf("Cat still in the library (err=%v)", err)
 	}
 	want := map[string]string{"Cat": "<dir>", "Cat/Song": "<dir>", "Cat/Song/lonely.mp3": "audio"}
-	if got := tree(t, cfg.InvalidDir()); !reflect.DeepEqual(got, want) {
+	if got := testutil.Tree(t, cfg.InvalidDir()); !reflect.DeepEqual(got, want) {
 		t.Errorf("invalid tree = %q, want %q (no \"Cat (2)\")", got, want)
 	}
 }
@@ -340,14 +296,14 @@ func TestEmptiedCategoryIsMerged(t *testing.T) {
 // would move to invalid/ is still on disk, but is planned as empty, like in a real run.
 func TestDryRunIgnoresPlannedMoves(t *testing.T) {
 	cfg := newEnv(t, true)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Cat/A/lonely.mp3":    "audio",
 		"Cat/B/lonely.mp3":    "audio",
 		"Other/Good/Song.txt": songTxt,
 		"Other/Good/song.mp3": "audio",
 		"Other/Good/junk.jpg": "junk",
 	})
-	before := tree(t, cfg.SongDir)
+	before := testutil.Tree(t, cfg.SongDir)
 	ops := fsops.New(true)
 	for _, rel := range []string{"Cat/A", "Cat/B", "Other/Good/junk.jpg"} {
 		p := filepath.Join(cfg.SongDir, rel)
@@ -359,7 +315,7 @@ func TestDryRunIgnoresPlannedMoves(t *testing.T) {
 	if st := runOps(t, cfg, ops); st.Failed != 0 || st.Moved != 4 {
 		t.Fatalf("stats = %+v, want 4 planned moves and no failures", st)
 	}
-	if after := tree(t, cfg.SongDir); !reflect.DeepEqual(before, after) {
+	if after := testutil.Tree(t, cfg.SongDir); !reflect.DeepEqual(before, after) {
 		t.Errorf("library changed in dry-run:\nbefore %q\nafter  %q", before, after)
 	}
 }
@@ -369,7 +325,7 @@ func TestUnreadableSongTxtMovesNothing(t *testing.T) {
 		t.Skip("root can read every file")
 	}
 	cfg := newEnv(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		// Discovery finds A.txt; B.txt may be the newer song txt that references junk.jpg.
 		"Song/A.txt":     songTxt,
 		"Song/B.txt":     "#TITLE:Song\n#MP3:song.mp3\n#BACKGROUND:junk.jpg\n",
@@ -428,7 +384,7 @@ func tree0(t *testing.T, root string) []string {
 
 func TestUntaggedMediaIsKept(t *testing.T) {
 	cfg := newEnv(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		// No #MP3/#AUDIO/#VIDEO yet (fixtxt could not choose, or dry-run): media stays.
 		"A/song.txt": "#TITLE:A\n#ARTIST:A\n: 0 1 0 la\nE\n",
 		"A/one.mp3":  "a",
@@ -443,17 +399,17 @@ func TestUntaggedMediaIsKept(t *testing.T) {
 	})
 	run(t, cfg)
 	want := []string{"A/clip.mp4", "A/one.mp3", "A/song.txt", "A/two.mp3", "B/clip.mp4", "B/one.mp3", "B/song.txt"}
-	if got := files(tree(t, cfg.SongDir)); !reflect.DeepEqual(got, want) {
+	if got := files(testutil.Tree(t, cfg.SongDir)); !reflect.DeepEqual(got, want) {
 		t.Errorf("library files = %q, want %q", got, want)
 	}
-	if got := files(tree(t, cfg.ExtraFilesDir())); !reflect.DeepEqual(got, []string{"A/junk.nfo", "B/other.mp3"}) {
+	if got := files(testutil.Tree(t, cfg.ExtraFilesDir())); !reflect.DeepEqual(got, []string{"A/junk.nfo", "B/other.mp3"}) {
 		t.Errorf("extra files = %q", got)
 	}
 }
 
 func TestUntaggedCoverAndProblemTxtsAreKept(t *testing.T) {
 	cfg := newEnv(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		// No #COVER tag yet: the square image fixtxt would pick stays, other clutter goes.
 		"A/song.txt": "#TITLE:A\n#ARTIST:A\n#MP3:song.mp3\n: 0 1 0 la\nE\n",
 		"A/song.mp3": "a",
@@ -466,7 +422,7 @@ func TestUntaggedCoverAndProblemTxtsAreKept(t *testing.T) {
 	writePNG(t, filepath.Join(cfg.SongDir, "A", "cover.png"), 4, 4)
 	run(t, cfg)
 	want := []string{"A/cover.png", "A/song.mp3", "A/song.txt", "B/junk.nfo", "B/song.mp3", "B/song.txt"}
-	if got := files(tree(t, cfg.SongDir)); !reflect.DeepEqual(got, want) {
+	if got := files(testutil.Tree(t, cfg.SongDir)); !reflect.DeepEqual(got, want) {
 		t.Errorf("library files = %q, want %q", got, want)
 	}
 }
@@ -487,7 +443,7 @@ func writePNG(t *testing.T, path string, w, h int) {
 // other images are clutter.
 func TestUntaggedHintedImagesAreKept(t *testing.T) {
 	cfg := newEnv(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"A/song.txt": "#TITLE:A\n#ARTIST:A\n#MP3:song.mp3\n: 0 1 0 la\nE\n",
 		"A/song.mp3": "a",
 		// Lossless WebP header (VP8L) of 640x360, hinted as background.
@@ -502,10 +458,10 @@ func TestUntaggedHintedImagesAreKept(t *testing.T) {
 	writePNG(t, filepath.Join(cfg.SongDir, "B", "b.png"), 600, 600)
 	run(t, cfg)
 	want := []string{"A/Song [BG].webp", "A/Song [CO].png", "A/song.mp3", "A/song.txt", "B/a.png", "B/song.mp3", "B/song.txt"}
-	if got := files(tree(t, cfg.SongDir)); !reflect.DeepEqual(got, want) {
+	if got := files(testutil.Tree(t, cfg.SongDir)); !reflect.DeepEqual(got, want) {
 		t.Errorf("library files = %q, want %q", got, want)
 	}
-	if got, want := files(tree(t, cfg.ExtraFilesDir())), []string{"A/square.png", "A/wide.png", "B/b.png"}; !reflect.DeepEqual(got, want) {
+	if got, want := files(testutil.Tree(t, cfg.ExtraFilesDir())), []string{"A/square.png", "A/wide.png", "B/b.png"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("extra files = %q, want %q", got, want)
 	}
 }
