@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
@@ -89,5 +90,63 @@ func TestParkNameGivesUp(t *testing.T) {
 	nextParkNames(t, dir, 10000)
 	if p, err := parkName(filepath.Join(dir, "Song")); err == nil || !strings.Contains(err.Error(), "no free temporary name") {
 		t.Errorf("parkName with the next 10000 names taken = %q, %v, want an error", p, err)
+	}
+}
+
+// A file name close to NAME_MAX (255 bytes) still gets a temp file next to it: the temp
+// names carry only the first maxTempBase bytes of it, cut at a rune boundary, so a long
+// txt is rewritten and a long video or audio file is processed instead of failing with
+// ENAMETOOLONG on every run.
+func TestTempNamesForLongFileNames(t *testing.T) {
+	dir := t.TempDir()
+	// 2 + 82*3 + 4 = 252 bytes; byte 100 is inside an "あ", so the cut must step back.
+	stem := "ab" + strings.Repeat("あ", 82)
+
+	txt := filepath.Join(dir, stem+".txt")
+	writeFile(t, txt, "#TITLE:old\n", 0o644)
+	o := New(false)
+	if changed, err := o.WriteFileAtomic(txt, []byte("#TITLE:new\n")); !changed || err != nil {
+		t.Fatalf("WriteFileAtomic on a %d-byte name = %v, %v", len(filepath.Base(txt)), changed, err)
+	}
+	if got := readFile(t, txt); got != "#TITLE:new\n" {
+		t.Errorf("rewritten txt = %q", got)
+	}
+
+	report := filepath.Join(dir, "reports", stem+".txt")
+	if err := o.WriteReport(report, []byte("r\n")); err != nil {
+		t.Fatalf("WriteReport on a long name: %v", err)
+	}
+	if got := readFile(t, report); got != "r\n" {
+		t.Errorf("report = %q", got)
+	}
+	if o.Stats().Failed != 0 {
+		t.Errorf("Failed = %d, want 0", o.Stats().Failed)
+	}
+
+	video := filepath.Join(dir, stem+".avi")
+	writeFile(t, video, "v", 0o640)
+	tmp, err := TempFileNear(video, ".mp4")
+	if err != nil {
+		t.Fatalf("TempFileNear on a %d-byte name: %v", len(filepath.Base(video)), err)
+	}
+	// Hidden, valid UTF-8, the marker other code looks for, and the extension ffmpeg picks
+	// the muxer from.
+	if name := filepath.Base(tmp); filepath.Dir(tmp) != dir || !strings.HasPrefix(name, ".ab") ||
+		!strings.Contains(name, ".sanitizer-") || !strings.HasSuffix(name, ".mp4") || !utf8.ValidString(name) {
+		t.Errorf("TempFileNear name %q, want a hidden .<stem>.sanitizer-*.mp4 name in %s", name, dir)
+	}
+	if st, err := os.Stat(tmp); err != nil || st.Mode().Perm() != 0o640 {
+		t.Errorf("TempFileNear file: %v, %v; want mode 0640", st, err)
+	}
+	os.Remove(tmp)
+	// Only the files themselves are left: no temp file of the writes stayed behind.
+	if names := dirNames(t, dir); len(names) != 3 {
+		t.Errorf("files left in %s: %q, want the txt, the video and reports/", dir, names)
+	}
+	if got, want := tempBase(stem+".txt"), "ab"+strings.Repeat("あ", 32); got != want {
+		t.Errorf("tempBase cut = %q (%d bytes), want %q", got, len(got), want)
+	}
+	if short := "Artist - Song.txt"; tempBase(short) != short {
+		t.Errorf("tempBase(%q) = %q, want it unchanged", short, tempBase(short))
 	}
 }

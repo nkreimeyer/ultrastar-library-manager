@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"unicode/utf8"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -137,7 +138,7 @@ func (o *Ops) WriteFileAtomic(path string, data []byte) (bool, error) {
 		return true, nil
 	}
 
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+tempBase(filepath.Base(path))+".*.tmp")
 	if err != nil {
 		return false, o.fail(fmt.Errorf("creating temp file for %s: %w", path, err))
 	}
@@ -201,7 +202,7 @@ func (o *Ops) WriteReport(path string, data []byte) error {
 	}
 	// Write atomically (temp file + rename): a crash must not truncate a report or the
 	// media journal.
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+tempBase(filepath.Base(path))+".*.tmp")
 	if err != nil {
 		return o.fail(fmt.Errorf("writing report %s: %w", path, err))
 	}
@@ -685,7 +686,8 @@ func (o *Ops) Remove(path string) error {
 // keeps them. ffmpeg keeps the mode of an existing output file. The caller must pass ffmpeg
 // "-y" because the file already exists, and must remove it on failure.
 func TempFileNear(target, ext string) (string, error) {
-	f, err := os.CreateTemp(filepath.Dir(target), "."+strings.TrimSuffix(filepath.Base(target), filepath.Ext(target))+".sanitizer-*"+ext)
+	stem := strings.TrimSuffix(filepath.Base(target), filepath.Ext(target))
+	f, err := os.CreateTemp(filepath.Dir(target), "."+tempBase(stem)+".sanitizer-*"+ext)
 	if err != nil {
 		return "", err
 	}
@@ -704,6 +706,24 @@ func TempFileNear(target, ext string) (string, error) {
 		return "", err
 	}
 	return name, nil
+}
+
+// maxTempBase is the most bytes of a file name that go into a temp name next to it. The
+// rest of the temp name (".", ".<random>.tmp", ".sanitizer-<random>.mp4") then always fits
+// NAME_MAX (255 bytes on ext4 and most other file systems), even for a name close to it.
+const maxTempBase = 100
+
+// tempBase returns name cut to at most maxTempBase bytes, at a rune boundary, for use in a
+// temp name: the temp file keeps a recognizable name without growing past NAME_MAX.
+func tempBase(name string) string {
+	if len(name) <= maxTempBase {
+		return name
+	}
+	n := maxTempBase
+	for n > 0 && !utf8.RuneStart(name[n]) {
+		n--
+	}
+	return name[:n]
 }
 
 // reserveTarget returns a path based on want that neither exists nor is reserved by a
