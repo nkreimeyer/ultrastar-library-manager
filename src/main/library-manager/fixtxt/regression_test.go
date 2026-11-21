@@ -9,23 +9,11 @@ import (
 	"time"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	"github.com/nkreimeyer/library-manager/songtxt"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
-
-// captureLogs records the log entries of the test at the given level.
-func captureLogs(t *testing.T, level log.Level) *logtest.Hook {
-	t.Helper()
-	hook := logtest.NewGlobal()
-	old := log.GetLevel()
-	log.SetLevel(level)
-	t.Cleanup(func() {
-		log.SetLevel(old)
-		log.StandardLogger().ReplaceHooks(make(log.LevelHooks))
-	})
-	return hook
-}
 
 // messages returns the logged messages that contain substr.
 func messages(hook *logtest.Hook, substr string) []string {
@@ -66,7 +54,7 @@ func TestRemoveDuplicateTagsIgnoresBody(t *testing.T) {
 func TestRunKeepsHeaderTagWhenRepeatedAfterEnd(t *testing.T) {
 	cfg := newLibrary(t, false)
 	txt := "#TITLE:Song\n#ARTIST:Artist\n#MP3:a.mp3\n#BPM:300\n: 0 4 0 La\n#MP3:b.mp3\nE\n#BPM:30\n#mp3:c.mp3\n"
-	writeFiles(t, cfg.SongDir, map[string]string{"Artist - Song/song.txt": txt, "Artist - Song/a.mp3": "x"})
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{"Artist - Song/song.txt": txt, "Artist - Song/a.mp3": "x"})
 	run(t, cfg)
 	if got := readFile(t, filepath.Join(cfg.SongDir, "Artist - Song", "song.txt")); got != txt {
 		t.Errorf("txt changed:\n%s\nwant:\n%s", got, txt)
@@ -76,7 +64,7 @@ func TestRunKeepsHeaderTagWhenRepeatedAfterEnd(t *testing.T) {
 // Note lines (also with ":" in the lyrics) and "#" lines in the body are copied unchanged.
 func TestFixTxtLinesKeepsBody(t *testing.T) {
 	dir := t.TempDir()
-	writeFiles(t, dir, map[string]string{"a.mp3": "a"})
+	testutil.WriteFiles(t, dir, map[string]string{"a.mp3": "a"})
 	in := []string{"#TITLE:T\n", "#ARTIST:A\n", "#MP3:gone.mp3\n", ": 0 4 0 Hey:\n", ": 4 4 0 you\n", "- 8\n", ": 10 2 0 la\n", "#VIDEO:x.mp4\n", "E\n"}
 	got, _, _ := fixTxtLines(in, dir, songFiles{audio: []string{"a.mp3"}})
 	want := slices.Clone(in)
@@ -100,7 +88,7 @@ func TestFixTxtLinesWithoutHeader(t *testing.T) {
 // Txts with fewer than 3 lines are returned unchanged; from 3 lines on they are fixed.
 func TestFixTxtLinesShortFiles(t *testing.T) {
 	dir := t.TempDir()
-	writeFiles(t, dir, map[string]string{"a.mp3": "a"})
+	testutil.WriteFiles(t, dir, map[string]string{"a.mp3": "a"})
 	files := songFiles{audio: []string{"a.mp3"}}
 	two := []string{"#TITLE:x\n", "#MP3:gone.mp3\n"}
 	if got, notes, filled := fixTxtLines(slices.Clone(two), dir, files); !slices.Equal(got, two) || notes != nil || filled != nil {
@@ -129,8 +117,8 @@ func TestRunKeepsSongWithSymlinkedTxt(t *testing.T) {
 			ext := t.TempDir()
 			target := filepath.Join(ext, "real.txt")
 			txt := songTxt(tc.mp3)
-			writeFiles(t, ext, map[string]string{"real.txt": txt})
-			writeFiles(t, cfg.SongDir, map[string]string{"Song/song.mp3": "audio"})
+			testutil.WriteFiles(t, ext, map[string]string{"real.txt": txt})
+			testutil.WriteFiles(t, cfg.SongDir, map[string]string{"Song/song.mp3": "audio"})
 			link := filepath.Join(cfg.SongDir, "Song", "song.txt")
 			if err := os.Symlink(target, link); err != nil {
 				t.Fatal(err)
@@ -178,7 +166,7 @@ func TestRunFixesFileTagWithBlanks(t *testing.T) {
 			for name, content := range media {
 				files["Artist - Song/"+name] = content
 			}
-			writeFiles(t, cfg.SongDir, files)
+			testutil.WriteFiles(t, cfg.SongDir, files)
 			writeTestPNG(t, filepath.Join(cfg.SongDir, "Artist - Song", "sq.png"), 10, 10)
 			writeTestPNG(t, filepath.Join(cfg.SongDir, "Artist - Song", "wide.png"), 64, 36)
 			run(t, cfg)
@@ -242,7 +230,7 @@ func TestMissingReportFollowsWrittenImageTags(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := newLibrary(t, false)
-			writeFiles(t, cfg.SongDir, map[string]string{
+			testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 				"Song/song.txt":   songTxt("#MP3:song.mp3", tc.header),
 				"Song/song.mp3":   "a",
 				"Song/broken.png": "not an image",
@@ -267,7 +255,7 @@ func TestMissingReportFollowsWrittenImageTags(t *testing.T) {
 // images gets both notes, also when its txt cannot be decoded (detection fallback).
 func TestMissingReportCompleteAndUndecodable(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Song/song.txt": songTxt("#MP3:song.mp3", "#VIDEO:clip.mp4", "#COVER:cover.png"),
 		"Song/song.mp3": "a",
 		"Song/clip.mp4": "v",
@@ -279,7 +267,7 @@ func TestMissingReportCompleteAndUndecodable(t *testing.T) {
 	}
 
 	cfg = newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Bad/song.txt": "#TITLE:\xe4\x81\n#ARTIST:A\n#MP3:song.mp3\n#COVER:c.png\n: 0 1 0 x\nE\n",
 		"Bad/song.mp3": "audio",
 	})
@@ -333,7 +321,7 @@ func TestRunChoosesAudioOnlyOnUniqueMatch(t *testing.T) {
 // Without #ARTIST the "<#ARTIST> - <#TITLE>" preference is skipped (it would be " - Song").
 func TestRunSkipsArtistTitlePreferenceWithoutArtist(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"X/x.txt":       "#TITLE:Song\n" + notesBody,
 		"X/a.mp3":       "a",
 		"X/ - Song.mp3": "a",
@@ -406,7 +394,7 @@ func TestRunChoosesOnlyVideo(t *testing.T) {
 // Missing file tags are inserted as line 2, in the order MP3, VIDEO, COVER, BACKGROUND.
 func TestRunInsertsMissingTagsAsLine2(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Artist - Song/song.txt": songTxt("#VIDEOGAP:2"),
 		"Artist - Song/song.mp3": "a",
 		"Artist - Song/clip.mp4": "v",
@@ -423,7 +411,7 @@ func TestRunInsertsMissingTagsAsLine2(t *testing.T) {
 // A tagged image that does not exist or cannot be read is replaced by the detected one.
 func TestRunReplacesUnreadableTaggedImages(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Song/song.txt":   songTxt("#MP3:song.mp3", "#COVER:gone.png", "#BACKGROUND:broken.png"),
 		"Song/song.mp3":   "a",
 		"Song/broken.png": "not an image",
@@ -447,7 +435,7 @@ func TestDropEncodingTag(t *testing.T) {
 
 func TestResolveFileTag(t *testing.T) {
 	dir := t.TempDir()
-	writeFiles(t, dir, map[string]string{"a.mp3": "a", "\xe4.mp3": "a"})
+	testutil.WriteFiles(t, dir, map[string]string{"a.mp3": "a", "\xe4.mp3": "a"})
 	choice := fileChoice{name: "a.mp3", candidates: 2}
 	tests := []struct {
 		value, want             string
@@ -491,7 +479,7 @@ func TestWriteFilledReportReadError(t *testing.T) {
 // Of two song txts with the same mtime, the first by name is kept.
 func TestRunDuplicateSongTxtsSameMtime(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Song/b.txt":    songTxt("#MP3:song.mp3"),
 		"Song/a.txt":    songTxt("#MP3:song.mp3"),
 		"Song/song.mp3": "a",
@@ -510,14 +498,14 @@ func TestRunDuplicateSongTxtsSameMtime(t *testing.T) {
 
 // A duplicate song txt that cannot be moved stays; the kept txt is still fixed.
 func TestRunDuplicateSongTxtMoveFails(t *testing.T) {
-	hook := captureLogs(t, log.InfoLevel)
+	hook := testutil.CaptureLogsAt(t, log.InfoLevel)
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Song/old.txt":  songTxt("#MP3:song.mp3"),
 		"Song/new.txt":  songTxt("#MP3:gone.mp3"),
 		"Song/song.mp3": "a",
 	})
-	writeFiles(t, filepath.Dir(cfg.ExtraFilesDir()), map[string]string{filepath.Base(cfg.ExtraFilesDir()): "a file"})
+	testutil.WriteFiles(t, filepath.Dir(cfg.ExtraFilesDir()), map[string]string{filepath.Base(cfg.ExtraFilesDir()): "a file"})
 	past := time.Now().Add(-time.Hour)
 	if err := os.Chtimes(filepath.Join(cfg.SongDir, "Song", "old.txt"), past, past); err != nil {
 		t.Fatal(err)
@@ -539,10 +527,10 @@ func TestRunDuplicateSongTxtMoveFails(t *testing.T) {
 
 // A broken folder that cannot be moved to invalid/ stays where it is, with an error.
 func TestRunMoveToInvalidFails(t *testing.T) {
-	hook := captureLogs(t, log.InfoLevel)
+	hook := testutil.CaptureLogsAt(t, log.InfoLevel)
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{"NoMedia/song.txt": songTxt()})
-	writeFiles(t, filepath.Dir(cfg.InvalidDir()), map[string]string{filepath.Base(cfg.InvalidDir()): "a file"})
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{"NoMedia/song.txt": songTxt()})
+	testutil.WriteFiles(t, filepath.Dir(cfg.InvalidDir()), map[string]string{filepath.Base(cfg.InvalidDir()): "a file"})
 	ops := run(t, cfg)
 	if f := ops.Stats().Failed; f != 1 {
 		t.Errorf("Failed = %d, want 1", f)
@@ -557,9 +545,9 @@ func TestRunMoveToInvalidFails(t *testing.T) {
 
 // A report that cannot be written is an error; the others are still written.
 func TestRunReportWriteFails(t *testing.T) {
-	hook := captureLogs(t, log.InfoLevel)
+	hook := testutil.CaptureLogsAt(t, log.InfoLevel)
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{"Song/song.txt": songTxt("#MP3:song.mp3"), "Song/song.mp3": "a"})
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{"Song/song.txt": songTxt("#MP3:song.mp3"), "Song/song.mp3": "a"})
 	if err := os.MkdirAll(filepath.Join(cfg.ReportPath(missingFilesReport), "x"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -577,9 +565,9 @@ func TestRunReportWriteFails(t *testing.T) {
 
 // Without songs left unchanged there is no encoding warning.
 func TestRunNoUnchangedWarning(t *testing.T) {
-	hook := captureLogs(t, log.InfoLevel)
+	hook := testutil.CaptureLogsAt(t, log.InfoLevel)
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{"Song/song.txt": songTxt("#MP3:song.mp3"), "Song/song.mp3": "a"})
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{"Song/song.txt": songTxt("#MP3:song.mp3"), "Song/song.mp3": "a"})
 	run(t, cfg)
 	if got := messages(hook, "encoding issues and were not changed"); len(got) != 0 {
 		t.Errorf("unexpected warning %q", got)
@@ -592,10 +580,10 @@ func TestRunTxtWriteFails(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root can write everything")
 	}
-	hook := captureLogs(t, log.InfoLevel)
+	hook := testutil.CaptureLogsAt(t, log.InfoLevel)
 	cfg := newLibrary(t, false)
 	raw := "#MP3:song.mp3\n" + notesBody
-	writeFiles(t, cfg.SongDir, map[string]string{"Artist - Song/song.txt": raw, "Artist - Song/song.mp3": "a"})
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{"Artist - Song/song.txt": raw, "Artist - Song/song.mp3": "a"})
 	folder := filepath.Join(cfg.SongDir, "Artist - Song")
 	if err := os.Chmod(folder, 0o555); err != nil {
 		t.Fatal(err)
@@ -619,9 +607,9 @@ func TestRunTxtWriteFails(t *testing.T) {
 // The detected encoding is logged at debug level for txts that are not UTF-8, and the
 // inserted lines for txts that get some.
 func TestRunDebugLogs(t *testing.T) {
-	hook := captureLogs(t, log.DebugLevel)
+	hook := testutil.CaptureLogsAt(t, log.DebugLevel)
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Latin/song.txt": "#TITLE:M\xe4dchen\n#ARTIST:A\n#MP3:song.mp3\n" + notesBody,
 		"Latin/song.mp3": "a",
 		"UTF8/song.txt":  songTxt("#MP3:song.mp3"),
@@ -643,7 +631,7 @@ func TestRunDebugLogs(t *testing.T) {
 // the last one songtxt (and check) read. The header ends where songtxt's body starts.
 func TestFixTxtUnknownLineInHeader(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Song/song.txt": "#TITLE:Song\n#ARTIST:Artist\nCreated with editor\n#MP3:gone.mp3\n#BPM:300\n: 0 4 0 La\nE\n",
 		"Song/a.mp3":    "a",
 	})

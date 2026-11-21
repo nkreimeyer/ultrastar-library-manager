@@ -18,8 +18,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
-	log "github.com/sirupsen/logrus"
-	logtest "github.com/sirupsen/logrus/hooks/test"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // songTxt is a minimal valid song txt with the given extra header lines.
@@ -35,20 +34,6 @@ func newLibrary(t *testing.T, dryRun bool) config.Config {
 		t.Fatal(err)
 	}
 	return cfg
-}
-
-// writeFiles creates the given files (path relative to root -> content).
-func writeFiles(t *testing.T, root string, files map[string]string) {
-	t.Helper()
-	for rel, content := range files {
-		p := filepath.Join(root, rel)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
 }
 
 func readFile(t *testing.T, path string) string {
@@ -72,33 +57,6 @@ func run(t *testing.T, cfg config.Config) *fsops.Ops {
 func exists(path string) bool {
 	_, err := os.Lstat(path)
 	return err == nil
-}
-
-// hashTree returns a fingerprint of every entry below root: names, types and file contents.
-func hashTree(t *testing.T, root string) map[string]string {
-	t.Helper()
-	tree := map[string]string{}
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(root, path)
-		if d.IsDir() {
-			tree[rel] = "dir"
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		sum := sha256.Sum256(data)
-		tree[rel] = hex.EncodeToString(sum[:])
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tree
 }
 
 func TestSplitLines(t *testing.T) {
@@ -176,7 +134,7 @@ func TestRunFixesFileTags(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := newLibrary(t, false)
-			writeFiles(t, cfg.SongDir, map[string]string{
+			testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 				"Artist - Song/song.txt": songTxt(tc.header...),
 				"Artist - Song/song.mp3": "audio",
 				"Artist - Song/clip.mp4": "video",
@@ -207,7 +165,7 @@ func TestRunFixesFileTags(t *testing.T) {
 
 func TestRunDuplicateSongTxts(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Cat/Song/old.txt":     songTxt("#MP3:song.mp3"),
 		"Cat/Song/new.txt":     songTxt("#MP3:song.mp3"),
 		"Cat/Song/License.txt": "Licensed under CC-BY\n",
@@ -236,25 +194,25 @@ func TestRunDuplicateSongTxts(t *testing.T) {
 
 func TestRunMovesFolderWithoutSongTxtToInvalid(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Song/License.txt": "some license\r\n",
 		"Song/readme.txt":  "M\xe4dchen\n",
 		"Song/song.mp3":    "audio",
 	})
-	before := hashTree(t, filepath.Join(cfg.SongDir, "Song"))
+	before := testutil.Tree(t, filepath.Join(cfg.SongDir, "Song"))
 	run(t, cfg)
 	if _, err := os.Stat(filepath.Join(cfg.SongDir, "Song")); !os.IsNotExist(err) {
 		t.Errorf("folder without song txt must be moved away (err=%v)", err)
 	}
 	// The non-song txts are moved unchanged.
-	if after := hashTree(t, filepath.Join(cfg.InvalidDir(), "Song")); !maps.Equal(before, after) {
+	if after := testutil.Tree(t, filepath.Join(cfg.InvalidDir(), "Song")); !maps.Equal(before, after) {
 		t.Errorf("content changed:\nbefore %v\nafter  %v", before, after)
 	}
 }
 
 func TestRunReportsEncodingIssues(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Bad/song.txt":     "#TITLE:\xe4\x81\n#ARTIST:A\n#MP3:song.mp3\n: 0 1 0 x\nE\n",
 		"Bad/song.mp3":     "audio",
 		"Damaged/song.txt": "#TITLE:M\ufffddchen\n#ARTIST:A\n#MP3:song.mp3\n: 0 1 0 x\nE\n",
@@ -292,7 +250,7 @@ func TestRunConvertsEncoding(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := newLibrary(t, false)
-			writeFiles(t, cfg.SongDir, map[string]string{
+			testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 				"Song/song.txt": tc.raw,
 				"Song/song.mp3": "audio",
 			})
@@ -306,7 +264,7 @@ func TestRunConvertsEncoding(t *testing.T) {
 
 func TestRunDoesNotRewriteUnchangedFile(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Song/song.txt": songTxt("#MP3:song.mp3", "#VIDEO:clip.mp4", "#VIDEOGAP:0"),
 		"Song/song.mp3": "audio",
 		"Song/clip.mp4": "video",
@@ -331,7 +289,7 @@ func TestRunDoesNotRewriteUnchangedFile(t *testing.T) {
 
 func TestRunMovesBrokenFoldersToInvalid(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Cat/Good/song.txt":    songTxt("#MP3:song.mp3"),
 		"Cat/Good/song.mp3":    "audio",
 		"Cat/NoTxt/song.mp3":   "audio",
@@ -360,7 +318,7 @@ func TestRunMovesBrokenFoldersToInvalid(t *testing.T) {
 
 func TestRunWritesSortedMissingFilesReport(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"B/song.txt": songTxt("#MP3:song.mp3"),
 		"B/song.mp3": "audio",
 		"A/song.txt": songTxt("#MP3:song.mp3"),
@@ -383,7 +341,7 @@ func TestRunWritesSortedMissingFilesReport(t *testing.T) {
 
 func TestRunDryRunDoesNotModifyLibrary(t *testing.T) {
 	cfg := newLibrary(t, true)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Cat/Latin1/song.txt":  "#TITLE:M\xe4dchen\r\n#ARTIST:A\r\n#MP3:old.mp3\r\n: 0 1 0 x\r\nE\r\n",
 		"Cat/Latin1/song.mp3":  "audio",
 		"Cat/Dup/old.txt":      songTxt("#MP3:song.mp3"),
@@ -396,10 +354,10 @@ func TestRunDryRunDoesNotModifyLibrary(t *testing.T) {
 	if err := os.Chtimes(filepath.Join(cfg.SongDir, "Cat/Dup/old.txt"), past, past); err != nil {
 		t.Fatal(err)
 	}
-	before := hashTree(t, cfg.SongDir)
+	before := testutil.Tree(t, cfg.SongDir)
 	ops := run(t, cfg)
 
-	if after := hashTree(t, cfg.SongDir); !maps.Equal(before, after) {
+	if after := testutil.Tree(t, cfg.SongDir); !maps.Equal(before, after) {
 		t.Errorf("dry run changed the library:\nbefore %v\nafter  %v", before, after)
 	}
 	st := ops.Stats()
@@ -460,7 +418,7 @@ func TestRunResolvesFileTags(t *testing.T) {
 			for name, content := range tc.files {
 				files["Song/"+name] = content
 			}
-			writeFiles(t, cfg.SongDir, files)
+			testutil.WriteFiles(t, cfg.SongDir, files)
 			if f := run(t, cfg).Stats().Failed; f != 0 {
 				t.Errorf("%d failed operations", f)
 			}
@@ -481,7 +439,7 @@ func TestRunResolvesFileTags(t *testing.T) {
 // to UTF-8 would break the reference, so the whole folder must be left alone.
 func TestRunSkipsFolderWithNonUTF8MediaNames(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		// CP1252 txt referencing the Latin-1 name, plus an older duplicate song txt.
 		"Latin1/song.txt":       "#TITLE:M\xe4dchen\r\n#ARTIST:A\r\n#MP3:M\xe4dchen.mp3\r\n: 0 1 0 x\r\nE\r\n",
 		"Latin1/old.txt":        songTxt("#MP3:gone.mp3"),
@@ -499,10 +457,10 @@ func TestRunSkipsFolderWithNonUTF8MediaNames(t *testing.T) {
 	if err := os.Chtimes(filepath.Join(cfg.SongDir, "Latin1/old.txt"), past, past); err != nil {
 		t.Fatal(err)
 	}
-	before := hashTree(t, cfg.SongDir)
+	before := testutil.Tree(t, cfg.SongDir)
 	ops := run(t, cfg)
 
-	if after := hashTree(t, cfg.SongDir); !maps.Equal(before, after) {
+	if after := testutil.Tree(t, cfg.SongDir); !maps.Equal(before, after) {
 		t.Errorf("folders with non-UTF-8 media names were changed:\nbefore %v\nafter  %v", before, after)
 	}
 	if st := ops.Stats(); st.Written != 0 || st.Moved != 0 {
@@ -522,10 +480,9 @@ func TestRunSkipsFolderWithNonUTF8MediaNames(t *testing.T) {
 // The warning counts songs left unchanged: one per skipped folder (however many bad names
 // it has) and one per undecodable txt, but not damaged txts, which are still fixed.
 func TestRunCountsUnchangedSongs(t *testing.T) {
-	hook := logtest.NewGlobal()
-	defer log.StandardLogger().ReplaceHooks(make(log.LevelHooks))
+	hook := testutil.CaptureLogs(t)
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Names/song.txt":   songTxt("#MP3:a.mp3"),
 		"Names/\xe41.mp3":  "a",
 		"Names/\xe42.mp4":  "v",
@@ -549,7 +506,7 @@ func TestRunCountsUnchangedSongs(t *testing.T) {
 func TestRunDoesNotRewriteTxtOfFolderMovedToInvalid(t *testing.T) {
 	cfg := newLibrary(t, false)
 	original := "#TITLE:M\xe4dchen\r\n#ARTIST:A\r\n: 0 1 0 x\r\nE\r\n"
-	writeFiles(t, cfg.SongDir, map[string]string{"NoMedia/song.txt": original})
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{"NoMedia/song.txt": original})
 	run(t, cfg)
 	if got := readFile(t, filepath.Join(cfg.InvalidDir(), "NoMedia", "song.txt")); got != original {
 		t.Errorf("quarantined txt must be the original, got %q", got)
@@ -563,7 +520,7 @@ func TestRunDoesNotRewriteTxtOfFolderMovedToInvalid(t *testing.T) {
 // split off into extra-files/.
 func TestRunMovesBrokenFolderWithDuplicateTxtsAsWhole(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"NoMedia/old.txt":   songTxt("#MP3:song.mp3"),
 		"NoMedia/new.txt":   songTxt("#MP3:song.mp3"),
 		"NoMedia/cover.jpg": "img",
@@ -572,12 +529,12 @@ func TestRunMovesBrokenFolderWithDuplicateTxtsAsWhole(t *testing.T) {
 	if err := os.Chtimes(filepath.Join(cfg.SongDir, "NoMedia/old.txt"), past, past); err != nil {
 		t.Fatal(err)
 	}
-	before := hashTree(t, filepath.Join(cfg.SongDir, "NoMedia"))
+	before := testutil.Tree(t, filepath.Join(cfg.SongDir, "NoMedia"))
 	run(t, cfg)
 	if exists(filepath.Join(cfg.SongDir, "NoMedia")) {
 		t.Error("broken folder is still in the library")
 	}
-	if after := hashTree(t, filepath.Join(cfg.InvalidDir(), "NoMedia")); !maps.Equal(before, after) {
+	if after := testutil.Tree(t, filepath.Join(cfg.InvalidDir(), "NoMedia")); !maps.Equal(before, after) {
 		t.Errorf("folder was not moved as a whole:\nbefore %v\nafter  %v", before, after)
 	}
 	if exists(cfg.ExtraFilesDir()) {
@@ -594,7 +551,7 @@ func fixSong(t *testing.T, folder, txtName string, files map[string]string, head
 	for name, content := range files {
 		all[filepath.Join(folder, name)] = content
 	}
-	writeFiles(t, cfg.SongDir, all)
+	testutil.WriteFiles(t, cfg.SongDir, all)
 	ops := run(t, cfg)
 	return readFile(t, filepath.Join(cfg.SongDir, folder, txtName)), readFile(t, cfg.ReportPath(missingFilesReport)), ops
 }
@@ -747,7 +704,7 @@ func TestRunSkipsFolderWithUnreadableTxt(t *testing.T) {
 			if media {
 				files["Song/song.mp3"] = "a"
 			}
-			writeFiles(t, cfg.SongDir, files)
+			testutil.WriteFiles(t, cfg.SongDir, files)
 			unreadable := filepath.Join(cfg.SongDir, "Song/b.txt")
 			if err := os.Chmod(unreadable, 0); err != nil {
 				t.Fatal(err)
@@ -798,7 +755,7 @@ func hashTreeExcept(t *testing.T, root, skip string) map[string]string {
 
 func TestRunCorrectsStemSpelling(t *testing.T) {
 	cfg := newLibrary(t, false)
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Song/song.txt":         songTxt("#MP3:song.mp3", "#VOCALS:VOX.mp3", "#INSTRUMENTAL:missing.mp3"),
 		"Song/song.mp3":         "a",
 		"Song/vox.mp3":          "v",
@@ -875,7 +832,7 @@ func TestRunChoosesCoverAndBackground(t *testing.T) {
 			for name, content := range tc.files {
 				files["Song/"+name] = content
 			}
-			writeFiles(t, cfg.SongDir, files)
+			testutil.WriteFiles(t, cfg.SongDir, files)
 			for name, wh := range tc.pngs {
 				writeTestPNG(t, filepath.Join(cfg.SongDir, "Song", name), wh[0], wh[1])
 			}
@@ -1019,7 +976,7 @@ func TestRunFillsNameTagsFromFolderName(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := newLibrary(t, false)
-			writeFiles(t, cfg.SongDir, map[string]string{
+			testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 				filepath.Join(tc.folder, "song.txt"):  tc.txt,
 				filepath.Join(tc.folder, "song.mp3"):  "audio",
 				filepath.Join(tc.folder, "cover.jpg"): "x",
@@ -1051,7 +1008,7 @@ func TestRunFillsNameTagsFromFolderName(t *testing.T) {
 // library, the real run fills, and a second run changes nothing.
 func TestRunFillsNameTagsDryRunAndIdempotent(t *testing.T) {
 	lib, out := t.TempDir(), t.TempDir()
-	writeFiles(t, lib, map[string]string{
+	testutil.WriteFiles(t, lib, map[string]string{
 		"Cat/Electric Callboy - Hypa Hypa/song.txt": "#MP3:song.mp3\n" + notesBody,
 		"Cat/Electric Callboy - Hypa Hypa/song.mp3": "audio",
 	})
@@ -1066,9 +1023,9 @@ func TestRunFillsNameTagsDryRunAndIdempotent(t *testing.T) {
 	}
 
 	dry := newCfg(true)
-	before := hashTree(t, lib)
+	before := testutil.Tree(t, lib)
 	ops := run(t, dry)
-	if after := hashTree(t, lib); !maps.Equal(before, after) {
+	if after := testutil.Tree(t, lib); !maps.Equal(before, after) {
 		t.Errorf("dry run changed the library:\nbefore %v\nafter  %v", before, after)
 	}
 	if ops.Stats().Written != 1 {
@@ -1125,7 +1082,7 @@ func TestFilledReportMerge(t *testing.T) {
 func TestRunDoesNotFillNameTagsOfUndecodableTxt(t *testing.T) {
 	cfg := newLibrary(t, false)
 	raw := "#TITLE:\xe4\x81\n#MP3:song.mp3\n" + notesBody
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		"Artist - Song/song.txt": raw,
 		"Artist - Song/song.mp3": "audio",
 	})
@@ -1143,7 +1100,7 @@ func TestRunDoesNotFillNameTagsOfUndecodableTxt(t *testing.T) {
 func TestRunChoosesAudioByFilledNameTags(t *testing.T) {
 	cfg := newLibrary(t, false)
 	folder := "Electric Callboy - Hypa Hypa [DUET]"
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		filepath.Join(folder, "song.txt"):                         "#TITLE:Hypa Hypa\n" + notesBody,
 		filepath.Join(folder, "Electric Callboy - Hypa Hypa.mp3"): "audio",
 		filepath.Join(folder, "other.mp3"):                        "audio",
@@ -1160,7 +1117,7 @@ func TestRunChoosesAudioByFilledNameTags(t *testing.T) {
 func TestRunChoosesAudioByFilledTitle(t *testing.T) {
 	cfg := newLibrary(t, false)
 	folder := "Electric Callboy [DE] - Hypa Hypa"
-	writeFiles(t, cfg.SongDir, map[string]string{
+	testutil.WriteFiles(t, cfg.SongDir, map[string]string{
 		filepath.Join(folder, "song.txt"):                         "#ARTIST:Electric Callboy\n" + notesBody,
 		filepath.Join(folder, "Electric Callboy - Hypa Hypa.mp3"): "audio",
 		filepath.Join(folder, "other.mp3"):                        "audio",
