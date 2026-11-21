@@ -11,22 +11,8 @@ import (
 
 	"github.com/nkreimeyer/library-manager/check"
 
-	log "github.com/sirupsen/logrus"
-	logtest "github.com/sirupsen/logrus/hooks/test"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
-
-// writeSong creates dir with the given files (name -> content).
-func writeSong(t *testing.T, dir string, files map[string]string) {
-	t.Helper()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for name, content := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
 
 // fileNames returns the names of the regular files directly in dir, sorted.
 func fileNames(t *testing.T, dir string) []string {
@@ -77,7 +63,7 @@ func TestStaleAudioTagKeepsAudio(t *testing.T) {
 			t.Run(fmt.Sprintf("%s dry=%v", tt.name, dry), func(t *testing.T) {
 				lib, out := t.TempDir(), t.TempDir()
 				song := filepath.Join(lib, "Artist - Song")
-				writeSong(t, song, tt.files)
+				testutil.WriteFiles(t, song, tt.files)
 				before := fileNames(t, song)
 				args := append([]string{"-s", lib, "-o", out}, tt.args...)
 				if dry {
@@ -148,7 +134,7 @@ func TestRunExitFailures(t *testing.T) {
 	t.Run("unreadable song txt", func(t *testing.T) {
 		lib := t.TempDir()
 		song := filepath.Join(lib, "A - B")
-		writeSong(t, song, map[string]string{"song.txt": "#ARTIST:A\n#TITLE:B\n#MP3:a.mp3\n" + validNotes(), "a.mp3": "a"})
+		testutil.WriteFiles(t, song, map[string]string{"song.txt": "#ARTIST:A\n#TITLE:B\n#MP3:a.mp3\n" + validNotes(), "a.mp3": "a"})
 		txt := filepath.Join(song, "song.txt")
 		if err := os.Chmod(txt, 0); err != nil {
 			t.Fatal(err)
@@ -167,12 +153,12 @@ func TestRunExitFailures(t *testing.T) {
 		}
 		t.Cleanup(func() { os.Chmod(lib, 0o755) })
 		var code int
-		msgs := errorLogs(t, func() { code = runWithArgs(t, "-s", lib, "-o", t.TempDir()) })
+		msgs := testutil.ErrorLogs(t, func() { code = runWithArgs(t, "-s", lib, "-o", t.TempDir()) })
 		if code != exitFailures {
 			t.Errorf("exit code %d, want %d", code, exitFailures)
 		}
 		for _, m := range []string{"fixtxt failed", "cleanup failed"} {
-			if !containsPrefix(msgs, m) {
+			if !testutil.ContainsPrefix(msgs, m) {
 				t.Errorf("error logs %q, want one starting with %q", msgs, m)
 			}
 		}
@@ -204,7 +190,7 @@ func TestRunDisablesModules(t *testing.T) {
 	setup := func(t *testing.T) (lib, song string) {
 		lib = t.TempDir()
 		song = filepath.Join(lib, "A - B")
-		writeSong(t, song, map[string]string{"song.txt": txt, "a.mp3": "a", "junk.nfo": "x"})
+		testutil.WriteFiles(t, song, map[string]string{"song.txt": txt, "a.mp3": "a", "junk.nfo": "x"})
 		return
 	}
 	t.Run("-c=false keeps clutter", func(t *testing.T) {
@@ -240,7 +226,7 @@ func TestRunPassesCheckOptions(t *testing.T) {
 	lib, out := t.TempDir(), t.TempDir()
 	song := filepath.Join(lib, "A - B")
 	// No #BPM: a check error.
-	writeSong(t, song, map[string]string{"song.txt": "#ARTIST:A\n#TITLE:B\n#MP3:a.mp3\n: 0 1 0 la\nE\n", "a.mp3": "a"})
+	testutil.WriteFiles(t, song, map[string]string{"song.txt": "#ARTIST:A\n#TITLE:B\n#MP3:a.mp3\n: 0 1 0 la\nE\n", "a.mp3": "a"})
 	if got := runWithArgs(t, "-s", lib, "-o", out, "-k", "-move-broken", "-t=false", "-c=false"); got != exitOK {
 		t.Fatalf("exit code %d", got)
 	}
@@ -258,30 +244,6 @@ func TestRunPassesCheckOptions(t *testing.T) {
 	if len(rep.Songs) != 1 || !rep.Songs[0].Moved {
 		t.Errorf("report songs = %+v, want one moved song", rep.Songs)
 	}
-}
-
-// errorLogs returns the messages of the error-level entries logged during fn.
-func errorLogs(t *testing.T, fn func()) []string {
-	t.Helper()
-	hook := logtest.NewGlobal()
-	defer log.StandardLogger().ReplaceHooks(make(log.LevelHooks))
-	fn()
-	var msgs []string
-	for _, e := range hook.AllEntries() {
-		if e.Level <= log.ErrorLevel {
-			msgs = append(msgs, e.Message)
-		}
-	}
-	return msgs
-}
-
-func containsPrefix(msgs []string, prefix string) bool {
-	for _, m := range msgs {
-		if strings.HasPrefix(m, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 func TestRunOrganizeExitCodes(t *testing.T) {
@@ -317,7 +279,7 @@ func TestRunOrganizeFailures(t *testing.T) {
 	newSource := func(t *testing.T) (src, lib string) {
 		base := t.TempDir()
 		src, lib = filepath.Join(base, "src"), filepath.Join(base, "lib")
-		writeSong(t, filepath.Join(src, "ABBA - SOS"), map[string]string{
+		testutil.WriteFiles(t, filepath.Join(src, "ABBA - SOS"), map[string]string{
 			"song.txt": "#ARTIST:ABBA\n#TITLE:SOS\n#MP3:a.mp3\n" + validNotes(), "a.mp3": "a",
 		})
 		return
@@ -325,7 +287,7 @@ func TestRunOrganizeFailures(t *testing.T) {
 	t.Run("success logs no error", func(t *testing.T) {
 		src, lib := newSource(t)
 		var code int
-		msgs := errorLogs(t, func() { code = runWithArgs(t, "organize", "-s", src, "-l", lib) })
+		msgs := testutil.ErrorLogs(t, func() { code = runWithArgs(t, "organize", "-s", src, "-l", lib) })
 		if code != exitOK {
 			t.Errorf("exit code %d, want %d", code, exitOK)
 		}
@@ -335,7 +297,7 @@ func TestRunOrganizeFailures(t *testing.T) {
 	})
 	t.Run("unreadable song txt", func(t *testing.T) {
 		src, lib := newSource(t)
-		writeSong(t, filepath.Join(src, "Locked"), map[string]string{"song.txt": "#ARTIST:X\n#TITLE:Y\n", "a.mp3": "a"})
+		testutil.WriteFiles(t, filepath.Join(src, "Locked"), map[string]string{"song.txt": "#ARTIST:X\n#TITLE:Y\n", "a.mp3": "a"})
 		txt := filepath.Join(src, "Locked", "song.txt")
 		if err := os.Chmod(txt, 0); err != nil {
 			t.Fatal(err)
@@ -378,8 +340,7 @@ func TestRunOrganizeLogsSourceTiers(t *testing.T) {
 		}
 	}
 	lib := filepath.Join(base, "lib")
-	hook := logtest.NewGlobal()
-	defer log.StandardLogger().ReplaceHooks(make(log.LevelHooks))
+	hook := testutil.CaptureLogs(t)
 	if code := runWithArgs(t, "organize", "-n", "-s", first, "-s", second+string(filepath.ListSeparator)+third, "-l", lib); code != exitOK {
 		t.Fatalf("exit code %d, want %d", code, exitOK)
 	}

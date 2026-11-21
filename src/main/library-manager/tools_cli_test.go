@@ -4,43 +4,26 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
-)
 
-// fakeOldTools makes PATH a folder whose ffmpeg and ffprobe report the given versions
-// for -version and fail on everything else.
-func fakeOldTools(t *testing.T, ffmpeg, ffprobe string) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fake tools are shell scripts")
-	}
-	dir := t.TempDir()
-	for name, v := range map[string]string{"ffmpeg": ffmpeg, "ffprobe": ffprobe} {
-		script := "#!/bin/sh\nif [ \"$1\" = -version ]; then echo '" + name + " version " + v +
-			" Copyright (c) the FFmpeg developers'; exit 0; fi\nexit 1\n"
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("PATH", dir)
-}
+	"github.com/nkreimeyer/library-manager/internal/testutil"
+)
 
 // The CLI checks the tool versions like the web UI (mediatools.Detect): -m and -a refuse
 // an ffmpeg older than 5.1 (the module fails: exit code 1); -k uses it with a note in the
 // report (findings never change the exit code).
 func TestRunOldFFmpeg(t *testing.T) {
-	fakeOldTools(t, "4.4.2-0ubuntu0.22.04.1", "4.4.2-0ubuntu0.22.04.1")
+	testutil.FakeVersions(t, "4.4.2-0ubuntu0.22.04.1", "4.4.2-0ubuntu0.22.04.1")
 	lib := t.TempDir()
-	writeSong(t, filepath.Join(lib, "A - B"), map[string]string{
+	testutil.WriteFiles(t, filepath.Join(lib, "A - B"), map[string]string{
 		"song.txt": "#ARTIST:A\n#TITLE:B\n#MP3:a.mp3\n#VIDEO:v.mp4\n" + validNotes(), "a.mp3": "a", "v.mp4": "v",
 	})
 	for _, tc := range []struct{ flag, module string }{{"-m", "fixvideos"}, {"-a", "fixaudio"}} {
 		t.Run(tc.flag, func(t *testing.T) {
 			var code int
-			msgs := errorLogs(t, func() { code = runWithArgs(t, "-s", lib, "-o", t.TempDir(), "-t=false", "-c=false", tc.flag) })
+			msgs := testutil.ErrorLogs(t, func() { code = runWithArgs(t, "-s", lib, "-o", t.TempDir(), "-t=false", "-c=false", tc.flag) })
 			if code != exitFailures {
 				t.Errorf("exit code %d, want %d", code, exitFailures)
 			}

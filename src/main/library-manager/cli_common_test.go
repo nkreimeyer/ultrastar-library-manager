@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
@@ -49,7 +50,7 @@ func cliFixture(t *testing.T) (base, lib, src, rlib, wordlist string) {
 		for i := range 10 {
 			txt += fmt.Sprintf(": %d 2 0 %s\n", i*4, lyric)
 		}
-		writeSong(t, dir, map[string]string{"song.txt": txt + "E\n", "a.mp3": "x"})
+		testutil.WriteFiles(t, dir, map[string]string{"song.txt": txt + "E\n", "a.mp3": "x"})
 	}
 	song(filepath.Join(lib, "A", "ABBA - SOS"), "ABBA", "SOS", "sos")
 	song(filepath.Join(lib, "C", "Cher - Believe"), "Cher", "Believe", "bel")
@@ -210,7 +211,7 @@ func TestCommandSummaryLines(t *testing.T) {
 	}
 	// An undo whose journal cannot be read is a failed run with a summary.
 	code, _, logs := runCaptured(t, "organize", "-undo", "-o", bad)
-	if code != exitFailures || len(logs) == 0 || logs[len(logs)-1] != "Done: 0 moved, 0 failed operations" || !containsPrefix(logs, "organize failed: reading the journal: ") {
+	if code != exitFailures || len(logs) == 0 || logs[len(logs)-1] != "Done: 0 moved, 0 failed operations" || !testutil.ContainsPrefix(logs, "organize failed: reading the journal: ") {
 		t.Errorf("undo with an unreadable journal: exit %d, logs %q", code, logs)
 	}
 }
@@ -268,7 +269,7 @@ func TestFailedRunNamesCommand(t *testing.T) {
 	bad := filepath.Join(file, "out")
 	for cmd, want := range map[string]string{"organize": "organize", "dedupe": "organize", "add": "organize", "remove": "remove"} {
 		code, _, logs := runCaptured(t, cmd, "-undo", "-o", bad)
-		if code != exitFailures || !containsPrefix(logs, want+" failed: reading the journal: ") {
+		if code != exitFailures || !testutil.ContainsPrefix(logs, want+" failed: reading the journal: ") {
 			t.Errorf("%s -undo with an unreadable journal: exit %d, logs %q, want %q failed", cmd, code, logs, want)
 		}
 	}

@@ -1,12 +1,10 @@
 package main
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -18,6 +16,7 @@ import (
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fixtxt"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // library is a small fixture exercising the interplay of fixtxt and cleanup.
@@ -37,15 +36,7 @@ func writeLibrary(t *testing.T) config.Config {
 	t.Helper()
 	root := t.TempDir()
 	songs := filepath.Join(root, "songs")
-	for rel, content := range library {
-		p := filepath.Join(songs, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	testutil.WriteFiles(t, songs, library)
 	return mustConfig(t, songs, false)
 }
 
@@ -76,34 +67,6 @@ func runPipeline(t *testing.T, cfg config.Config) *fsops.Ops {
 	return ops
 }
 
-func snapshot(t *testing.T, root string) string {
-	t.Helper()
-	var sb strings.Builder
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(&sb, "%s %v %v", path, info.Mode(), info.ModTime().UnixNano())
-		if d.Type().IsRegular() {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(&sb, " %x", sha256.Sum256(data))
-		}
-		sb.WriteString("\n")
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return sb.String()
-}
-
 func TestPipeline(t *testing.T) {
 	cfg := writeLibrary(t)
 	runPipeline(t, cfg)
@@ -128,12 +91,12 @@ func TestPipeline(t *testing.T) {
 	}
 
 	// A second run on the result changes nothing.
-	before := snapshot(t, cfg.SongDir)
+	before := testutil.Snapshot(t, cfg.SongDir)
 	st := runPipeline(t, mustConfig(t, cfg.SongDir, false)).Stats()
 	if st.Written+st.Moved+st.Removed+st.Replaced != 0 {
 		t.Errorf("second run was not idempotent: %+v", st)
 	}
-	if after := snapshot(t, cfg.SongDir); after != before {
+	if after := testutil.Snapshot(t, cfg.SongDir); after != before {
 		t.Errorf("second run changed the library")
 	}
 }
@@ -141,9 +104,9 @@ func TestPipeline(t *testing.T) {
 func TestPipelineDryRun(t *testing.T) {
 	cfg := writeLibrary(t)
 	dry := mustConfig(t, cfg.SongDir, true)
-	before := snapshot(t, dry.SongDir)
+	before := testutil.Snapshot(t, dry.SongDir)
 	ops := runPipeline(t, dry)
-	if after := snapshot(t, dry.SongDir); after != before {
+	if after := testutil.Snapshot(t, dry.SongDir); after != before {
 		t.Errorf("dry-run modified the library")
 	}
 	// Planned moves: "B - NoTxt" and "C - NoMedia" to invalid/ (fixtxt) and junk.nfo
@@ -311,9 +274,9 @@ func TestPipelineDryRunMatchesRealRun(t *testing.T) {
 			}
 
 			dry := mustConfig(t, songs, true)
-			before := snapshot(t, songs)
+			before := testutil.Snapshot(t, songs)
 			dryOps, dryReport := run(dry)
-			if after := snapshot(t, songs); after != before {
+			if after := testutil.Snapshot(t, songs); after != before {
 				t.Fatal("dry run modified the library")
 			}
 			var planned []string
@@ -371,10 +334,7 @@ func generateMedia(t *testing.T) (audio, video string) {
 		{"a.mp3", []string{"-f", "lavfi", "-i", "sine=d=3"}},
 		{"v.mp4", []string{"-f", "lavfi", "-i", "testsrc=d=3:s=64x64:r=10", "-c:v", "libx264", "-pix_fmt", "yuv420p"}},
 	} {
-		args := append(append([]string{"-v", "error", "-y"}, gen.args...), filepath.Join(dir, gen.name))
-		if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
-			t.Skipf("cannot generate test media with ffmpeg: %v\n%s", err, out)
-		}
+		testutil.GenerateMediaAt(t, filepath.Join(dir, gen.name), gen.args...)
 	}
 	a, err := os.ReadFile(filepath.Join(dir, "a.mp3"))
 	if err != nil {
