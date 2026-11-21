@@ -8,6 +8,8 @@ import (
 
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/nkreimeyer/library-manager/utils"
 )
 
 // replChar is U+FFFD, the character an earlier conversion put in place of every byte it
@@ -43,14 +45,10 @@ var punctRunes = func() map[rune]bool {
 // edgeRune reports the characters a word's outer form takes in (see token).
 func edgeRune(r rune) bool { return r >= 0x80 && (isApostrophe(r) || punctRunes[r]) }
 
-// isApostrophe reports the characters that join the parts of a word like "I’m".
-func isApostrophe(r rune) bool {
-	switch r {
-	case '\'', '`', '’', '‘', '´', 'ʼ':
-		return true
-	}
-	return false
-}
+// isApostrophe reports the characters that join the parts of a word like "I’m": the
+// shared set utils.IsApostrophe (' ` ’ ‘ ´ ʼ). It decides what a corpus word is, so the
+// set must not grow here without checking the repairs.
+func isApostrophe(r rune) bool { return utils.IsApostrophe(r) }
 
 // isWordRune reports the runes a word token consists of. U+FFFD counts as a word rune:
 // most of them stand for letters (the punctuation case is handled by the planner).
