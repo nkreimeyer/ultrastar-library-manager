@@ -376,7 +376,7 @@ func libraryOccupant(ops *fsops.Ops, lib string) func(rel string) (string, strin
 // listBucket returns the entries of a bucket folder by NameKey; an empty map if it does
 // not exist. It returns nil (nothing may go there) if the bucket is not a folder, is a song
 // folder or holds media itself (bucketProblem), or cannot be read; note then says why
-// (empty for a file). An unreadable bucket is logged and counted (ops.FailOnce).
+// (empty for a file). An unreadable bucket is logged and counted (ops.FailUnreadable).
 func listBucket(ops *fsops.Ops, dir, bucket string) (map[string]string, string) {
 	st, err := os.Lstat(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -391,7 +391,7 @@ func listBucket(ops *fsops.Ops, dir, bucket string) (map[string]string, string) 
 	}
 	if err != nil {
 		log.Errorf("Reading library folder %s: %v; no song is moved into it", dir, err)
-		ops.FailOnce("unreadable:" + dir)
+		ops.FailUnreadable(dir)
 		return nil, fmt.Sprintf("the bucket folder %s cannot be read", bucket)
 	}
 	if why := bucketProblem(ops, dir, entries); why != "" {

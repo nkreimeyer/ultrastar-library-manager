@@ -171,12 +171,9 @@ func shouldConsider(dir string, file os.DirEntry) bool {
 // key matches the one used by song folder discovery, so a path every module runs into is
 // counted only once.
 func reportUnreadable(ops *fsops.Ops, path string, err error) {
-	var pathErr *fs.PathError
-	if errors.As(err, &pathErr) {
-		path = pathErr.Path
-	}
+	path = fsops.ErrPath(err, path)
 	log.Errorf("Skipping unreadable %s: %v", path, err)
-	ops.FailOnce("unreadable:" + path)
+	ops.FailUnreadable(path)
 }
 
 // isUntaggedMedia reports whether name is an audio file of a song whose txt has no

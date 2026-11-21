@@ -131,7 +131,7 @@ func (p *processor) processFolder(folder string) {
 	entries, err := os.ReadDir(folder)
 	if err != nil {
 		log.Errorf("reading directory %q: %v", folder, err)
-		p.ops.FailOnce("unreadable:" + folder) // same key as the folder discovery
+		p.ops.FailUnreadable(folder) // same key as the folder discovery
 		return
 	}
 	stems, err := stemFiles(p.ops, folder)

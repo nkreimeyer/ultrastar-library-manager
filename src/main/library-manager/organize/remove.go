@@ -219,13 +219,7 @@ func readRemoveSong(ops *fsops.Ops, lib, folder string) removeSong {
 		raw, err = ops.ReadFile(txt)
 	}
 	if err != nil {
-		log.Errorf("Skipping %s: %v", folder, err)
-		path := folder
-		var pathErr *fs.PathError
-		if errors.As(err, &pathErr) {
-			path = pathErr.Path
-		}
-		ops.FailOnce("unreadable:" + path)
+		ops.SkipUnreadable(folder, err)
 		return s
 	}
 	d := utils.DecodeTxt(raw)

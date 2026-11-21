@@ -106,6 +106,28 @@ func (o *Ops) FailOnce(key string) {
 	}
 }
 
+// FailUnreadable counts the unreadable path once per run. Every module and the folder
+// discovery use this key ("unreadable:<path>"), so a path all of them run into is one
+// failure.
+func (o *Ops) FailUnreadable(path string) { o.FailOnce("unreadable:" + path) }
+
+// SkipUnreadable logs "Skipping <folder>: <err>" and counts the unreadable path once per
+// run (FailUnreadable): the path of a *fs.PathError in err (the txt that failed, say), else
+// folder.
+func (o *Ops) SkipUnreadable(folder string, err error) {
+	log.Errorf("Skipping %s: %v", folder, err)
+	o.FailUnreadable(ErrPath(err, folder))
+}
+
+// ErrPath returns the path of the *fs.PathError in err, else fallback.
+func ErrPath(err error, fallback string) string {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		return pathErr.Path
+	}
+	return fallback
+}
+
 func (o *Ops) fail(err error) error {
 	if err != nil {
 		o.failed.Add(1)

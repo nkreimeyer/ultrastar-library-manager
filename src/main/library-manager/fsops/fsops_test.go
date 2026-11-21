@@ -813,6 +813,28 @@ func TestFailOnce(t *testing.T) {
 	}
 }
 
+// TestFailUnreadable pins the shared key: FailUnreadable, SkipUnreadable and a hand-written
+// FailOnce("unreadable:"+path) (as in tests elsewhere) count one path once, and
+// SkipUnreadable counts the path of a *fs.PathError, not the folder.
+func TestFailUnreadable(t *testing.T) {
+	ops := New(false)
+	ops.FailOnce("unreadable:/a")
+	ops.FailUnreadable("/a")
+	ops.SkipUnreadable("/a", errors.New("boom"))
+	if s := ops.Stats(); s.Failed != 1 {
+		t.Errorf("Failed = %d, want 1 (one key)", s.Failed)
+	}
+	txtErr := &fs.PathError{Op: "open", Path: "/a/song.txt", Err: fs.ErrPermission}
+	ops.SkipUnreadable("/a", fmt.Errorf("wrapped: %w", txtErr))
+	ops.FailUnreadable("/a/song.txt")
+	if s := ops.Stats(); s.Failed != 2 {
+		t.Errorf("Failed = %d, want 2 (the txt path is its own key)", s.Failed)
+	}
+	if got := ErrPath(errors.New("plain"), "/x"); got != "/x" {
+		t.Errorf("ErrPath(plain) = %q, want the fallback", got)
+	}
+}
+
 func TestFailOnceConcurrent(t *testing.T) {
 	const keys, callers = 5, 40
 	ops := New(true)

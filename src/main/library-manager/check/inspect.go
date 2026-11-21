@@ -130,8 +130,8 @@ func (i *Inspector) DeepChecked() bool { return i.deep }
 //
 // A folder without song txt is no error: its Inspection has a single no-song-txt error
 // finding. An error means the folder or its txt cannot be read; it has already been
-// logged and counted once (ops.FailOnce with the key "unreadable:<path>", the key the
-// folder discovery and the other modules use), so callers must not count it again.
+// logged and counted once (ops.FailUnreadable, the key the folder discovery and the other
+// modules use), so callers must not count it again.
 // Unreadable media files and failing ffprobe runs are counted the same way and do not
 // make Inspect fail.
 func (i *Inspector) Inspect(folder string) (Inspection, error) {
@@ -176,13 +176,7 @@ func (i *Inspector) Inspect(folder string) (Inspection, error) {
 // skipUnreadable logs an unreadable path and counts it once per run (same key as the
 // folder discovery and the other modules). It returns the error for Inspect.
 func (i *Inspector) skipUnreadable(folder string, err error) error {
-	log.Errorf("Skipping %s: %v", folder, err)
-	path := folder
-	var pathErr *fs.PathError
-	if errors.As(err, &pathErr) {
-		path = pathErr.Path
-	}
-	i.ops.FailOnce("unreadable:" + path)
+	i.ops.SkipUnreadable(folder, err)
 	return fmt.Errorf("inspecting %s: %w", folder, err)
 }
 

@@ -226,7 +226,7 @@ func (i *Inspector) observeFile(path string, kind refKind) fileObs {
 	f, err := os.Open(path)
 	if err != nil {
 		log.Errorf("Cannot check %s: %v", path, err)
-		i.ops.FailOnce("unreadable:" + path)
+		i.ops.FailUnreadable(path)
 		o.Unreadable = true
 		return o
 	}

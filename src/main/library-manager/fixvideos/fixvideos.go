@@ -154,7 +154,7 @@ func (p *processor) collectVideos(dirs []string) []string {
 		files, err := os.ReadDir(dir)
 		if err != nil {
 			log.Errorf("reading directory %q: %v", dir, err)
-			p.ops.FailOnce("unreadable:" + dir) // same key as the song folder discovery
+			p.ops.FailUnreadable(dir) // same key as the song folder discovery
 			continue
 		}
 		for _, file := range files {

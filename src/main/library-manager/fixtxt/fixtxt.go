@@ -187,19 +187,6 @@ func writeFilledReport(cfg config.Config, ops *fsops.Ops, lines []string) {
 	writeReport(cfg, ops, filledTagsReport, slices.Compact(lines))
 }
 
-// failUnreadable logs a folder or txt that cannot be read and counts it as a failure.
-// Discovery counts the same unreadable path under the same key, so it is counted once per
-// run however many modules run into it.
-func failUnreadable(ops *fsops.Ops, folder string, err error) {
-	log.Errorf("Skipping %s: %v", folder, err)
-	path := folder
-	var pathErr *fs.PathError
-	if errors.As(err, &pathErr) {
-		path = pathErr.Path
-	}
-	ops.FailOnce("unreadable:" + path)
-}
-
 // handleFolder checks a song folder and fixes its song txt. Broken songs (no txt, neither
 // audio nor video, or no song txt) are moved to invalid/ as a whole, before any duplicate
 // song txt is split off. Folders that cannot be read, or that contain a media file whose
@@ -207,7 +194,7 @@ func failUnreadable(ops *fsops.Ops, folder string, err error) {
 func handleFolder(cfg config.Config, ops *fsops.Ops, col *collector, folder string) {
 	entries, err := os.ReadDir(folder)
 	if err != nil {
-		failUnreadable(ops, folder, err)
+		ops.SkipUnreadable(folder, err)
 		return
 	}
 	// A txt references media byte-for-byte. Converting a CP1252 txt to UTF-8 would break
@@ -224,7 +211,7 @@ func handleFolder(cfg config.Config, ops *fsops.Ops, col *collector, folder stri
 
 	txtFiles, err := utils.ListTxtFiles(folder)
 	if err != nil {
-		failUnreadable(ops, folder, err)
+		ops.SkipUnreadable(folder, err)
 		return
 	}
 	if len(txtFiles) == 0 {
@@ -235,7 +222,7 @@ func handleFolder(cfg config.Config, ops *fsops.Ops, col *collector, folder stri
 	// An unreadable txt might be the song txt: never mistake the folder for a broken song.
 	songTxts, err := utils.SongTxtFiles(ops, folder)
 	if err != nil {
-		failUnreadable(ops, folder, err)
+		ops.SkipUnreadable(folder, err)
 		return
 	}
 

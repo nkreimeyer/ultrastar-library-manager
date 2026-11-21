@@ -106,7 +106,7 @@ func collectSongFolders(ops *fsops.Ops, dir string) collected {
 func skipUnreadable(ops *fsops.Ops, path string, err error) {
 	log.Errorf("Skipping unreadable %s: %v", path, err)
 	if ops != nil {
-		ops.FailOnce("unreadable:" + path)
+		ops.FailUnreadable(path)
 	}
 }
 
