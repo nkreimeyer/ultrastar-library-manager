@@ -35,6 +35,7 @@ var languagePrefixes = []struct{ prefix, code string }{
 	{"latv", "lv"}, {"lett", "lv"}, {"latino", ""}, {"latg", ""}, {"lat", "la"},
 	{"ice", "is"}, {"isl", "is"},
 	{"kroat", "hr"}, {"croat", "hr"}, {"hrv", "hr"},
+	{"bosn", "bs"}, {"bosan", "bs"},
 	{"rumantsch", ""}, {"rum", "ro"},
 	// Romani (Romany, Romanes), Romansh (Romanche, Romancio) and Romagnol are no Romanian.
 	{"romanian", "ro"}, {"romani", ""}, {"romany", ""}, {"romanes", ""}, {"romansh", ""}, {"romanc", ""}, {"romag", ""}, {"rom", "ro"},

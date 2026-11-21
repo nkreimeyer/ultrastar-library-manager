@@ -9,7 +9,6 @@ import (
 
 	"golang.org/x/text/encoding/charmap"
 	xunicode "golang.org/x/text/encoding/unicode"
-	"golang.org/x/text/unicode/norm"
 
 	"github.com/nkreimeyer/library-manager/songtxt"
 )
@@ -244,53 +243,35 @@ var nonLatinCodecs = map[string]bool{
 	"ISO-8859-5": true, "ISO-8859-7": true, "KOI8-R": true, "KOI8-U": true,
 }
 
-// centralEuropean are #LANGUAGE values (English, native and German names, lower case and
-// without diacritics, see foldLanguage) of languages whose legacy Windows encoding is CP1250.
-var centralEuropean = map[string]bool{
-	"polish": true, "polski": true, "polnisch": true,
-	"czech": true, "cestina": true, "tschechisch": true,
-	"slovak": true, "slovencina": true, "slowakisch": true,
-	"hungarian": true, "magyar": true, "ungarisch": true,
-	"croatian": true, "hrvatski": true, "kroatisch": true,
-	"slovenian": true, "slovene": true, "slovenscina": true, "slowenisch": true,
-	"romanian": true, "romana": true, "rumanisch": true,
-	"bosnian": true, "bosanski": true, "bosnisch": true,
+// cp1250Languages are the codes (LanguageCodes) of the languages whose legacy Windows
+// encoding is CP1250: Polish, Czech, Slovak, Hungarian, Croatian, Slovenian, Romanian and
+// Bosnian.
+var cp1250Languages = map[string]bool{
+	"pl": true, "cs": true, "sk": true, "hu": true, "hr": true, "sl": true, "ro": true, "bs": true,
 }
 
 // centralEuropeanFile reports whether the #LANGUAGE tag of raw (a file that is not valid
 // UTF-8) names a Central European language. The value is still in the file's encoding, so
-// it is tried as it is (ASCII, or UTF-8) and decoded as CP1250, the codec in question ("ä"
-// in "Rumänisch" is the same byte in CP1250 and CP1252).
+// it is tried as it is (if it is ASCII or UTF-8) and decoded as CP1250, the codec in
+// question ("ä" in "Rumänisch" is the same byte in CP1250 and CP1252).
 func centralEuropeanFile(raw []byte) bool {
 	language := HeaderTags(string(raw))["LANGUAGE"]
-	if isCentralEuropean(language) {
+	if utf8.ValidString(language) && isCentralEuropean(language) {
 		return true
 	}
 	decoded, err := charmap.Windows1250.NewDecoder().String(language)
 	return err == nil && isCentralEuropean(decoded)
 }
 
-// isCentralEuropean reports whether one of the ",", "/" or ";" separated languages names
-// a Central European language.
+// isCentralEuropean reports whether one of the languages a #LANGUAGE value names
+// (LanguageCodes: "Polish & English", "Polski (PL)") is a CP1250 language.
 func isCentralEuropean(language string) bool {
-	for _, l := range strings.FieldsFunc(language, func(r rune) bool { return r == ',' || r == '/' || r == ';' }) {
-		if centralEuropean[foldLanguage(l)] {
+	for _, code := range LanguageCodes(language) {
+		if cp1250Languages[code] {
 			return true
 		}
 	}
 	return false
-}
-
-// foldLanguage trims, lower-cases and removes the diacritics of a language name
-// ("Čeština" → "cestina").
-func foldLanguage(s string) string {
-	var b strings.Builder
-	for _, r := range norm.NFD.String(strings.ToLower(strings.TrimSpace(s))) {
-		if !unicode.Is(unicode.Mn, r) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }
 
 // looksLikeCP1250 reports whether CP1252-decoded text contains a letter, then one of
