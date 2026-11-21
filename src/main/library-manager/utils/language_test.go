@@ -64,22 +64,36 @@ func TestLanguageCodes(t *testing.T) {
 		"Romeno":           {"ro"},
 		"Rumano":           {"ro"},
 		"Rumantsch":        nil,
-		"German/Esperanto": {"de", "eo"},
-		"Niederländisch":   {"nl"},
-		"Niederdeutsch":    nil,
-		"Niedersächsisch":  nil,
-		"Tschechisch":      {"cs"},
-		"Tschetschenisch":  nil,
-		"Koreanisch":       {"ko"},
-		"Korean":           {"ko"},
-		"Kornisch":         nil,
-		"Russisch":         {"ru"},
-		"Ruso":             {"ru"},
-		"Rusyn":            nil,
-		"Latgalian":        nil,
-		"Fränkisch":        nil,
-		"Other":            nil,
-		"":                 nil,
+		// Romanized Japanese, Rome, Romansh (Sursilvan) and genre words are no Romanian,
+		// Hunsrik (Brazilian German) is no Hungarian, Polari no Polish.
+		"Japanese (Romaji)": {"ja"},
+		"Japanese, Romaji":  {"ja"},
+		"Romaji":            nil,
+		"Romanji":           nil,
+		"Roma":              nil,
+		"Roman":             nil,
+		"Romontsch":         nil,
+		"Rumba":             nil,
+		"Polka":             nil,
+		"Polari":            nil,
+		"Hunsrik":           nil,
+		"Romana":            {"ro"},
+		"German/Esperanto":  {"de", "eo"},
+		"Niederländisch":    {"nl"},
+		"Niederdeutsch":     nil,
+		"Niedersächsisch":   nil,
+		"Tschechisch":       {"cs"},
+		"Tschetschenisch":   nil,
+		"Koreanisch":        {"ko"},
+		"Korean":            {"ko"},
+		"Kornisch":          nil,
+		"Russisch":          {"ru"},
+		"Ruso":              {"ru"},
+		"Rusyn":             nil,
+		"Latgalian":         nil,
+		"Fränkisch":         nil,
+		"Other":             nil,
+		"":                  nil,
 	} {
 		if got := LanguageCodes(in); !reflect.DeepEqual(got, want) {
 			t.Errorf("LanguageCodes(%q) = %v, want %v", in, got, want)
@@ -131,6 +145,8 @@ func TestIsCentralEuropean(t *testing.T) {
 		"Romani", "Romany", "Romanes", "Romansh", "Rumantsch", "Romanche", "Romancio",
 		"Romagnolo", "Niederdeutsch", "Niedersächsisch", "Tschetschenisch", "Kornisch",
 		"Rusyn", "Latgalian", "Turkmen", "Serbo-Croatian", "Other",
+		"Japanese (Romaji)", "Japanese, Romaji", "Romaji", "Romanji", "Roma", "Roman",
+		"Romontsch", "Rumba", "Polka", "Polari", "Hunsrik",
 	} {
 		if isCentralEuropean(name) {
 			t.Errorf("isCentralEuropean(%q) = true, want false", name)
@@ -143,27 +159,47 @@ func TestIsCentralEuropean(t *testing.T) {
 // and when the name itself is written in CP1250.
 func TestDecodeTxtCP1250ByLanguage(t *testing.T) {
 	for language, want := range map[string]string{
-		"Polish & English": EncCP1250,
-		"Polski (PL)":      EncCP1250,
-		"Polish English":   EncCP1250,
-		"Polnisch (Polen)": EncCP1250,
-		"Bosanski":         EncCP1250,
-		"\xc8e\x9atina":    EncCP1250, // "Čeština" in CP1250
-		"Sloven\xe8ina":    EncCP1250, // "Slovenčina" in CP1250
-		"Rum\xe4nisch":     EncCP1250, // "Rumänisch" in CP1250 and CP1252
-		"Rom\xe2n\xe3":     EncCP1250, // "Română" in CP1250
-		"English & German": EncCP1252,
-		"Romanche":         EncCP1252,
-		"Romany":           EncCP1252,
-		"Niederdeutsch":    EncCP1252,
-		"Tschetschenisch":  EncCP1252,
-		"Kornisch":         EncCP1252,
+		"Polish & English":  EncCP1250,
+		"Polski (PL)":       EncCP1250,
+		"Polish English":    EncCP1250,
+		"Polnisch (Polen)":  EncCP1250,
+		"Bosanski":          EncCP1250,
+		"\xc8e\x9atina":     EncCP1250, // "Čeština" in CP1250
+		"Sloven\xe8ina":     EncCP1250, // "Slovenčina" in CP1250
+		"Rum\xe4nisch":      EncCP1250, // "Rumänisch" in CP1250 and CP1252
+		"Rom\xe2n\xe3":      EncCP1250, // "Română" in CP1250
+		"English & German":  EncCP1252,
+		"Romanche":          EncCP1252,
+		"Romany":            EncCP1252,
+		"Niederdeutsch":     EncCP1252,
+		"Tschetschenisch":   EncCP1252,
+		"Kornisch":          EncCP1252,
+		"Japanese (Romaji)": EncCP1252,
+		"Romaji":            EncCP1252,
+		"Roma":              EncCP1252,
+		"Hunsrik":           EncCP1252,
+		"Polari":            EncCP1252,
+		"Polka":             EncCP1252,
+		"Rumba":             EncCP1252,
 		// Read as it is, "Románi" would be "Romni" (Romanian); only its decoded form counts.
 		"Rom\xe1ni": EncCP1252,
 	} {
 		raw := "#LANGUAGE:" + language + "\n#TITLE:\xb9\n"
 		if got := DecodeTxt([]byte(raw)); got.Encoding != want || got.Problem != "" {
 			t.Errorf("DecodeTxt(%q) = %s, problem=%q; want %s", raw, got.Encoding, got.Problem, want)
+		}
+	}
+}
+
+// TestDecodeTxtRomajiStaysCP1252: "Romaji" (romanized Japanese lyrics) starts like
+// Romanian, but a CP1252 txt tagged with it keeps its CP1252 letters (è, ñ), not the
+// CP1250 ones (č, ń), and fixtxt would write those without a Problem.
+func TestDecodeTxtRomajiStaysCP1252(t *testing.T) {
+	for _, language := range []string{"Japanese (Romaji)", "Japanese, Romaji", "Romaji"} {
+		raw := "#LANGUAGE:" + language + "\n#TITLE:Caf\xe8 Espa\xf1a\n"
+		got := DecodeTxt([]byte(raw))
+		if got.Encoding != EncCP1252 || got.Problem != "" || !strings.Contains(got.Text, "#TITLE:Cafè España") {
+			t.Errorf("DecodeTxt(%q) = %s %q, problem=%q; want CP1252 \"Cafè España\"", raw, got.Encoding, got.Text, got.Problem)
 		}
 	}
 }
