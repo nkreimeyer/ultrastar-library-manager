@@ -218,14 +218,16 @@ func (p *planner) levels(langs []string, local, songWords *langLex) []level {
 }
 
 // wildMatch reports whether the name runes s match the damaged pattern p: same length, a
-// U+FFFD matches any allowed non-ASCII rune, other runes match regardless of case.
+// U+FFFD matches any allowed non-ASCII rune, other runes match regardless of case. The
+// name's rune is filled in as it is, so it must be allowed itself (not only its lower
+// case: Ƒ is in no codepage, ƒ is).
 func wildMatch(p, s []rune) bool {
 	if len(p) != len(s) {
 		return false
 	}
 	for i, r := range p {
 		if r == replChar {
-			if !allowedRune[unicode.ToLower(s[i])] && !allowedRune[s[i]] {
+			if !allowedRune[s[i]] {
 				return false
 			}
 		} else if unicode.ToLower(r) != unicode.ToLower(s[i]) {
@@ -305,7 +307,14 @@ type fixKey struct {
 	weak                  bool
 }
 
+// add records a fix. A fix with a rune no lost byte can stand for (see allowedRune) is
+// dropped, so a repair never writes one; its U+FFFD count as left.
 func (ff *fileFixes) add(seg segment, idx []int, runes []rune, before, after, source string, weak bool) {
+	for k := range idx {
+		if !allowedRune[runes[k]] {
+			return
+		}
+	}
 	for k, i := range idx {
 		ff.plan.repl[seg.offs[i]] = runes[k]
 	}

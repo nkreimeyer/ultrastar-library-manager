@@ -248,6 +248,48 @@ func TestRestoreCase(t *testing.T) {
 	}
 }
 
+// TestRepairOnlyAllowedRunes: the upper case of µ (U+039C) and ƒ (U+0191) is in neither
+// CP1252 nor CP1250, so no repair may write it: not by restoring the case, not from a
+// file name, and no fix with such a rune is recorded.
+func TestRepairOnlyAllowedRunes(t *testing.T) {
+	g := newLangLex()
+	g.add([]occurrence{{form: "ƒx", upper: true}, {form: "ƒx", upper: true}}, nil)
+	cr := caseRule{startUpper: true, global: g}
+	for _, tt := range []struct {
+		tok, form string
+		i         int
+		lineStart bool
+		want      rune
+	}{
+		{"AB" + R + "C", "abµc", 2, false, 'µ'}, // all caps
+		{R + "ber", "ƒber", 0, true, 'ƒ'},       // line start, upper-case convention
+		{R + "x", "ƒx", 0, false, 'ƒ'},          // mid-line, upper case in the corpus
+		{"AB" + R + "C", "abäc", 2, false, 'Ä'}, // allowed upper case still used
+	} {
+		if got := cr.restoreCase([]rune(tt.tok), []rune(tt.form), tt.i, tt.lineStart); got != tt.want || !allowedRune[got] {
+			t.Errorf("restoreCase(%q, %q) = %q, want %q", tt.tok, tt.form, got, tt.want)
+		}
+	}
+	if wildMatch([]rune("a"+R), []rune("aƑ")) {
+		t.Error("wildMatch filled in Ƒ, which no codepage byte stands for")
+	}
+	if fill, ok := nameFill([]rune("a"+R+".mp3"), []string{"aƑ.mp3"}, true); ok {
+		t.Errorf("nameFill = %q from a name with Ƒ", string(fill))
+	}
+
+	fp := &filePlan{repl: map[int]rune{}}
+	ff := &fileFixes{plan: fp, index: map[fixKey]int{}}
+	seg := segment{runes: []rune("a" + R), offs: []int{0, 1}, lines: []int{1, 1}}
+	ff.add(seg, []int{1}, []rune{'Ƒ'}, "a"+R, "aƑ", srcSong, true)
+	if len(fp.repl) != 0 || len(fp.fixes) != 0 || fp.weakCount != 0 {
+		t.Errorf("fix with Ƒ recorded: repl %v, fixes %v, weak %d", fp.repl, fp.fixes, fp.weakCount)
+	}
+	ff.add(seg, []int{1}, []rune{'ƒ'}, "a"+R, "aƒ", srcSong, false)
+	if fp.repl[1] != 'ƒ' || len(fp.fixes) != 1 {
+		t.Errorf("allowed fix not recorded: repl %v, fixes %v", fp.repl, fp.fixes)
+	}
+}
+
 func TestSegmentsJoinSyllables(t *testing.T) {
 	txt := "\uFEFF#TITLE:Gl" + R + "ck\r\n#MP3:a.mp3\r\n: 0 2 0 f\r\n: 2 2 0 " + R + "r\r\n: 4 2 0 ~\r\n: 6 2 0  dich\r\n- 8\r\n: 10 2 0 zwei\r\nE\r\n"
 	song, _ := songtxt.Parse(txt)

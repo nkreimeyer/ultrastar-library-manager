@@ -139,6 +139,8 @@ type caseRule struct {
 //     else the corpus, mostly writes the word that way in the middle of a line (German
 //     nouns, "of Ísland" in the lyrics);
 //   - otherwise it is lower case.
+//
+// An upper case no codepage byte stands for (µ → U+039C, ƒ → U+0191) is never used.
 func (cr caseRule) restoreCase(tok, form []rune, i int, lineStart bool) rune {
 	r := form[i]
 	if !unicode.IsLetter(r) {
@@ -154,7 +156,7 @@ func (cr caseRule) restoreCase(tok, form []rune, i int, lineStart bool) rune {
 		}
 	}
 	if letters >= 2 && upper == letters {
-		return unicode.ToUpper(r)
+		return upperAllowed(r)
 	}
 	first := 0
 	for first < len(tok) && isApostrophe(tok[first]) {
@@ -165,7 +167,7 @@ func (cr caseRule) restoreCase(tok, form []rune, i int, lineStart bool) rune {
 	}
 	if lineStart {
 		if cr.startUpper {
-			return unicode.ToUpper(r)
+			return upperAllowed(r)
 		}
 		return r
 	}
@@ -175,10 +177,18 @@ func (cr caseRule) restoreCase(tok, form []rune, i int, lineStart bool) rune {
 		}
 		if e := l.words[string(form)]; e != nil && e.mid > 0 {
 			if 2*e.midUpper > e.mid {
-				return unicode.ToUpper(r)
+				return upperAllowed(r)
 			}
 			return r
 		}
+	}
+	return r
+}
+
+// upperAllowed returns the upper case of r if a lost byte can stand for it, else r.
+func upperAllowed(r rune) rune {
+	if u := unicode.ToUpper(r); allowedRune[u] {
+		return u
 	}
 	return r
 }
