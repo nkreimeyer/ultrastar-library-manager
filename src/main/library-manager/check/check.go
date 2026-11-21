@@ -115,14 +115,13 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 	}
 
 	rep := buildReport(c.checked, results, notes, insp.MediaChecked(), insp.DeepChecked(), cfg.DryRun)
-	jsonData, err := rep.json()
-	if err != nil {
-		return fmt.Errorf("encoding check report: %w", err)
+	// fsops writes JSON reports without HTML escaping: messages like "0:19.7 > 0:03.0"
+	// stay readable.
+	if err := ops.WriteJSONReport(cfg.ReportPath(reportJSON), rep); err != nil {
+		return err
 	}
-	for name, data := range map[string][]byte{reportJSON: jsonData, reportTxt: rep.text()} {
-		if err := ops.WriteReport(cfg.ReportPath(name), data); err != nil {
-			return err
-		}
+	if err := ops.WriteReport(cfg.ReportPath(reportTxt), rep.text()); err != nil {
+		return err
 	}
 	log.Infof("Check: %d song(s) checked, %d broken, %d suspicious; see %s",
 		rep.Checked, rep.Broken, rep.Suspicious, cfg.ReportPath(reportTxt))

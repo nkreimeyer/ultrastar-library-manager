@@ -566,7 +566,7 @@ func TestDropNullMuxerLines(t *testing.T) {
 // Report messages contain ">" (e.g. "ends at 0:19.7 > ..."); the JSON must not escape it.
 func TestReportJSONIsNotHTMLEscaped(t *testing.T) {
 	r := report{Songs: []songReport{{Path: "A", Status: "broken", Findings: []Finding{{Severity: SevError, Code: "x", Message: "a > b & <c>"}}}}}
-	data, err := r.json()
+	data, err := fsops.MarshalReport(r)
 	if err != nil {
 		t.Fatal(err)
 	}

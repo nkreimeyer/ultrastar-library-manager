@@ -1,8 +1,6 @@
 package check
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -60,18 +58,6 @@ func buildReport(checked int, results []songResult, notes []string, media, deep,
 		r.Songs = append(r.Songs, songReport{Path: res.rel, Txt: res.txt, Status: status, Moved: res.moved, NotMoved: res.notMoved, Findings: res.findings})
 	}
 	return r
-}
-
-func (r report) json() ([]byte, error) {
-	// No HTML escaping: messages like "0:19.7 > 0:03.0" stay readable.
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(r); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil // Encode appends the final newline
 }
 
 // text renders the readable report: a summary, then the broken songs, then the
