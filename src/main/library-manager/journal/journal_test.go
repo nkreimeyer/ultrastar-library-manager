@@ -426,8 +426,9 @@ func TestOpenLineTooLong(t *testing.T) {
 	}
 }
 
-// AddAndSave persists right away: a reopened journal has the entry without a Save call.
-func TestAddAndSavePersistsImmediately(t *testing.T) {
+// Add followed by Save persists right away (what fixaudio and fixvideos do after each
+// file, so an interrupted run does not forget files it already processed).
+func TestAddThenSavePersists(t *testing.T) {
 	dir := t.TempDir()
 	jpath := filepath.Join(dir, "out", "media-journal.txt")
 	media := filepath.Join(dir, "a.aac")
@@ -435,31 +436,37 @@ func TestAddAndSavePersistsImmediately(t *testing.T) {
 	ops := fsops.New(false)
 
 	j := open(t, jpath)
-	if err := j.AddAndSave("k", media, ops); err != nil {
+	if err := j.Add("k", media); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Save(ops); err != nil {
 		t.Fatal(err)
 	}
 	if !open(t, jpath).Has("k", media) {
-		t.Error("entry not persisted by AddAndSave")
+		t.Error("entry not persisted by Add + Save")
 	}
 	if j.dirty {
-		t.Error("journal still dirty after AddAndSave")
+		t.Error("journal still dirty after Save")
 	}
 
-	// A missing file is an error and writes nothing.
+	// A missing file is an Add error, and the following Save writes nothing.
 	jpath2 := filepath.Join(dir, "out", "other-journal.txt")
 	j2 := open(t, jpath2)
-	if err := j2.AddAndSave("k", filepath.Join(dir, "missing.aac"), ops); err == nil {
-		t.Error("AddAndSave of a missing file succeeded")
+	if err := j2.Add("k", filepath.Join(dir, "missing.aac")); err == nil {
+		t.Error("Add of a missing file succeeded")
+	}
+	if err := j2.Save(ops); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := os.Stat(jpath2); !os.IsNotExist(err) {
-		t.Errorf("AddAndSave of a missing file wrote the journal (err %v)", err)
+		t.Errorf("Save after a failed Add wrote the journal (err %v)", err)
 	}
 	if s := ops.Stats(); s.Failed != 0 {
 		t.Errorf("Stats = %+v", s)
 	}
 }
 
-func TestConcurrentAddAndSave(t *testing.T) {
+func TestConcurrentAddThenSave(t *testing.T) {
 	const n = 30
 	dir := t.TempDir()
 	jpath := filepath.Join(dir, "journal.txt")
@@ -475,7 +482,9 @@ func TestConcurrentAddAndSave(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := j.AddAndSave("k", f, ops); err != nil {
+			if err := j.Add("k", f); err != nil {
+				t.Error(err)
+			} else if err := j.Save(ops); err != nil {
 				t.Error(err)
 			}
 		}()

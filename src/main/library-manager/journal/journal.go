@@ -111,16 +111,6 @@ func (j *Journal) Add(kind, path string) error {
 	return nil
 }
 
-// AddAndSave records the file like Add and immediately persists the journal, so an
-// interrupted run does not forget files it already processed (which would re-encode them,
-// and back them up, a second time).
-func (j *Journal) AddAndSave(kind, path string, ops *fsops.Ops) error {
-	if err := j.Add(kind, path); err != nil {
-		return err
-	}
-	return j.Save(ops)
-}
-
 // Save writes the journal if it changed. It lives in the output dir, so it is written
 // through ops.WriteReport.
 func (j *Journal) Save(ops *fsops.Ops) error {

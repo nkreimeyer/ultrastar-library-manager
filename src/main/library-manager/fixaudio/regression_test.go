@@ -94,8 +94,8 @@ func TestFLACCoverAndTagsKept(t *testing.T) {
 	}
 }
 
-// AddAndSave's failing Save is already counted by ops (WriteReport); processFile counted
-// it a second time.
+// The journal's failing Save is already counted by ops (WriteReport); processFile once
+// counted it a second time.
 func TestJournalSaveFailureCountedOnce(t *testing.T) {
 	requireFFmpeg(t)
 	if os.Geteuid() == 0 {

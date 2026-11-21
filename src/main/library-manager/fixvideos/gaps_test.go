@@ -676,7 +676,10 @@ func TestJournaledProcessedVideoIsSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := j.AddAndSave(journalProcessed, video, fsops.New(false)); err != nil {
+	if err := j.Add(journalProcessed, video); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Save(fsops.New(false)); err != nil {
 		t.Fatal(err)
 	}
 	before := snapshot(t, songDir)
