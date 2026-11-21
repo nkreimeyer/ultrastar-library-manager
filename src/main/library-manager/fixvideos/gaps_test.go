@@ -238,7 +238,7 @@ func TestReplaceOriginalUnusableOutput(t *testing.T) {
 	if st := p.ops.Stats(); st.Failed != 1 || st.Replaced != 0 {
 		t.Errorf("Stats = %+v, want 1 failure and no replacement", st)
 	}
-	if got := readFile(t, video); got != "original video" {
+	if got := testutil.ReadFile(t, video); got != "original video" {
 		t.Errorf("original changed to %q", got)
 	}
 	assertNoTempFiles(t, songDir)
@@ -281,13 +281,13 @@ func TestReplaceOriginalTxtUpdateFails(t *testing.T) {
 			if st := p.ops.Stats(); st.Failed != 1 || st.Written != 0 || st.Removed != 1 {
 				t.Errorf("Stats = %+v, want 1 failure, nothing written, the new file removed", st)
 			}
-			if got := dirNames(t, song); !slices.Equal(got, []string{"song.txt", "video.avi"}) {
+			if got := testutil.DirNames(t, song); !slices.Equal(got, []string{"song.txt", "video.avi"}) {
 				t.Errorf("song folder = %v, want song.txt and video.avi", got)
 			}
-			if got := readFile(t, video); got != "original video, larger than the result" {
+			if got := testutil.ReadFile(t, video); got != "original video, larger than the result" {
 				t.Errorf("original changed to %q", got)
 			}
-			if got := readFile(t, filepath.Join(song, "song.txt")); got != tt.txt {
+			if got := testutil.ReadFile(t, filepath.Join(song, "song.txt")); got != tt.txt {
 				t.Errorf("txt changed to %q", got)
 			}
 			if _, err := os.Stat(filepath.Join(outDir, "media-journal.txt")); !os.IsNotExist(err) {
@@ -315,7 +315,7 @@ func TestReplaceOriginalTargetAppeared(t *testing.T) {
 	if st := p.ops.Stats(); st != (fsops.Stats{}) {
 		t.Errorf("Stats = %+v, want nothing done", st)
 	}
-	if got := readFile(t, filepath.Join(song, "video.mp4")); got != "other" {
+	if got := testutil.ReadFile(t, filepath.Join(song, "video.mp4")); got != "other" {
 		t.Errorf("video.mp4 changed to %q", got)
 	}
 	assertNoTempFiles(t, songDir)
@@ -343,7 +343,7 @@ func TestRememberProcessedJournalFailure(t *testing.T) {
 	if st := p.ops.Stats(); st.Replaced != 1 || st.Failed < 1 {
 		t.Errorf("Stats = %+v, want 1 replacement and the journal failure counted", st)
 	}
-	if got := readFile(t, video); got != "stripped" {
+	if got := testutil.ReadFile(t, video); got != "stripped" {
 		t.Errorf("video = %q, want the processed version", got)
 	}
 }
@@ -509,7 +509,7 @@ func TestNeedsRemoveAudio(t *testing.T) {
 			testutil.WriteFile(t, filepath.Join(song, "cover.jpg"), "image")
 			testutil.WriteFile(t, filepath.Join(song, "empty.mp3"), "")
 			video := filepath.Join(song, "video.mp4")
-			testutil.WriteFile(t, video, readFile(t, map[bool]string{false: withAudio, true: silent}[tt.silent]))
+			testutil.WriteFile(t, video, testutil.ReadFile(t, map[bool]string{false: withAudio, true: silent}[tt.silent]))
 			if got := needsRemoveAudio(nil, song, video, probeOf(video)); got != tt.want {
 				t.Errorf("needsRemoveAudio = %v, want %v", got, tt.want)
 			}
@@ -520,7 +520,7 @@ func TestNeedsRemoveAudio(t *testing.T) {
 		song := t.TempDir()
 		testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "audio")
 		video := filepath.Join(song, "video.mp4")
-		testutil.WriteFile(t, video, readFile(t, withAudio))
+		testutil.WriteFile(t, video, testutil.ReadFile(t, withAudio))
 		if needsRemoveAudio(nil, song, video, probeOf(video)) {
 			t.Error("needsRemoveAudio = true without a song txt")
 		}
@@ -582,10 +582,10 @@ func TestFFmpegFailureIsCounted(t *testing.T) {
 	if after := testutil.Snapshot(t, video); after != before {
 		t.Errorf("original changed\nbefore: %v\n after: %v", before, after)
 	}
-	if got := dirNames(t, song); !slices.Equal(got, []string{"song.txt", "video.avi"}) {
+	if got := testutil.DirNames(t, song); !slices.Equal(got, []string{"song.txt", "video.avi"}) {
 		t.Errorf("song folder = %v, want song.txt and video.avi", got)
 	}
-	if got := readFile(t, filepath.Join(song, "song.txt")); got != txt {
+	if got := testutil.ReadFile(t, filepath.Join(song, "song.txt")); got != txt {
 		t.Errorf("txt changed to %q", got)
 	}
 }

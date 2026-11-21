@@ -84,13 +84,13 @@ func TestMoveCrossDeviceSrcRemovalFails(t *testing.T) {
 			if err == nil {
 				t.Fatal("moving a source that cannot be removed succeeded")
 			}
-			if exists(dst) {
+			if testutil.Exists(dst) {
 				t.Error("failed move left a copy at the target")
 			}
 			if got := snapshot(t, src); strings.Join(got, "\n") != strings.Join(before, "\n") {
 				t.Errorf("failed move changed the source:\nbefore %v\nafter  %v", before, got)
 			}
-			if names := dirNames(t, filepath.Dir(src)); fmt.Sprint(names) != "[Song]" {
+			if names := testutil.DirNames(t, filepath.Dir(src)); fmt.Sprint(names) != "[Song]" {
 				t.Errorf("source folder holds %v, want only Song", names)
 			}
 			if s := ops.Stats(); s.Moved != 0 || s.Failed != 1 {
@@ -134,10 +134,10 @@ func TestMoveCrossDevice(t *testing.T) {
 			if got := snapshot(t, dst); strings.Join(got, "\n") != strings.Join(before, "\n") {
 				t.Errorf("copy differs:\nsrc %v\ndst %v", before, got)
 			}
-			if exists(src) {
+			if testutil.Exists(src) {
 				t.Error("source still exists")
 			}
-			if names := dirNames(t, filepath.Join(srcRoot, "Cat")); len(names) != 0 {
+			if names := testutil.DirNames(t, filepath.Join(srcRoot, "Cat")); len(names) != 0 {
 				t.Errorf("leftovers in the source folder: %v", names)
 			}
 			if s := ops.Stats(); s.Moved != 1 || s.Failed != 0 {
@@ -148,7 +148,7 @@ func TestMoveCrossDevice(t *testing.T) {
 			file := filepath.Join(srcRoot, "Cat", "extra.txt")
 			writeFile(t, file, "e", 0o644)
 			got, err := ops.MoveInto(file, filepath.Join(dstRoot, "extra"), "Cat/extra.txt")
-			if err != nil || readFile(t, got) != "e" || exists(file) {
+			if err != nil || testutil.ReadFile(t, got) != "e" || testutil.Exists(file) {
 				t.Errorf("MoveInto across file systems = %q, %v", got, err)
 			}
 
@@ -160,7 +160,7 @@ func TestMoveCrossDevice(t *testing.T) {
 			if err := ops.MoveTo(long, longDst); err != nil {
 				t.Fatalf("MoveTo of a 240-byte name across file systems: %v", err)
 			}
-			if readFile(t, filepath.Join(longDst, "song.txt")) != "l" || exists(long) {
+			if testutil.ReadFile(t, filepath.Join(longDst, "song.txt")) != "l" || testutil.Exists(long) {
 				t.Error("long-named folder not moved")
 			}
 		})
@@ -195,10 +195,10 @@ func TestMoveCrossDeviceLeftoverSource(t *testing.T) {
 	if got := snapshot(t, dst); strings.Join(got, "\n") != strings.Join(before, "\n") {
 		t.Errorf("copy differs:\nsrc %v\ndst %v", before, got)
 	}
-	if exists(src) {
+	if testutil.Exists(src) {
 		t.Error("the source is still visible under its name")
 	}
-	names := dirNames(t, srcRoot)
+	names := testutil.DirNames(t, srcRoot)
 	if len(names) != 1 || !strings.HasPrefix(names[0], ".fsops-move-") {
 		t.Errorf("source folder = %v, want one hidden leftover", names)
 	}
@@ -227,13 +227,13 @@ func TestMoveCrossDeviceCopyFailureRestoresSource(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unsupported file type") {
 		t.Fatalf("MoveTo = %v, want an unsupported-file-type error", err)
 	}
-	if exists(dst) {
+	if testutil.Exists(dst) {
 		t.Error("partial copy left at the target")
 	}
 	if got := snapshot(t, src); strings.Join(got, "\n") != strings.Join(before, "\n") {
 		t.Errorf("source changed:\nbefore %v\nafter  %v", before, got)
 	}
-	if names := dirNames(t, srcRoot); fmt.Sprint(names) != "[Song]" {
+	if names := testutil.DirNames(t, srcRoot); fmt.Sprint(names) != "[Song]" {
 		t.Errorf("source folder = %v, want [Song]", names)
 	}
 	if s := ops.Stats(); s.Moved != 0 || s.Failed != 1 {
@@ -250,7 +250,7 @@ func TestMoveCrossDeviceSourceVisibleDuringCopy(t *testing.T) {
 	writeFile(t, filepath.Join(src, "song.txt"), "x", 0o644)
 	var during []string
 	copyAcross = func(from, to string) error {
-		during = dirNames(t, srcRoot)
+		during = testutil.DirNames(t, srcRoot)
 		if from != src {
 			t.Errorf("copying from %s, want the source under its own name %s", from, src)
 		}
@@ -265,7 +265,7 @@ func TestMoveCrossDeviceSourceVisibleDuringCopy(t *testing.T) {
 	if fmt.Sprint(during) != "[Song]" {
 		t.Errorf("source folder during the copy = %v, want [Song]", during)
 	}
-	if exists(src) || readFile(t, filepath.Join(dst, "song.txt")) != "x" {
+	if testutil.Exists(src) || testutil.ReadFile(t, filepath.Join(dst, "song.txt")) != "x" {
 		t.Error("move not done")
 	}
 }
@@ -301,13 +301,13 @@ func TestMoveCrossDeviceParkAfterCopyFails(t *testing.T) {
 	if msg := err.Error(); !strings.Contains(msg, "deleting the source after the copy") || strings.Contains(msg, "removing the copy") {
 		t.Errorf("MoveTo = %v, want a failed delete of the source and nothing about the removed copy", err)
 	}
-	if exists(dst) {
+	if testutil.Exists(dst) {
 		t.Error("the copy was left at the target")
 	}
 	if got := snapshot(t, src); strings.Join(got, "\n") != strings.Join(before, "\n") {
 		t.Errorf("source changed:\nbefore %v\nafter  %v", before, got)
 	}
-	if names := dirNames(t, parent); fmt.Sprint(names) != "[Song]" {
+	if names := testutil.DirNames(t, parent); fmt.Sprint(names) != "[Song]" {
 		t.Errorf("source folder = %v, want [Song]", names)
 	}
 	if s := ops.Stats(); s.Moved != 0 || s.Failed != 1 {
@@ -338,8 +338,8 @@ func TestMoveOtherRenameError(t *testing.T) {
 	src := filepath.Join(root, "a.txt")
 	writeFile(t, src, "x", 0o644)
 	dst := filepath.Join(root, "b.txt")
-	if err := move(src, dst); !errors.Is(err, boom) || exists(dst) || !exists(src) {
-		t.Errorf("move = %v, dst exists %v", err, exists(dst))
+	if err := move(src, dst); !errors.Is(err, boom) || testutil.Exists(dst) || !testutil.Exists(src) {
+		t.Errorf("move = %v, dst exists %v", err, testutil.Exists(dst))
 	}
 }
 
@@ -377,7 +377,7 @@ func TestParkName(t *testing.T) {
 	}
 	writeFile(t, p, "taken", 0o644)
 	q, err := parkName(filepath.Join(dir, "Song"))
-	if err != nil || q == p || exists(q) {
+	if err != nil || q == p || testutil.Exists(q) {
 		t.Errorf("parkName with the first name taken = %q, %v", q, err)
 	}
 	// A parent that is a file: the name cannot be checked.
@@ -400,7 +400,7 @@ func TestAppendJournalAfterTruncatedLine(t *testing.T) {
 	if err := ops.AppendJournal(p, []byte(`{"op":"run"}`)); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := readFile(t, p), "{\"a\":1}\n{\"tr\n{\"op\":\"undone\"}\n{\"op\":\"run\"}\n"; got != want {
+	if got, want := testutil.ReadFile(t, p), "{\"a\":1}\n{\"tr\n{\"op\":\"undone\"}\n{\"op\":\"run\"}\n"; got != want {
 		t.Errorf("journal = %q, want %q", got, want)
 	}
 }
@@ -418,7 +418,7 @@ func TestAppendJournalKeepsCallerSlice(t *testing.T) {
 	if string(line) != "abc" || spare[3] != 'Z' {
 		t.Errorf("caller slice changed: %q, spare %q", line, spare[3])
 	}
-	if got := readFile(t, p); got != "abc\n" {
+	if got := testutil.ReadFile(t, p); got != "abc\n" {
 		t.Errorf("journal = %q", got)
 	}
 }
@@ -525,14 +525,14 @@ func TestMoveIntoMergesCategory(t *testing.T) {
 		"Cat/Sub/S2/song.txt": "s2",
 		"Cat/Sub/notes.txt":   "notes",
 	} {
-		if p := filepath.Join(inv, rel); !exists(p) || readFile(t, p) != want {
+		if p := filepath.Join(inv, rel); !testutil.Exists(p) || testutil.ReadFile(t, p) != want {
 			t.Errorf("%s missing or wrong", rel)
 		}
 	}
-	if exists(filepath.Join(inv, "Cat (2)")) || exists(filepath.Join(inv, "Cat", "Sub (2)")) {
+	if testutil.Exists(filepath.Join(inv, "Cat (2)")) || testutil.Exists(filepath.Join(inv, "Cat", "Sub (2)")) {
 		t.Error("merge created a numbered folder")
 	}
-	if exists(filepath.Join(lib, "Cat")) {
+	if testutil.Exists(filepath.Join(lib, "Cat")) {
 		t.Error("merged category still in the library")
 	}
 	if realStats.Moved != 6 || realStats.Failed != 0 {
@@ -543,7 +543,7 @@ func TestMoveIntoMergesCategory(t *testing.T) {
 	if dryGot != filepath.Join(dryInv, "Cat") || dryStats != realStats {
 		t.Errorf("dry run = %q %+v, real run = %q %+v", dryGot, dryStats, realGot, realStats)
 	}
-	if !dryOps.WouldBeMoved(filepath.Join(dryLib, "Cat", "cover.jpg")) || !exists(filepath.Join(dryLib, "Cat", "cover.jpg")) {
+	if !dryOps.WouldBeMoved(filepath.Join(dryLib, "Cat", "cover.jpg")) || !testutil.Exists(filepath.Join(dryLib, "Cat", "cover.jpg")) {
 		t.Error("dry run: the category must be planned away and left on disk")
 	}
 }
@@ -569,7 +569,7 @@ func TestMoveIntoMergeChildFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "merging") {
 		t.Errorf("merge with a failing child = %q, %v", got, err)
 	}
-	if !exists(filepath.Join(lib, "Cat", "Locked", "x.txt")) {
+	if !testutil.Exists(filepath.Join(lib, "Cat", "Locked", "x.txt")) {
 		t.Error("the unmovable child was lost")
 	}
 	if s := ops.Stats(); s.Moved != 1 || s.Failed != 1 {
@@ -608,7 +608,7 @@ func TestMoveIntoTargetBelowFile(t *testing.T) {
 		if got, err := ops.MoveInto(src, file, "x"); err == nil || got != "" || !strings.Contains(err.Error(), "checking") {
 			t.Errorf("dry=%v: MoveInto below a file = %q, %v", dry, got, err)
 		}
-		if !exists(src) || readFile(t, file) != "f" {
+		if !testutil.Exists(src) || testutil.ReadFile(t, file) != "f" {
 			t.Errorf("dry=%v: source or file changed", dry)
 		}
 		if s := ops.Stats(); s.Failed != 1 || s.Moved != 0 {
@@ -635,7 +635,7 @@ func TestMoveToRealFailures(t *testing.T) {
 	if err := ops.MoveTo(src, filepath.Join(src, "sub")); err == nil {
 		t.Error("MoveTo into itself succeeded")
 	}
-	if readFile(t, filepath.Join(src, "song.txt")) != "x" {
+	if testutil.ReadFile(t, filepath.Join(src, "song.txt")) != "x" {
 		t.Error("source changed")
 	}
 	if s := ops.Stats(); s.Failed != 2 || s.Moved != 0 {
@@ -674,7 +674,7 @@ func TestMoveIntoMkdirFailure(t *testing.T) {
 	if got, err := ops.MoveInto(src, out, "S/a.txt"); err == nil || got != "" || !strings.Contains(err.Error(), "creating") {
 		t.Errorf("MoveInto into a read-only out dir = %q, %v", got, err)
 	}
-	if !exists(src) || ops.Stats().Failed != 1 {
+	if !testutil.Exists(src) || ops.Stats().Failed != 1 {
 		t.Errorf("source gone or failure not counted: %+v", ops.Stats())
 	}
 }
@@ -720,8 +720,8 @@ func TestRemoveEmptyDirSymlink(t *testing.T) {
 			t.Fatal(err)
 		}
 		ops := New(dry)
-		if removed, err := ops.RemoveEmptyDir(link); err != nil || removed || !exists(link) {
-			t.Errorf("dry=%v: RemoveEmptyDir(symlink) = %v, %v; link exists %v", dry, removed, err, exists(link))
+		if removed, err := ops.RemoveEmptyDir(link); err != nil || removed || !testutil.Exists(link) {
+			t.Errorf("dry=%v: RemoveEmptyDir(symlink) = %v, %v; link exists %v", dry, removed, err, testutil.Exists(link))
 		}
 		if !isDir(filepath.Join(root, "empty")) {
 			t.Errorf("dry=%v: the link target was removed", dry)
@@ -746,7 +746,7 @@ func TestRemoveEmptyDirUnreadable(t *testing.T) {
 		if err == nil || removed {
 			t.Errorf("dry=%v: RemoveEmptyDir(unreadable) = %v, %v", dry, removed, err)
 		}
-		if !exists(filepath.Join(dir, "x")) {
+		if !testutil.Exists(filepath.Join(dir, "x")) {
 			t.Errorf("dry=%v: content lost", dry)
 		}
 		results = append(results, fmt.Sprint(removed, err != nil, ops.Stats()))
@@ -806,13 +806,13 @@ func TestWriteReportOverwriteAndMode(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := readFile(t, path); got != "second\n" {
+	if got := testutil.ReadFile(t, path); got != "second\n" {
 		t.Errorf("report = %q, want the latest content", got)
 	}
 	if st, _ := os.Stat(path); st.Mode().Perm() != 0o644 {
 		t.Errorf("report mode = %v, want 0644", st.Mode().Perm())
 	}
-	if names := dirNames(t, dir); fmt.Sprint(names) != "[report.txt]" {
+	if names := testutil.DirNames(t, dir); fmt.Sprint(names) != "[report.txt]" {
 		t.Errorf("out dir = %v, want only the report", names)
 	}
 	if s := ops.Stats(); s != (Stats{}) {
@@ -835,7 +835,7 @@ func TestWriteReportFailures(t *testing.T) {
 	if err := ops.WriteReport(filepath.Join(dir, "r.txt"), []byte("x")); err == nil {
 		t.Error("WriteReport onto a folder succeeded")
 	}
-	if names := dirNames(t, dir); fmt.Sprint(names) != "[r.txt]" {
+	if names := testutil.DirNames(t, dir); fmt.Sprint(names) != "[r.txt]" {
 		t.Errorf("leftovers: %v", names)
 	}
 	if s := ops.Stats(); s.Failed != 2 {
@@ -892,7 +892,7 @@ func TestWriteFileAtomicReadError(t *testing.T) {
 		if s := ops.Stats(); s.Failed != 1 || s.Written != 0 {
 			t.Errorf("dry=%v: Stats = %+v", dry, s)
 		}
-		if names := dirNames(t, dir); fmt.Sprint(names) != "[song.txt]" {
+		if names := testutil.DirNames(t, dir); fmt.Sprint(names) != "[song.txt]" {
 			t.Errorf("dry=%v: leftovers %v", dry, names)
 		}
 	}
@@ -913,10 +913,10 @@ func TestWriteFileAtomicTempFailure(t *testing.T) {
 	if changed, err := ops.WriteFileAtomic(target, []byte("new")); err == nil || changed {
 		t.Errorf("WriteFileAtomic in a read-only folder = %v, %v", changed, err)
 	}
-	if readFile(t, target) != "old" || ops.Stats().Failed != 1 {
+	if testutil.ReadFile(t, target) != "old" || ops.Stats().Failed != 1 {
 		t.Errorf("target changed or failure not counted: %+v", ops.Stats())
 	}
-	if names := dirNames(t, dir); fmt.Sprint(names) != "[song.txt]" {
+	if names := testutil.DirNames(t, dir); fmt.Sprint(names) != "[song.txt]" {
 		t.Errorf("leftovers %v", names)
 	}
 }
@@ -934,7 +934,7 @@ func TestWriteFileAtomicDryRunUnchangedAfterPlan(t *testing.T) {
 	if s := ops.Stats(); s.Written != 1 {
 		t.Errorf("Stats = %+v, want Written=1", s)
 	}
-	if !bytes.Equal([]byte(readFile(t, p)), []byte("old")) {
+	if !bytes.Equal([]byte(testutil.ReadFile(t, p)), []byte("old")) {
 		t.Error("dry run changed the file")
 	}
 }
@@ -972,8 +972,8 @@ func TestReplaceSyncsBeforeRename(t *testing.T) {
 	if err := ops.Replace(tmp, dst); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{tmp}; !slices.Equal(*synced, want) || readFile(t, dst) != "new" {
-		t.Errorf("synced %v, dst %q; want %v synced and dst replaced", *synced, readFile(t, dst), want)
+	if want := []string{tmp}; !slices.Equal(*synced, want) || testutil.ReadFile(t, dst) != "new" {
+		t.Errorf("synced %v, dst %q; want %v synced and dst replaced", *synced, testutil.ReadFile(t, dst), want)
 	}
 
 	// A failing fsync keeps the original and removes the processed file.
@@ -983,8 +983,8 @@ func TestReplaceSyncsBeforeRename(t *testing.T) {
 	if err := ops.Replace(tmp, dst); !errors.Is(err, boom) {
 		t.Errorf("Replace with a failing fsync = %v, want boom", err)
 	}
-	if readFile(t, dst) != "new" || exists(tmp) {
-		t.Errorf("dst = %q, tmp exists %v; want the original kept and tmp removed", readFile(t, dst), exists(tmp))
+	if testutil.ReadFile(t, dst) != "new" || testutil.Exists(tmp) {
+		t.Errorf("dst = %q, tmp exists %v; want the original kept and tmp removed", testutil.ReadFile(t, dst), testutil.Exists(tmp))
 	}
 	if s := ops.Stats(); s.Replaced != 1 || s.Failed != 1 {
 		t.Errorf("Stats = %+v, want Replaced=1 Failed=1", s)
@@ -1004,12 +1004,12 @@ func TestRenameSyncsFiles(t *testing.T) {
 	boom := errors.New("boom")
 	recordSyncs(t, boom)
 	ops := New(false)
-	if err := ops.Rename(src, dst); !errors.Is(err, boom) || !exists(src) || exists(dst) {
-		t.Errorf("Rename with a failing fsync = %v, src exists %v, dst exists %v", err, exists(src), exists(dst))
+	if err := ops.Rename(src, dst); !errors.Is(err, boom) || !testutil.Exists(src) || testutil.Exists(dst) {
+		t.Errorf("Rename with a failing fsync = %v, src exists %v, dst exists %v", err, testutil.Exists(src), testutil.Exists(dst))
 	}
 
 	synced := recordSyncs(t, nil)
-	if err := ops.Rename(src, dst); err != nil || readFile(t, dst) != "new" {
+	if err := ops.Rename(src, dst); err != nil || testutil.ReadFile(t, dst) != "new" {
 		t.Fatalf("Rename = %v", err)
 	}
 	if err := ops.Rename(sub, filepath.Join(dir, "sub2")); err != nil {

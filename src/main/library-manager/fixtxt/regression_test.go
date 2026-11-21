@@ -56,7 +56,7 @@ func TestRunKeepsHeaderTagWhenRepeatedAfterEnd(t *testing.T) {
 	txt := "#TITLE:Song\n#ARTIST:Artist\n#MP3:a.mp3\n#BPM:300\n: 0 4 0 La\n#MP3:b.mp3\nE\n#BPM:30\n#mp3:c.mp3\n"
 	testutil.WriteFiles(t, cfg.SongDir, map[string]string{"Artist - Song/song.txt": txt, "Artist - Song/a.mp3": "x"})
 	run(t, cfg)
-	if got := readFile(t, filepath.Join(cfg.SongDir, "Artist - Song", "song.txt")); got != txt {
+	if got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, "Artist - Song", "song.txt")); got != txt {
 		t.Errorf("txt changed:\n%s\nwant:\n%s", got, txt)
 	}
 }
@@ -124,16 +124,16 @@ func TestRunKeepsSongWithSymlinkedTxt(t *testing.T) {
 				t.Fatal(err)
 			}
 			ops := run(t, cfg)
-			if !exists(filepath.Join(cfg.SongDir, "Song", "song.mp3")) {
+			if !testutil.Exists(filepath.Join(cfg.SongDir, "Song", "song.mp3")) {
 				t.Fatal("working song with a symlinked txt was moved away")
 			}
 			if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
 				t.Errorf("song txt is no longer a symlink (err=%v)", err)
 			}
-			if got := readFile(t, target); got != txt {
+			if got := testutil.ReadFile(t, target); got != txt {
 				t.Errorf("link target was changed: %q", got)
 			}
-			report := readFile(t, cfg.ReportPath(missingFilesReport))
+			report := testutil.ReadFile(t, cfg.ReportPath(missingFilesReport))
 			if got := strings.Contains(report, "Song txt is a symlink and needs changes, replace it by the file it points to: "+link+"\n"); got != tc.wantNote {
 				t.Errorf("symlink noted = %v, want %v:\n%s", got, tc.wantNote, report)
 			}
@@ -170,7 +170,7 @@ func TestRunFixesFileTagWithBlanks(t *testing.T) {
 			testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Artist - Song", "sq.png"), 10, 10)
 			testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Artist - Song", "wide.png"), 64, 36)
 			run(t, cfg)
-			got := readFile(t, filepath.Join(cfg.SongDir, "Artist - Song", "song.txt"))
+			got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, "Artist - Song", "song.txt"))
 			if v := tagValues(t, got, tc.keys...); !slices.Equal(v, []string{tc.want}) {
 				t.Errorf("%v tags = %q, want exactly [%s]; txt:\n%s", tc.keys, v, tc.want, got)
 			}
@@ -239,8 +239,8 @@ func TestMissingReportFollowsWrittenImageTags(t *testing.T) {
 				testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Song", tc.png), tc.w, tc.h)
 			}
 			run(t, cfg)
-			txt := readFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
-			report := readFile(t, cfg.ReportPath(missingFilesReport))
+			txt := testutil.ReadFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
+			report := testutil.ReadFile(t, cfg.ReportPath(missingFilesReport))
 			if got := strings.Contains(report, "Missing cover file in "); got != tc.wantCover {
 				t.Errorf("Missing cover listed = %v, want %v\ntxt:\n%s\nreport:\n%s", got, tc.wantCover, txt, report)
 			}
@@ -262,7 +262,7 @@ func TestMissingReportCompleteAndUndecodable(t *testing.T) {
 	})
 	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Song", "cover.png"), 10, 10)
 	run(t, cfg)
-	if got := readFile(t, cfg.ReportPath(missingFilesReport)); got != "" {
+	if got := testutil.ReadFile(t, cfg.ReportPath(missingFilesReport)); got != "" {
 		t.Errorf("%s = %q, want empty", missingFilesReport, got)
 	}
 
@@ -275,7 +275,7 @@ func TestMissingReportCompleteAndUndecodable(t *testing.T) {
 	run(t, cfg)
 	bad := filepath.Join(cfg.SongDir, "Bad")
 	want := "No video or background file in " + bad + "\n"
-	if got := readFile(t, cfg.ReportPath(missingFilesReport)); got != want {
+	if got := testutil.ReadFile(t, cfg.ReportPath(missingFilesReport)); got != want {
 		t.Errorf("%s = %q, want %q", missingFilesReport, got, want)
 	}
 }
@@ -327,8 +327,8 @@ func TestRunSkipsArtistTitlePreferenceWithoutArtist(t *testing.T) {
 		"X/ - Song.mp3": "a",
 	})
 	run(t, cfg)
-	got := readFile(t, filepath.Join(cfg.SongDir, "X", "x.txt"))
-	if strings.Contains(got, "#MP3:") || !strings.Contains(readFile(t, cfg.ReportPath(missingFilesReport)), "cannot choose #MP3") {
+	got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, "X", "x.txt"))
+	if strings.Contains(got, "#MP3:") || !strings.Contains(testutil.ReadFile(t, cfg.ReportPath(missingFilesReport)), "cannot choose #MP3") {
 		t.Errorf("audio chosen by an incomplete artist - title:\n%s", got)
 	}
 }
@@ -403,7 +403,7 @@ func TestRunInsertsMissingTagsAsLine2(t *testing.T) {
 	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Artist - Song", "wide.png"), 64, 36)
 	run(t, cfg)
 	want := "#TITLE:Song\n#MP3:song.mp3\n#VIDEO:clip.mp4\n#COVER:sq.png\n#BACKGROUND:wide.png\n#ARTIST:Artist\n#VIDEOGAP:2\n" + notesBody
-	if got := readFile(t, filepath.Join(cfg.SongDir, "Artist - Song", "song.txt")); got != want {
+	if got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, "Artist - Song", "song.txt")); got != want {
 		t.Errorf("txt = %q, want %q", got, want)
 	}
 }
@@ -419,7 +419,7 @@ func TestRunReplacesUnreadableTaggedImages(t *testing.T) {
 	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Song", "sq.png"), 10, 10)
 	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Song", "wide.png"), 64, 36)
 	run(t, cfg)
-	got := readFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
+	got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
 	if !strings.Contains(got, "#COVER:sq.png\n#BACKGROUND:wide.png\n") {
 		t.Errorf("unreadable tagged images not replaced:\n%s", got)
 	}
@@ -471,7 +471,7 @@ func TestWriteFilledReportReadError(t *testing.T) {
 	if f := ops.Stats().Failed; f != 1 {
 		t.Errorf("Failed = %d, want 1", f)
 	}
-	if !exists(filepath.Join(path, "keep")) {
+	if !testutil.Exists(filepath.Join(path, "keep")) {
 		t.Error("unreadable filled_tags.txt was replaced")
 	}
 }
@@ -491,7 +491,7 @@ func TestRunDuplicateSongTxtsSameMtime(t *testing.T) {
 		}
 	}
 	run(t, cfg)
-	if !exists(filepath.Join(cfg.SongDir, "Song", "a.txt")) || !exists(filepath.Join(cfg.ExtraFilesDir(), "Song", "b.txt")) {
+	if !testutil.Exists(filepath.Join(cfg.SongDir, "Song", "a.txt")) || !testutil.Exists(filepath.Join(cfg.ExtraFilesDir(), "Song", "b.txt")) {
 		t.Error("want a.txt kept and b.txt moved to extra-files/")
 	}
 }
@@ -514,10 +514,10 @@ func TestRunDuplicateSongTxtMoveFails(t *testing.T) {
 	if f := ops.Stats().Failed; f != 1 {
 		t.Errorf("Failed = %d, want 1", f)
 	}
-	if !exists(filepath.Join(cfg.SongDir, "Song", "old.txt")) {
+	if !testutil.Exists(filepath.Join(cfg.SongDir, "Song", "old.txt")) {
 		t.Error("duplicate song txt is gone")
 	}
-	if got := readFile(t, filepath.Join(cfg.SongDir, "Song", "new.txt")); !strings.Contains(got, "#MP3:song.mp3\n") {
+	if got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, "Song", "new.txt")); !strings.Contains(got, "#MP3:song.mp3\n") {
 		t.Errorf("kept txt not fixed:\n%s", got)
 	}
 	if len(messages(hook, "Could not move duplicate song txt")) != 1 {
@@ -535,7 +535,7 @@ func TestRunMoveToInvalidFails(t *testing.T) {
 	if f := ops.Stats().Failed; f != 1 {
 		t.Errorf("Failed = %d, want 1", f)
 	}
-	if !exists(filepath.Join(cfg.SongDir, "NoMedia", "song.txt")) {
+	if !testutil.Exists(filepath.Join(cfg.SongDir, "NoMedia", "song.txt")) {
 		t.Error("folder was moved")
 	}
 	if len(messages(hook, "Could not move "+filepath.Join(cfg.SongDir, "NoMedia")+" to invalid")) != 1 {
@@ -593,10 +593,10 @@ func TestRunTxtWriteFails(t *testing.T) {
 	if f := ops.Stats().Failed; f != 1 {
 		t.Errorf("Failed = %d, want 1", f)
 	}
-	if got := readFile(t, filepath.Join(folder, "song.txt")); got != raw {
+	if got := testutil.ReadFile(t, filepath.Join(folder, "song.txt")); got != raw {
 		t.Errorf("txt changed: %q", got)
 	}
-	if got := readFile(t, cfg.ReportPath(filledTagsReport)); got != "" {
+	if got := testutil.ReadFile(t, cfg.ReportPath(filledTagsReport)); got != "" {
 		t.Errorf("%s = %q, want empty", filledTagsReport, got)
 	}
 	if len(messages(hook, "Could not write "+filepath.Join(folder, "song.txt"))) != 1 {
@@ -636,7 +636,7 @@ func TestFixTxtUnknownLineInHeader(t *testing.T) {
 		"Song/a.mp3":    "a",
 	})
 	run(t, cfg)
-	got := readFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
+	got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
 	if mp3 := tagValues(t, got, "MP3"); !slices.Equal(mp3, []string{"a.mp3"}) {
 		t.Errorf("#MP3 values = %q, want [a.mp3]:\n%s", mp3, got)
 	}

@@ -105,7 +105,7 @@ func TestLargerReEncodeStillStripsAudio(t *testing.T) {
 		t.Errorf("streams = %v, want the vp9 video only (audio stripped)", got)
 	}
 	assertTagged(t, video, true)
-	if got := readFile(t, filepath.Join(song, "song.txt")); got != txt {
+	if got := testutil.ReadFile(t, filepath.Join(song, "song.txt")); got != txt {
 		t.Errorf("txt changed to %q", got)
 	}
 	assertNoTempFiles(t, songDir)
@@ -413,7 +413,7 @@ func TestSameSizeResultReplacesOriginal(t *testing.T) {
 
 	p.replaceOriginal(song, video, tmp, encodePlan{reEncode: true})
 
-	if got := readFile(t, video); got != "encoded!" {
+	if got := testutil.ReadFile(t, video); got != "encoded!" {
 		t.Errorf("video = %q, want the processed version", got)
 	}
 	if st := p.ops.Stats(); st.Replaced != 1 || st.Failed != 0 {
@@ -494,16 +494,16 @@ func TestDamagedAviIsNotConverted(t *testing.T) {
 	if st := ops.Stats(); st.Failed != 0 || st.Removed != 0 || st.Replaced != 0 {
 		t.Errorf("stats = %+v, want nothing removed, replaced or failed", st)
 	}
-	if got := readFile(t, video); got != string(data) {
+	if got := testutil.ReadFile(t, video); got != string(data) {
 		t.Error("the damaged original changed")
 	}
-	if got := readFile(t, filepath.Join(song, "song.txt")); got != txt {
+	if got := testutil.ReadFile(t, filepath.Join(song, "song.txt")); got != txt {
 		t.Errorf("txt = %q, want it unchanged", got)
 	}
 	if _, err := os.Stat(filepath.Join(song, "video.mp4")); !os.IsNotExist(err) {
 		t.Errorf("video.mp4 exists (err=%v)", err)
 	}
-	if got, want := readFile(t, filepath.Join(outDir, corruptedReportName)), video+"\n"; got != want {
+	if got, want := testutil.ReadFile(t, filepath.Join(outDir, corruptedReportName)), video+"\n"; got != want {
 		t.Errorf("report = %q, want %q", got, want)
 	}
 	assertNoTempFiles(t, songDir)
@@ -587,7 +587,7 @@ func TestSymlinkedVideoIsNotProcessed(t *testing.T) {
 	cfg, songDir, _ := newLibrary(t, false)
 	pool := filepath.Join(t.TempDir(), "pool.avi")
 	makeMedia(t, pool, "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
-	orig := readFile(t, pool)
+	orig := testutil.ReadFile(t, pool)
 	song := filepath.Join(songDir, "A - S")
 	txt := "#TITLE:S\n#ARTIST:A\n#MP3:video.avi\n#VIDEO:video.avi\n: 0 4 0 La\nE\n"
 	testutil.WriteFile(t, filepath.Join(song, "song.txt"), txt)
@@ -606,7 +606,7 @@ func TestSymlinkedVideoIsNotProcessed(t *testing.T) {
 	if target, err := os.Readlink(link); err != nil || target != pool {
 		t.Errorf("video.avi is no longer the link to %s: %q, %v", pool, target, err)
 	}
-	if readFile(t, pool) != orig || readFile(t, filepath.Join(song, "song.txt")) != txt {
+	if testutil.ReadFile(t, pool) != orig || testutil.ReadFile(t, filepath.Join(song, "song.txt")) != txt {
 		t.Error("the linked video or the txt changed")
 	}
 	if _, err := os.Stat(filepath.Join(song, "video.mp4")); !os.IsNotExist(err) {
@@ -626,7 +626,7 @@ func TestConversionKeepsOriginalOfProblemTxt(t *testing.T) {
 	testutil.WriteFile(t, filepath.Join(song, "song.txt"), txt)
 	video := filepath.Join(song, "video.avi")
 	makeMedia(t, video, "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
-	orig := readFile(t, video)
+	orig := testutil.ReadFile(t, video)
 
 	for i, dry := range []bool{true, false, false} {
 		cfg.DryRun = dry
@@ -637,13 +637,13 @@ func TestConversionKeepsOriginalOfProblemTxt(t *testing.T) {
 		if st := ops.Stats(); st != (fsops.Stats{}) {
 			t.Errorf("run %d (dry=%v): stats = %+v, want nothing planned or done", i, dry, st)
 		}
-		if readFile(t, video) != orig {
+		if testutil.ReadFile(t, video) != orig {
 			t.Fatalf("run %d: the original video changed", i)
 		}
-		if got := readFile(t, filepath.Join(song, "song.txt")); got != txt {
+		if got := testutil.ReadFile(t, filepath.Join(song, "song.txt")); got != txt {
 			t.Errorf("run %d: txt = %q, want it unchanged", i, got)
 		}
-		if got := dirNames(t, song); !slices.Equal(got, []string{"song.txt", "video.avi"}) {
+		if got := testutil.DirNames(t, song); !slices.Equal(got, []string{"song.txt", "video.avi"}) {
 			t.Errorf("run %d: song folder = %v, want song.txt and video.avi", i, got)
 		}
 	}
@@ -667,14 +667,14 @@ func TestConversionOfNFDNameKeepsTxtClean(t *testing.T) {
 	if st := ops.Stats(); st.Failed != 0 || st.Removed != 1 {
 		t.Errorf("stats = %+v, want the original removed and no failure", st)
 	}
-	txt := readFile(t, filepath.Join(song, "song.txt"))
+	txt := testutil.ReadFile(t, filepath.Join(song, "song.txt"))
 	if want := "#TITLE:S\n#ARTIST:A\n#VIDEO:Mädchen.mp4\n: 0 4 0 La\nE\n"; txt != want {
 		t.Errorf("txt = %q, want %q", txt, want)
 	}
 	if d := utils.DecodeTxt([]byte(txt)); d.Problem != "" {
 		t.Errorf("rewritten txt has a Problem: %s", d.Problem)
 	}
-	if got := dirNames(t, song); !slices.Equal(got, []string{"Mädchen.mp4", "song.txt"}) {
+	if got := testutil.DirNames(t, song); !slices.Equal(got, []string{"Mädchen.mp4", "song.txt"}) {
 		t.Errorf("song folder = %v", got)
 	}
 }
@@ -737,7 +737,7 @@ func TestUnknownVideoCodecIsProcessed(t *testing.T) {
 	if st := ops.Stats(); st.Failed != 1 {
 		t.Errorf("stats = %+v, want ffmpeg's failure counted (Failed = 1), not the video skipped as readable", st)
 	}
-	if got := readFile(t, video); got != damaged {
+	if got := testutil.ReadFile(t, video); got != damaged {
 		t.Error("the original changed")
 	}
 	assertNoTempFiles(t, songDir)

@@ -125,7 +125,7 @@ func TestParkNameSkipsExistingNames(t *testing.T) {
 	next := parkSeq.Load()
 	p, err := parkName(filepath.Join(dir, "Song"))
 	want := filepath.Join(dir, fmt.Sprintf(".fsops-move-%d-%d", os.Getpid(), next+3))
-	if err != nil || p != want || exists(p) {
+	if err != nil || p != want || testutil.Exists(p) {
 		t.Errorf("parkName with the next 2 names taken = %q, %v, want %q", p, err, want)
 	}
 }
@@ -154,7 +154,7 @@ func TestTempNamesForLongFileNames(t *testing.T) {
 	if changed, err := o.WriteFileAtomic(txt, []byte("#TITLE:new\n")); !changed || err != nil {
 		t.Fatalf("WriteFileAtomic on a %d-byte name = %v, %v", len(filepath.Base(txt)), changed, err)
 	}
-	if got := readFile(t, txt); got != "#TITLE:new\n" {
+	if got := testutil.ReadFile(t, txt); got != "#TITLE:new\n" {
 		t.Errorf("rewritten txt = %q", got)
 	}
 
@@ -162,7 +162,7 @@ func TestTempNamesForLongFileNames(t *testing.T) {
 	if err := o.WriteReport(report, []byte("r\n")); err != nil {
 		t.Fatalf("WriteReport on a long name: %v", err)
 	}
-	if got := readFile(t, report); got != "r\n" {
+	if got := testutil.ReadFile(t, report); got != "r\n" {
 		t.Errorf("report = %q", got)
 	}
 	if o.Stats().Failed != 0 {
@@ -186,7 +186,7 @@ func TestTempNamesForLongFileNames(t *testing.T) {
 	}
 	os.Remove(tmp)
 	// Only the files themselves are left: no temp file of the writes stayed behind.
-	if names := dirNames(t, dir); len(names) != 3 {
+	if names := testutil.DirNames(t, dir); len(names) != 3 {
 		t.Errorf("files left in %s: %q, want the txt, the video and reports/", dir, names)
 	}
 	if got, want := tempBase(stem+".txt"), "ab"+strings.Repeat("あ", 32); got != want {

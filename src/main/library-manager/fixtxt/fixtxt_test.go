@@ -33,15 +33,6 @@ func newLibrary(t *testing.T, dryRun bool) config.Config {
 	return cfg
 }
 
-func readFile(t *testing.T, path string) string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
-}
-
 func run(t *testing.T, cfg config.Config) *fsops.Ops {
 	t.Helper()
 	ops := fsops.New(cfg.DryRun)
@@ -49,11 +40,6 @@ func run(t *testing.T, cfg config.Config) *fsops.Ops {
 		t.Fatalf("Run: %v", err)
 	}
 	return ops
-}
-
-func exists(path string) bool {
-	_, err := os.Lstat(path)
-	return err == nil
 }
 
 func TestSplitLines(t *testing.T) {
@@ -138,7 +124,7 @@ func TestRunFixesFileTags(t *testing.T) {
 			})
 			run(t, cfg)
 
-			got := readFile(t, filepath.Join(cfg.SongDir, "Artist - Song/song.txt"))
+			got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, "Artist - Song/song.txt"))
 			lines := strings.Split(got, "\n")
 			for _, w := range tc.want {
 				if !slices.Contains(lines, w) {
@@ -175,16 +161,16 @@ func TestRunDuplicateSongTxts(t *testing.T) {
 	}
 	run(t, cfg)
 
-	if !exists(filepath.Join(song, "new.txt")) {
+	if !testutil.Exists(filepath.Join(song, "new.txt")) {
 		t.Error("newest song txt was removed")
 	}
-	if exists(filepath.Join(song, "old.txt")) {
+	if testutil.Exists(filepath.Join(song, "old.txt")) {
 		t.Error("older song txt is still in the song folder")
 	}
-	if !exists(filepath.Join(cfg.ExtraFilesDir(), "Cat/Song/old.txt")) {
+	if !testutil.Exists(filepath.Join(cfg.ExtraFilesDir(), "Cat/Song/old.txt")) {
 		t.Error("older song txt was not moved to extra-files/Cat/Song/")
 	}
-	if got := readFile(t, filepath.Join(song, "License.txt")); got != "Licensed under CC-BY\n" {
+	if got := testutil.ReadFile(t, filepath.Join(song, "License.txt")); got != "Licensed under CC-BY\n" {
 		t.Errorf("License.txt was modified: %q", got)
 	}
 }
@@ -252,7 +238,7 @@ func TestRunConvertsEncoding(t *testing.T) {
 				"Song/song.mp3": "audio",
 			})
 			run(t, cfg)
-			if got := readFile(t, filepath.Join(cfg.SongDir, "Song/song.txt")); got != tc.want {
+			if got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, "Song/song.txt")); got != tc.want {
 				t.Errorf("txt = %q, want %q", got, tc.want)
 			}
 		})
@@ -295,17 +281,17 @@ func TestRunMovesBrokenFoldersToInvalid(t *testing.T) {
 	ops := run(t, cfg)
 
 	for _, rel := range []string{"Cat/NoTxt", "Cat/NoMedia"} {
-		if exists(filepath.Join(cfg.SongDir, rel)) {
+		if testutil.Exists(filepath.Join(cfg.SongDir, rel)) {
 			t.Errorf("%s is still in the library", rel)
 		}
-		if !exists(filepath.Join(cfg.InvalidDir(), rel)) {
+		if !testutil.Exists(filepath.Join(cfg.InvalidDir(), rel)) {
 			t.Errorf("%s was not moved to invalid/%s", rel, rel)
 		}
 	}
-	if !exists(filepath.Join(cfg.InvalidDir(), "Cat/NoTxt/song.mp3")) {
+	if !testutil.Exists(filepath.Join(cfg.InvalidDir(), "Cat/NoTxt/song.mp3")) {
 		t.Error("contents of the moved folder are missing")
 	}
-	if !exists(filepath.Join(cfg.SongDir, "Cat/Good/song.txt")) {
+	if !testutil.Exists(filepath.Join(cfg.SongDir, "Cat/Good/song.txt")) {
 		t.Error("valid song was moved")
 	}
 	if f := ops.Stats().Failed; f != 0 {
@@ -323,7 +309,7 @@ func TestRunWritesSortedMissingFilesReport(t *testing.T) {
 	})
 	run(t, cfg)
 
-	report := readFile(t, cfg.ReportPath(missingFilesReport))
+	report := testutil.ReadFile(t, cfg.ReportPath(missingFilesReport))
 	lines := strings.Split(strings.TrimSuffix(report, "\n"), "\n")
 	if len(lines) != 4 {
 		t.Fatalf("report has %d lines, want 4:\n%s", len(lines), report)
@@ -361,10 +347,10 @@ func TestRunDryRunDoesNotModifyLibrary(t *testing.T) {
 	if st.Written == 0 || st.Moved == 0 {
 		t.Errorf("dry run planned no changes: %+v", st)
 	}
-	if exists(cfg.InvalidDir()) || exists(cfg.ExtraFilesDir()) {
+	if testutil.Exists(cfg.InvalidDir()) || testutil.Exists(cfg.ExtraFilesDir()) {
 		t.Error("dry run created invalid/ or extra-files/")
 	}
-	if !exists(cfg.ReportPath(missingFilesReport)) {
+	if !testutil.Exists(cfg.ReportPath(missingFilesReport)) {
 		t.Error("dry run did not write the report to the output dir")
 	}
 }
@@ -419,7 +405,7 @@ func TestRunResolvesFileTags(t *testing.T) {
 			if f := run(t, cfg).Stats().Failed; f != 0 {
 				t.Errorf("%d failed operations", f)
 			}
-			got := readFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
+			got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
 			for _, line := range tc.want {
 				if !strings.Contains(got, line+"\n") {
 					t.Errorf("missing %q in\n%s", line, got)
@@ -463,7 +449,7 @@ func TestRunSkipsFolderWithNonUTF8MediaNames(t *testing.T) {
 	if st := ops.Stats(); st.Written != 0 || st.Moved != 0 {
 		t.Errorf("Stats() = %+v, want nothing written or moved", st)
 	}
-	report := readFile(t, cfg.ReportPath(encodingIssuesReport))
+	report := testutil.ReadFile(t, cfg.ReportPath(encodingIssuesReport))
 	for _, name := range []string{"Latin1/M\xe4dchen.mp3", "Image/Cover \xe4.jpg", "NoSongTxt/Lied \xfc.mp3"} {
 		if !strings.Contains(report, filepath.Join(cfg.SongDir, name)+": file name is not valid UTF-8, rename it") {
 			t.Errorf("%q not reported:\n%s", name, report)
@@ -505,10 +491,10 @@ func TestRunDoesNotRewriteTxtOfFolderMovedToInvalid(t *testing.T) {
 	original := "#TITLE:M\xe4dchen\r\n#ARTIST:A\r\n: 0 1 0 x\r\nE\r\n"
 	testutil.WriteFiles(t, cfg.SongDir, map[string]string{"NoMedia/song.txt": original})
 	run(t, cfg)
-	if got := readFile(t, filepath.Join(cfg.InvalidDir(), "NoMedia", "song.txt")); got != original {
+	if got := testutil.ReadFile(t, filepath.Join(cfg.InvalidDir(), "NoMedia", "song.txt")); got != original {
 		t.Errorf("quarantined txt must be the original, got %q", got)
 	}
-	if report := readFile(t, cfg.ReportPath(missingFilesReport)); report != "" {
+	if report := testutil.ReadFile(t, cfg.ReportPath(missingFilesReport)); report != "" {
 		t.Errorf("moved songs must not be listed as missing files: %q", report)
 	}
 }
@@ -528,13 +514,13 @@ func TestRunMovesBrokenFolderWithDuplicateTxtsAsWhole(t *testing.T) {
 	}
 	before := testutil.Tree(t, filepath.Join(cfg.SongDir, "NoMedia"))
 	run(t, cfg)
-	if exists(filepath.Join(cfg.SongDir, "NoMedia")) {
+	if testutil.Exists(filepath.Join(cfg.SongDir, "NoMedia")) {
 		t.Error("broken folder is still in the library")
 	}
 	if after := testutil.Tree(t, filepath.Join(cfg.InvalidDir(), "NoMedia")); !maps.Equal(before, after) {
 		t.Errorf("folder was not moved as a whole:\nbefore %v\nafter  %v", before, after)
 	}
-	if exists(cfg.ExtraFilesDir()) {
+	if testutil.Exists(cfg.ExtraFilesDir()) {
 		t.Error("a song txt of the broken folder was split off into extra-files/")
 	}
 }
@@ -550,7 +536,7 @@ func fixSong(t *testing.T, folder, txtName string, files map[string]string, head
 	}
 	testutil.WriteFiles(t, cfg.SongDir, all)
 	ops := run(t, cfg)
-	return readFile(t, filepath.Join(cfg.SongDir, folder, txtName)), readFile(t, cfg.ReportPath(missingFilesReport)), ops
+	return testutil.ReadFile(t, filepath.Join(cfg.SongDir, folder, txtName)), testutil.ReadFile(t, cfg.ReportPath(missingFilesReport)), ops
 }
 
 func TestRunChoosesAudioFile(t *testing.T) {
@@ -713,7 +699,7 @@ func TestRunSkipsFolderWithUnreadableTxt(t *testing.T) {
 			if after := hashTreeExcept(t, cfg.SongDir, unreadable); !maps.Equal(before, after) {
 				t.Errorf("folder was changed:\nbefore %v\nafter  %v", before, after)
 			}
-			if !exists(unreadable) {
+			if !testutil.Exists(unreadable) {
 				t.Error("unreadable txt was moved")
 			}
 			if st := ops.Stats(); st.Failed != 1 || st.Moved != 0 || st.Written != 0 {
@@ -739,7 +725,7 @@ func hashTreeExcept(t *testing.T, root, skip string) map[string]string {
 		case path == skip:
 			tree[rel] = "unreadable"
 		default:
-			sum := sha256.Sum256([]byte(readFile(t, path)))
+			sum := sha256.Sum256([]byte(testutil.ReadFile(t, path)))
 			tree[rel] = hex.EncodeToString(sum[:])
 		}
 		return nil
@@ -759,7 +745,7 @@ func TestRunCorrectsStemSpelling(t *testing.T) {
 		"Song/Instrumental.MP3": "i",
 	})
 	run(t, cfg)
-	got := readFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
+	got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
 	if !strings.Contains(got, "#VOCALS:vox.mp3\n") {
 		t.Errorf("#VOCALS not corrected to the on-disk spelling:\n%s", got)
 	}
@@ -837,7 +823,7 @@ func TestRunChoosesCoverAndBackground(t *testing.T) {
 			if f := ops.Stats().Failed; f != 0 {
 				t.Errorf("%d failed operations", f)
 			}
-			got := readFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
+			got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
 			for tag, want := range map[string]string{"#COVER:": tc.cover, "#BACKGROUND:": tc.bg} {
 				if want == "" {
 					if strings.Contains(got, tag) {
@@ -969,17 +955,17 @@ func TestRunFillsNameTagsFromFolderName(t *testing.T) {
 			})
 			run(t, cfg)
 			txt := filepath.Join(cfg.SongDir, tc.folder, "song.txt")
-			if got := readFile(t, txt); got != tc.want {
+			if got := testutil.ReadFile(t, txt); got != tc.want {
 				t.Errorf("txt = %q, want %q", got, tc.want)
 			}
 			var wantReport string
 			for _, f := range tc.wantFilled {
 				wantReport += txt + ": " + f + " (from the folder name)\n"
 			}
-			if got := readFile(t, cfg.ReportPath(filledTagsReport)); got != wantReport {
+			if got := testutil.ReadFile(t, cfg.ReportPath(filledTagsReport)); got != wantReport {
 				t.Errorf("%s = %q, want %q", filledTagsReport, got, wantReport)
 			}
-			missing := readFile(t, cfg.ReportPath(missingFilesReport))
+			missing := testutil.ReadFile(t, cfg.ReportPath(missingFilesReport))
 			if tc.wantNote != "" && !strings.Contains(missing, tc.wantNote+filepath.Join(cfg.SongDir, tc.folder)+", cannot fill it from the folder name: ") {
 				t.Errorf("%s has no note %q:\n%s", missingFilesReport, tc.wantNote, missing)
 			}
@@ -1018,32 +1004,32 @@ func TestRunFillsNameTagsDryRunAndIdempotent(t *testing.T) {
 		t.Errorf("dry run planned %d writes, want 1", ops.Stats().Written)
 	}
 	wantPlanned := strings.ReplaceAll(wantReport, filledSuffix, plannedSuffix)
-	if got := readFile(t, dry.ReportPath(filledTagsReport)); got != wantPlanned {
+	if got := testutil.ReadFile(t, dry.ReportPath(filledTagsReport)); got != wantPlanned {
 		t.Errorf("dry-run %s = %q, want %q", filledTagsReport, got, wantPlanned)
 	}
 
 	cfg := newCfg(false)
 	run(t, cfg)
 	want := "#TITLE:Hypa Hypa\n#ARTIST:Electric Callboy\n#MP3:song.mp3\n" + notesBody
-	if got := readFile(t, txt); got != want {
+	if got := testutil.ReadFile(t, txt); got != want {
 		t.Errorf("txt = %q, want %q", got, want)
 	}
-	if got := readFile(t, cfg.ReportPath(filledTagsReport)); got != wantReport {
+	if got := testutil.ReadFile(t, cfg.ReportPath(filledTagsReport)); got != wantReport {
 		t.Errorf("%s = %q, want %q", filledTagsReport, got, wantReport)
 	}
 
 	if ops := run(t, cfg); ops.Stats().Written != 0 {
 		t.Errorf("second run wrote %d files, want 0", ops.Stats().Written)
 	}
-	if got := readFile(t, txt); got != want {
+	if got := testutil.ReadFile(t, txt); got != want {
 		t.Errorf("second run changed the txt to %q", got)
 	}
 	// The report keeps the fills of earlier runs, also through a later dry run.
-	if got := readFile(t, cfg.ReportPath(filledTagsReport)); got != wantReport {
+	if got := testutil.ReadFile(t, cfg.ReportPath(filledTagsReport)); got != wantReport {
 		t.Errorf("second run %s = %q, want %q", filledTagsReport, got, wantReport)
 	}
 	run(t, dry)
-	if got := readFile(t, cfg.ReportPath(filledTagsReport)); got != wantReport {
+	if got := testutil.ReadFile(t, cfg.ReportPath(filledTagsReport)); got != wantReport {
 		t.Errorf("later dry run %s = %q, want %q", filledTagsReport, got, wantReport)
 	}
 }
@@ -1059,7 +1045,7 @@ func TestFilledReportMerge(t *testing.T) {
 	ops := fsops.New(false)
 	writeFilledReport(cfg, ops, []string{"/c.txt: #TITLE:C" + filledSuffix, "/a.txt: #ARTIST:A" + filledSuffix})
 	want := "/a.txt: #ARTIST:A" + filledSuffix + "\n/c.txt: #TITLE:C" + filledSuffix + "\n"
-	if got := readFile(t, cfg.ReportPath(filledTagsReport)); got != want {
+	if got := testutil.ReadFile(t, cfg.ReportPath(filledTagsReport)); got != want {
 		t.Errorf("%s = %q, want %q", filledTagsReport, got, want)
 	}
 }
@@ -1073,10 +1059,10 @@ func TestRunDoesNotFillNameTagsOfUndecodableTxt(t *testing.T) {
 		"Artist - Song/song.mp3": "audio",
 	})
 	run(t, cfg)
-	if got := readFile(t, filepath.Join(cfg.SongDir, "Artist - Song/song.txt")); got != raw {
+	if got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, "Artist - Song/song.txt")); got != raw {
 		t.Errorf("undecodable txt was rewritten: %q", got)
 	}
-	if got := readFile(t, cfg.ReportPath(filledTagsReport)); got != "" {
+	if got := testutil.ReadFile(t, cfg.ReportPath(filledTagsReport)); got != "" {
 		t.Errorf("%s = %q, want empty", filledTagsReport, got)
 	}
 }
@@ -1092,7 +1078,7 @@ func TestRunChoosesAudioByFilledNameTags(t *testing.T) {
 		filepath.Join(folder, "other.mp3"):                        "audio",
 	})
 	run(t, cfg)
-	got := readFile(t, filepath.Join(cfg.SongDir, folder, "song.txt"))
+	got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, folder, "song.txt"))
 	if !strings.Contains(got, "#MP3:Electric Callboy - Hypa Hypa.mp3\n") || !strings.Contains(got, "#ARTIST:Electric Callboy\n") {
 		t.Errorf("txt = %q, want the filled artist and the matching audio file", got)
 	}
@@ -1109,7 +1095,7 @@ func TestRunChoosesAudioByFilledTitle(t *testing.T) {
 		filepath.Join(folder, "other.mp3"):                        "audio",
 	})
 	run(t, cfg)
-	got := readFile(t, filepath.Join(cfg.SongDir, folder, "song.txt"))
+	got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, folder, "song.txt"))
 	if !strings.Contains(got, "#MP3:Electric Callboy - Hypa Hypa.mp3\n") || !strings.Contains(got, "#TITLE:Hypa Hypa\n") {
 		t.Errorf("txt = %q, want the filled title and the matching audio file", got)
 	}

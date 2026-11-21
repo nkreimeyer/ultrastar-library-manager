@@ -142,7 +142,7 @@ func TestWriteCorruptedReportMergesSorted(t *testing.T) {
 	p.flagCorrupted(a, "test")
 	p.writeCorruptedReport()
 
-	got := readFile(t, report)
+	got := testutil.ReadFile(t, report)
 	if want := a + "\n" + b + "\n" + c + "\n"; got != want {
 		t.Errorf("report = %q, want %q", got, want)
 	}
@@ -169,7 +169,7 @@ func TestWriteCorruptedReportDropsStaleEntries(t *testing.T) {
 	p.processVideoFile(filepath.Dir(fixed), fixed) // skipped via the journal, no ffmpeg needed
 	p.flagCorrupted(flagged, "test")
 	p.writeCorruptedReport()
-	if got, want := readFile(t, report), flagged+"\n"+still+"\n"; got != want {
+	if got, want := testutil.ReadFile(t, report), flagged+"\n"+still+"\n"; got != want {
 		t.Errorf("report = %q, want %q", got, want)
 	}
 
@@ -179,14 +179,14 @@ func TestWriteCorruptedReportDropsStaleEntries(t *testing.T) {
 	}
 	p = &processor{cfg: p.cfg, ops: fsops.New(false), journal: p.journal, corrupted: map[string]struct{}{}} // the next run
 	p.writeCorruptedReport()
-	if got := readFile(t, report); got != flagged+"\n" {
+	if got := testutil.ReadFile(t, report); got != flagged+"\n" {
 		t.Errorf("report = %q, want only %q", got, flagged)
 	}
 	if err := os.Remove(flagged); err != nil {
 		t.Fatal(err)
 	}
 	p.writeCorruptedReport()
-	if got := readFile(t, report); got != "" {
+	if got := testutil.ReadFile(t, report); got != "" {
 		t.Errorf("report = %q, want it empty", got)
 	}
 }
@@ -218,7 +218,7 @@ func TestDryRunKeepsCorruptedReport(t *testing.T) {
 		p.processVideoFile(song, f)
 	}
 	p.writeCorruptedReport()
-	if got := readFile(t, report); got != old {
+	if got := testutil.ReadFile(t, report); got != old {
 		t.Errorf("dry run rewrote the report:\n got %q\nwant %q", got, old)
 	}
 	if st := p.ops.Stats(); st.Failed != 0 {
@@ -259,7 +259,7 @@ func TestReEncodeAviToMp4(t *testing.T) {
 		t.Errorf("streams of video.mp4 = %v, want h264 video + ac3 audio", got)
 	}
 	assertTagged(t, mp4, true)
-	txt := readFile(t, filepath.Join(song, "song.txt"))
+	txt := testutil.ReadFile(t, filepath.Join(song, "song.txt"))
 	if want := "#TITLE:Song\n#ARTIST:Artist\n#MP3:video.mp4\n#VIDEO:video.mp4\n#VIDEOGAP:0\n: 0 4 0 La\nE\n"; txt != want {
 		t.Errorf("txt = %q, want %q", txt, want)
 	}
@@ -286,7 +286,7 @@ func TestReEncodeUpdatesReferenceSpelledDifferently(t *testing.T) {
 	if st := ops.Stats(); st.Failed != 0 {
 		t.Errorf("Failed = %d, want 0", st.Failed)
 	}
-	if got := readFile(t, filepath.Join(song, "song.txt")); got != "#TITLE:S\n#ARTIST:A\n#VIDEO:video.mp4\n" {
+	if got := testutil.ReadFile(t, filepath.Join(song, "song.txt")); got != "#TITLE:S\n#ARTIST:A\n#VIDEO:video.mp4\n" {
 		t.Errorf("txt = %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(song, "video.avi")); !os.IsNotExist(err) {
@@ -319,7 +319,7 @@ func TestUnreferencedVideoIsNotConverted(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(song, "video.mp4")); !os.IsNotExist(err) {
 		t.Errorf("no video.mp4 must be created (err=%v)", err)
 	}
-	if got := readFile(t, filepath.Join(song, "song.txt")); got != txt {
+	if got := testutil.ReadFile(t, filepath.Join(song, "song.txt")); got != txt {
 		t.Errorf("txt changed to %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "extra-files")); !os.IsNotExist(err) {
@@ -378,7 +378,7 @@ func TestCorruptedVideoIsReported(t *testing.T) {
 	if st := ops.Stats(); st.Failed != 0 {
 		t.Errorf("Failed = %d, want 0 (corrupted input is reported, not a failure)", st.Failed)
 	}
-	if got, want := readFile(t, filepath.Join(outDir, corruptedReportName)), bad+"\n"; got != want {
+	if got, want := testutil.ReadFile(t, filepath.Join(outDir, corruptedReportName)), bad+"\n"; got != want {
 		t.Errorf("report = %q, want %q", got, want)
 	}
 	if _, err := os.Stat(bad); err != nil {
@@ -427,7 +427,7 @@ func TestReadableVideoIsDroppedFromReport(t *testing.T) {
 			if _, err := os.Stat(video); err != nil {
 				t.Fatalf("video must stay under its name: %v", err)
 			}
-			if got, want := readFile(t, report), unread+"\n"; got != want {
+			if got, want := testutil.ReadFile(t, report), unread+"\n"; got != want {
 				t.Errorf("report = %q, want %q", got, want)
 			}
 		})
@@ -509,7 +509,7 @@ func TestLargerResultTagsOriginal(t *testing.T) {
 	if got := probeStreams(t, video); !slices.Equal(got, []string{"video:vp9", "audio:ac3"}) {
 		t.Errorf("streams after remux = %v, want the original vp9 + ac3", got)
 	}
-	if got := readFile(t, filepath.Join(song, "song.txt")); got != txt {
+	if got := testutil.ReadFile(t, filepath.Join(song, "song.txt")); got != txt {
 		t.Errorf("txt changed to %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "media-journal.txt")); !os.IsNotExist(err) {
@@ -555,7 +555,7 @@ func TestCheckedAviIsJournaled(t *testing.T) {
 	if st := ops.Stats(); st.Failed != 0 || st.Replaced != 0 {
 		t.Errorf("Stats = %+v, want no replacement (AVI is not remuxed)", st)
 	}
-	if got := readFile(t, cfg.JournalPath()); !strings.Contains(got, "\nvideo-checked\t") {
+	if got := testutil.ReadFile(t, cfg.JournalPath()); !strings.Contains(got, "\nvideo-checked\t") {
 		t.Errorf("journal = %q, want a video-checked entry", got)
 	}
 
@@ -629,7 +629,7 @@ func TestStrippedAviIsJournaled(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !j.Has("video-processed", video) {
-		t.Errorf("journal %q has no video-processed entry for the stripped AVI", readFile(t, cfg.JournalPath()))
+		t.Errorf("journal %q has no video-processed entry for the stripped AVI", testutil.ReadFile(t, cfg.JournalPath()))
 	}
 }
 
@@ -706,14 +706,14 @@ func TestCaseOnlyExtensionChangeReplacesInPlace(t *testing.T) {
 	if st := ops.Stats(); st.Failed != 0 || st.Replaced != 1 || st.Moved != 0 || st.Written != 0 {
 		t.Errorf("Stats = %+v, want 1 in-place replacement", st)
 	}
-	if got := dirNames(t, song); !slices.Equal(got, []string{"song.txt", "video.MP4"}) {
+	if got := testutil.DirNames(t, song); !slices.Equal(got, []string{"song.txt", "video.MP4"}) {
 		t.Errorf("song folder = %v, want song.txt and video.MP4", got)
 	}
 	if got := probeStreams(t, video); !slices.Equal(got, []string{"video:h264", "audio:aac"}) {
 		t.Errorf("streams = %v, want h264 + aac", got)
 	}
 	assertTagged(t, video, true)
-	if got := readFile(t, filepath.Join(song, "song.txt")); got != txt {
+	if got := testutil.ReadFile(t, filepath.Join(song, "song.txt")); got != txt {
 		t.Errorf("txt changed to %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "extra-files")); !os.IsNotExist(err) {
@@ -775,7 +775,7 @@ func TestProcessesAllVideosConcurrently(t *testing.T) {
 	cfg, songDir, _ := newLibrary(t, false)
 	src := filepath.Join(t.TempDir(), "v.mp4")
 	makeMedia(t, src, "-c:v", "libx264", "-crf", "35", "-c:a", "aac")
-	data := readFile(t, src)
+	data := testutil.ReadFile(t, src)
 	const songs = 7
 	var videos []string
 	for i := range songs {
@@ -820,19 +820,6 @@ func assertTagged(t *testing.T, file string, want bool) {
 	if m.tagged != want {
 		t.Errorf("%s tagged = %v, want %v", file, m.tagged, want)
 	}
-}
-
-func dirNames(t *testing.T, dir string) []string {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	for _, e := range entries {
-		names = append(names, e.Name())
-	}
-	return names
 }
 
 func newLibrary(t *testing.T, dryRun bool) (cfg config.Config, songDir, outDir string) {
@@ -885,13 +872,4 @@ func assertNoTempFiles(t *testing.T, root string) {
 		}
 		return nil
 	})
-}
-
-func readFile(t *testing.T, path string) string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
 }

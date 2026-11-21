@@ -43,6 +43,36 @@ func WriteFile(t testing.TB, path, content string) {
 	}
 }
 
+// ReadFile returns the content of path and fails the test if it cannot be read.
+func ReadFile(t testing.TB, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// Exists reports whether path exists (a dangling symlink does).
+func Exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+// DirNames returns the names in dir, sorted, and fails the test if it cannot be read.
+func DirNames(t testing.TB, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
 // Snapshot describes everything below root, one line per entry in walk order: path, mode,
 // size and mtime (ns), plus the SHA-256 of a regular file and the target of a symlink. Two
 // equal snapshots mean the folder was left byte-identical (dry runs).
