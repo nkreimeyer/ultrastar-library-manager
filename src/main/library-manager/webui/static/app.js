@@ -60,7 +60,7 @@ const post = (p, b) => call("POST", p, b ?? {});
 const TASKS = {
   dedupe: {
     title: "Tidy up my library",
-    desc: "Find songs that are in the library more than once, keep the best version and set the others aside.",
+    desc: "Fix song texts, set aside duplicates, broken songs and leftover files, and even out the volume. You choose what on the next page.",
   },
   add: {
     title: "Add new songs to my library",
@@ -73,10 +73,62 @@ const TASKS = {
 };
 
 const PHASES = {
+  text: "Fixing song texts",
+  cleanup: "Clearing out leftovers",
   inspect: "Checking songs",
   move: "Moving songs",
+  video: "Converting videos",
+  audio: "Evening out the volume",
   undo: "Moving songs back",
 };
+
+// The tidy-up options, in groups. Every option goes to the server as it is (tidyOptions).
+// media: needs ffmpeg; off when it is missing.
+const TIDY_GROUPS = [
+  { title: "Song texts", options: [
+    { key: "utf8", label: "Convert all song texts to UTF-8",
+      hint: "Umlauts and other special letters then show up right in every karaoke program. A text whose encoding is not certain is left alone and listed in the report." },
+    { key: "fileTags", label: "Fix the file names in the song texts",
+      hint: "Points #MP3, #VIDEO, #COVER and #BACKGROUND to the files that are really in the song folder. Song texts in an older encoding are only fixed together with the UTF-8 conversion." },
+    { key: "fillTags", label: "Fill in a missing artist or title",
+      hint: "Taken from a song folder named “Artist - Title”. Karaoke programs skip songs without them. Like the file names, this needs the UTF-8 conversion for song texts in an older encoding." },
+  ] },
+  { title: "Clean up", options: [
+    { key: "dedupe", label: "Set aside duplicates",
+      hint: "Finds songs that are in the library more than once and keeps the best version." },
+    { key: "broken", label: "Set aside broken songs",
+      hint: "Songs that cannot be played, such as songs without audio or with broken notes, and folders without a song. Each song is listed for you to look at first." },
+    { key: "leftovers", label: "Set aside leftover files",
+      hint: "Files no song uses, such as old covers or a second song text." },
+  ] },
+  { title: "Audio and video", media: true, options: [
+    { key: "audio", label: "Even out the volume",
+      hint: "Brings every song to the same peak level and mixes surround sound down to stereo. The original audio files are kept in the output folder." },
+    { key: "video", label: "Convert videos",
+      hint: "Re-encodes large videos and old formats to H.264 (at most 1080p) and removes audio tracks the song does not use. Saves a lot of space, but takes long and cannot be undone." },
+  ] },
+];
+
+const TIDY_DEFAULTS = { utf8: true, fileTags: true, fillTags: true, dedupe: true, broken: true, leftovers: true, audio: true, video: false };
+
+// What the steps of a finished run did, from their stats (a step's key is its name).
+const STEP_DONE = {
+  text: (st) => [st.written && plural(st.written, "song text fixed", "song texts fixed"),
+    st.moved && plural(st.moved, "file or folder set aside", "files and folders set aside")],
+  cleanup: (st) => [st.moved && plural(st.moved, "leftover file or folder set aside", "leftover files and folders set aside")],
+  songs: (st) => [st.moved && plural(st.moved, "song folder set aside", "song folders set aside")],
+  // A conversion to another container is a rename (moved), one in place a replace.
+  video: (st) => [st.replaced + st.moved && plural(st.replaced + st.moved, "video converted", "videos converted")],
+  audio: (st) => [st.replaced && plural(st.replaced, "audio file evened out", "audio files evened out")],
+};
+
+// The phases of a check (a dry run) where the real run's words would alarm.
+const DRY_PHASES = { text: "Checking song texts", cleanup: "Looking for leftovers" };
+
+// What undo covers in a tidy-up: only the song step journals its moves.
+const TIDY_UNDO = "Duplicates and broken songs can be put back with undo afterwards. Leftover files and folders without a song are not part of undo: they wait in the extra-files and invalid folders of the output folder. Fixed song texts, evened-out audio and converted videos stay as they are.";
+
+const isTidyJob = (j) => !!j?.kind?.startsWith("tidy-");
 
 const JOB_TITLES = {
   "organize-analyse": "Checking first. Nothing is changed yet.",
@@ -97,11 +149,13 @@ const emptyForm = () => ({
   priority: false,
   ignoreThe: false,
   deep: false,
+  tidy: { ...TIDY_DEFAULTS },
 });
 
 function loadForm() {
   try {
-    return { ...emptyForm(), ...JSON.parse(localStorage.getItem("lm-form") || "{}") };
+    const saved = JSON.parse(localStorage.getItem("lm-form") || "{}");
+    return { ...emptyForm(), ...saved, tidy: { ...TIDY_DEFAULTS, ...saved.tidy } };
   } catch {
     return emptyForm();
   }
@@ -112,7 +166,7 @@ const S = {
   task: TASKS[localStorage.getItem("lm-task")] ? localStorage.getItem("lm-task") : "dedupe",
   f: loadForm(),
   sys: null,
-  view: "setup", // setup | running | review | done
+  view: "setup", // setup | options (tidy-up) | running | review | done
   job: null, // latest job state from the server
   waitingFor: null, // id of the job this page started or follows
   handled: new Set(),
@@ -146,6 +200,9 @@ function render() {
       break;
     case "done":
       content = viewDone();
+      break;
+    case "options":
+      content = viewOptions();
       break;
     default:
       content = viewSetup();
@@ -200,7 +257,7 @@ function systemNotice() {
     h(
       "p",
       null,
-      "Without it, video and audio quality are not compared when the best version of a song is picked. Fixing broken characters works without it.",
+      "Without it, video and audio quality are not compared when the best version of a song is picked, and the volume and videos cannot be worked on. Everything else works without it.",
     ),
     h("p", { class: "small" }, S.sys.installHint),
     advanced() ? h("ul", null, S.sys.tools.filter((t) => t.problem).map((t) => h("li", { class: "small" }, `${t.name}: ${t.problem}`))) : null,
@@ -395,8 +452,23 @@ function confirmDialog(title, text, okLabel) {
 
 // ---------------------------------------------------------------- setup
 
-function organizeRequest() {
+// mediaOK: the tools the audio and video options need are there.
+const mediaOK = () => !S.sys || S.sys.toolsOK;
+
+// tidyRequest returns the tidy-up options to send: the media options only with ffmpeg.
+function tidyRequest() {
+  const t = { ...S.f.tidy };
+  if (!mediaOK()) t.audio = t.video = false;
+  return t;
+}
+
+const anyTidy = (t) => Object.keys(TIDY_DEFAULTS).some((k) => t[k]);
+
+// organizeRequest is the request of a check; withTidy adds the tidy-up options (a dedupe
+// from the options page).
+function organizeRequest(withTidy) {
   return {
+    tidy: withTidy && S.task === "dedupe" ? tidyRequest() : undefined,
     mode: S.task,
     tiers: S.task === "dedupe" ? [] : S.f.tiers.map((t) => t.map((p) => p.trim()).filter(Boolean)).filter((t) => t.length),
     library: S.f.library.trim(),
@@ -492,7 +564,7 @@ function viewSetup() {
   const fields = h("section", { "aria-label": "Folders and options" });
   switch (S.task) {
     case "dedupe":
-      fields.append(folderField("Your library", "library", "The folder that holds your songs. Duplicates are moved out of it; the best version of each song stays where it is."));
+      fields.append(folderField("Your library", "library", "The folder that holds your songs. What is set aside is moved out of it; the songs you keep stay where they are."));
       break;
     case "add":
       fields.append(folderField("Your library", "library", "The songs end up here, sorted into a folder per first letter."));
@@ -517,9 +589,15 @@ function viewSetup() {
   }
   add(frag, fields);
   add(frag, h("p", { class: "resolved", id: "resolved", "aria-live": "polite" }));
-  add(frag, h("div", { class: "actions" },
-    h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: startAnalysis }, "Check first"),
-    h("span", { class: "muted small" }, "Nothing is changed yet. You see what would happen and decide then."),
+  add(frag, h("div", { class: "actions" }, S.task === "dedupe"
+    ? h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: () => {
+      S.view = "options";
+      S.notice = null;
+      render();
+      window.scrollTo(0, 0);
+    } }, "Next")
+    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: startAnalysis }, "Check first"),
+  h("span", { class: "muted small" }, S.task === "dedupe" ? "Next you choose what to tidy up." : "Nothing is changed yet. You see what would happen and decide then."),
   ));
   if (advanced()) {
     add(frag, h("h2", null, "Earlier runs"), h("div", { id: "history" }, historyList()));
@@ -557,7 +635,47 @@ async function startJob(path, body) {
 }
 
 function startAnalysis() {
-  startJob("/api/organize/analyse", organizeRequest());
+  startJob("/api/organize/analyse", organizeRequest(true));
+}
+
+// ---------------------------------------------------------------- tidy-up options
+
+function viewOptions() {
+  const frag = h("div");
+  add(frag, h("h1", null, "What should be tidied up?"));
+  add(frag, h("p", { class: "muted" }, "In ", h("span", { class: "path" }, S.f.library.trim()), "."));
+  add(frag, noticeBox(S.notice), systemNotice() || "");
+  const t = S.f.tidy;
+  const start = h("button", { class: "btn primary", type: "button", disabled: !anyTidy(tidyRequest()), onclick: startAnalysis }, "Check first");
+  const set = (key, on) => {
+    t[key] = on;
+    saveForm();
+    start.disabled = !anyTidy(tidyRequest());
+  };
+  for (const g of TIDY_GROUPS) {
+    const off = g.media && !mediaOK();
+    const box = h("fieldset", { class: "group" }, h("legend", null, g.title));
+    if (off) box.append(h("p", { class: "hint small muted" }, "Needs ffmpeg, see above."));
+    for (const o of g.options) {
+      box.append(h("label", { class: `check${off ? " off" : ""}` },
+        h("input", { type: "checkbox", checked: !off && t[o.key], disabled: off, onchange: (e) => set(o.key, e.target.checked) }),
+        h("span", null, o.label, h("span", { class: "hint small muted" }, h("br"), o.hint)),
+      ));
+    }
+    frag.append(box);
+  }
+  add(frag, h("p", { class: "muted small" }, "Set-aside songs and files are moved to the output folder, never deleted. ", TIDY_UNDO));
+  add(frag, h("div", { class: "actions" },
+    start,
+    h("button", { class: "btn", type: "button", onclick: () => {
+      S.view = "setup";
+      S.notice = null;
+      render();
+      validate();
+    } }, "Back"),
+    h("span", { class: "muted small" }, "Nothing is changed yet. Audio and video are worked on only when you go ahead."),
+  ));
+  return frag;
 }
 
 function undo(library, out) {
@@ -581,8 +699,9 @@ function viewRunning() {
     } }));
     x += len + 1;
   }
+  const tidy = j.kind === "tidy-apply";
   const box = h("div", null,
-    h("h1", null, JOB_TITLES[j.kind] || "Working"),
+    h("h1", null, tidy ? "Tidying up" : JOB_TITLES[(j.kind || "").replace(/^tidy-/, "organize-")] || "Working"),
     h("div", { class: "stage" },
       notes,
       h("div", { class: "lyric", id: "lyric", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100" },
@@ -592,7 +711,8 @@ function viewRunning() {
     h("div", { class: "actions" },
       h("button", { class: "btn", type: "button", id: "stop", onclick: stopJob }, "Stop"),
       h("span", { class: "muted small", id: "stop-hint" },
-        STOP_HINTS[j.kind] || "Stopping changes nothing."),
+        tidy ? "Stopping finishes the files being worked on. Run the tidy-up again later to do the rest."
+          : STOP_HINTS[j.kind] || "Stopping changes nothing."),
     ),
   );
   queueMicrotask(updateRunning);
@@ -604,7 +724,7 @@ function updateRunning() {
   const lyric = document.getElementById("lyric");
   if (!j || !lyric) return;
   const pct = j.total > 0 ? Math.min(100, (j.done / j.total) * 100) : 0;
-  const text = PHASES[j.phase] || "Getting started";
+  const text = (j.dryRun && DRY_PHASES[j.phase]) || PHASES[j.phase] || "Getting started";
   lyric.querySelector(".base").textContent = text;
   const sung = lyric.querySelector(".sung");
   sung.textContent = text;
@@ -616,6 +736,7 @@ function updateRunning() {
   if (j.total > 0) parts.push(`${fmt(j.done)} of ${fmt(j.total)}`);
   if (!j.dryRun && j.stats?.moved) parts.push(`${plural(j.stats.moved, "folder", "folders")} moved`);
   if (!j.dryRun && j.stats?.written) parts.push(`${plural(j.stats.written, "file", "files")} written`);
+  if (!j.dryRun && j.stats?.replaced) parts.push(`${plural(j.stats.replaced, "file", "files")} converted`);
   if (j.stats?.failed) parts.push(`${plural(j.stats.failed, "problem", "problems")}`);
   document.getElementById("counter").textContent = parts.join(", ");
 }
@@ -668,27 +789,35 @@ async function onJobEnd(j) {
   S.handled.add(j.id);
   S.waitingFor = null;
   const failed = (title) => ({ kind: "bad", title, text: j.error, details: j.details });
+  const tidy = isTidyJob(j);
   try {
-    switch (j.kind) {
+    switch (j.kind.replace(/^tidy-/, "organize-")) {
       case "organize-analyse":
         if (j.state === "done") {
           S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`);
           S.open = new Set();
           S.view = "review";
         } else {
-          S.view = "setup";
+          S.view = tidy ? "options" : "setup";
           S.notice = j.state === "cancelled" ? { kind: "", title: "Stopped. Nothing was changed." } : failed("The check did not finish");
         }
         break;
       case "organize-apply":
         if (j.state === "done" || j.state === "cancelled") {
           // From the result: after a reload S.org is not loaded.
+          if (!S.org && j.result?.analysis) S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`).catch(() => null);
           S.done = { kind: "organize", job: j, stopped: j.state === "cancelled", cfg: resultFolders(j) || S.org?.config };
           S.view = "done";
         } else if (j.result?.planChanged) {
           S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`);
           S.view = "review";
-          S.notice = { kind: "bad", title: "Something changed since you checked, so nothing was moved", text: "Here is the new plan. Look through it again before you move anything.", details: advanced() ? j.details : null };
+          S.notice = tidy
+            ? { kind: "bad", title: "Something changed since you checked, so no song folders were moved", text: "The song texts and leftover files were taken care of already; audio and video were not worked on yet. Here is the new song plan. Look through it again before you go ahead.", details: advanced() ? j.details : null }
+            : { kind: "bad", title: "Something changed since you checked, so nothing was moved", text: "Here is the new plan. Look through it again before you move anything.", details: advanced() ? j.details : null };
+        } else if (tidy && resultFolders(j)) {
+          S.done = { kind: "organize", job: j, stopped: false, cfg: resultFolders(j) };
+          S.view = "done";
+          S.notice = failed("Not everything could be done");
         } else if (j.stats?.moved && resultFolders(j)) {
           // Some songs moved before it failed: offer the undo.
           S.done = { kind: "organize", job: j, stopped: true, cfg: resultFolders(j) };
@@ -809,11 +938,33 @@ function viewOrganizeReview() {
   const dupsOf = (i) => songs.filter((s) => s.action === "duplicate" && s.other === i);
   const sum = v.summary;
   const moving = sum.toLibrary + sum.duplicates + sum.invalid;
+  const t = v.tidy;
+  const fileChanges = t ? t.textFiles.length + t.leftovers.length + t.brokenFolders.length : 0;
+  const media = t ? [t.options.audio && "the volume is evened out", t.options.video && "the videos are converted"].filter(Boolean) : [];
   const frag = h("div");
   add(frag, h("h1", null, "This is what would happen"));
   add(frag, noticeBox(S.notice));
   if (v.applied) add(frag, noticeBox({ kind: "good", title: "This plan was carried out. Check again for a new one." }));
+  if (t?.done) add(frag, noticeBox({ kind: "", text: "The song texts and leftover files were taken care of already, when you went ahead the last time." }));
   for (const note of v.notes) add(frag, noticeBox({ kind: "", text: note }));
+  if (t) {
+    const pathItem = (r) => h("li", null, h("span", { class: "path" }, r));
+    const files = h("ul", { class: "tally" });
+    if (t.options.utf8 || t.options.fileTags || t.options.fillTags) {
+      files.append(tallyItem("text", "library", t.textFiles.length, t.textFiles.length === 1 ? "song text is fixed" : "song texts are fixed",
+        () => cappedList(t.textFiles, pathItem, "text")));
+    }
+    if (t.options.leftovers) {
+      files.append(tallyItem("leftovers", "dup", t.leftovers.length, t.leftovers.length === 1 ? "leftover file is set aside" : "leftover files are set aside",
+        () => cappedList(t.leftovers, pathItem, "leftovers")));
+    }
+    if (t.options.broken) {
+      files.append(tallyItem("emptyfolders", "bad", t.brokenFolders.length, t.brokenFolders.length === 1 ? "folder or file without a playable song is set aside" : "folders and files without a playable song are set aside",
+        () => cappedList(t.brokenFolders, pathItem, "emptyfolders")));
+    }
+    if (files.childNodes.length) add(frag, h("h2", null, "Files"), files);
+    if (t.songs) add(frag, h("h2", null, "Songs"));
+  }
 
   const keeperItem = (s) => {
     const dups = dupsOf(s.i);
@@ -824,7 +975,7 @@ function viewOrganizeReview() {
           h("div", { class: "song-meta" }, s.action === "library" ? ["to ", h("span", { class: "path" }, s.target), " from ", where(s)] : where(s)),
           dups.length ? h("ul", { class: "versions" }, dups.map((d) => h("li", null, "Also found in ", where(d), ": set aside (", d.reason, ")"))) : null,
         ),
-        h("button", { class: "link", type: "button", onclick: () => setExcluded([s.ref, ...dups.map((d) => d.ref)], true) }, "Leave this song alone"),
+        h("button", { class: "link", type: "button", onclick: () => setExcluded([s.ref, ...dups.map((d) => d.ref)], true) }, t ? "Move none of its versions" : "Leave this song alone"),
       ),
     );
   };
@@ -866,25 +1017,26 @@ function viewOrganizeReview() {
   const pairs = v.similar;
 
   const tally = h("ul", { class: "tally" });
-  if (sum.toLibrary || S.task !== "dedupe") {
+  const songsShown = !t || t.songs;
+  if (songsShown && (sum.toLibrary || v.mode !== "dedupe")) {
     tally.append(tallyItem("library", "library", sum.toLibrary, sum.toLibrary === 1 ? "song moves into the library" : "songs move into the library",
       () => cappedList(by("library"), keeperItem, "library")));
   }
-  tally.append(tallyItem("inplace", "stay", sum.inPlace,
-    S.task === "dedupe" ? (sum.inPlace === 1 ? "song stays in the library as it is" : "songs stay in the library as they are")
+  if (songsShown) tally.append(tallyItem("inplace", "stay", sum.inPlace,
+    v.mode === "dedupe" ? (sum.inPlace === 1 ? "song stays in the library as it is" : "songs stay in the library as they are")
       : (sum.inPlace === 1 ? "song is already where it belongs" : "songs are already where they belong"),
     () => cappedList(by("in-place"), keeperItem, "inplace")));
-  tally.append(tallyItem("dup", "dup", sum.duplicates, sum.duplicates === 1 ? "duplicate is set aside" : "duplicates are set aside",
+  if (songsShown && (!t || t.options.dedupe)) tally.append(tallyItem("dup", "dup", sum.duplicates, sum.duplicates === 1 ? "duplicate is set aside" : "duplicates are set aside",
     () => cappedList(by("duplicate"), dupItem, "dup")));
-  tally.append(tallyItem("bad", "bad", sum.invalid, sum.invalid === 1 ? "broken song is set aside" : "broken songs are set aside",
+  if (songsShown && (!t || t.options.broken)) tally.append(tallyItem("bad", "bad", sum.invalid, sum.invalid === 1 ? "broken song is set aside" : "broken songs are set aside",
     () => cappedList(by("invalid"), invalidItem, "bad")));
-  tally.append(tallyItem("left", "stay", left.length, left.length === 1 ? "song stays where it is, for a reason" : "songs stay where they are, each for a reason",
+  if (songsShown) tally.append(tallyItem("left", "stay", left.length, left.length === 1 ? "song stays where it is, for a reason" : "songs stay where they are, each for a reason",
     () => cappedList(left, leftItem, "left")));
   if (excluded.length) {
     tally.append(tallyItem("excluded", "excluded", excluded.length, excluded.length === 1 ? "song you chose to leave alone" : "songs you chose to leave alone",
       () => cappedList(excluded, excludedItem, "excluded")));
   }
-  tally.append(tallyItem("similar", "stay", pairs.length, pairs.length === 1 ? "pair of songs looks alike but is kept apart" : "pairs of songs look alike but are kept apart",
+  if (songsShown && (!t || t.options.dedupe)) tally.append(tallyItem("similar", "stay", pairs.length, pairs.length === 1 ? "pair of songs looks alike but is kept apart" : "pairs of songs look alike but are kept apart",
     () => h("div", null,
       h("p", { class: "muted small" }, "Both songs of each pair are kept. If they are the same song, remove one by hand later."),
       cappedList(pairs, (p) => h("li", null,
@@ -892,22 +1044,39 @@ function viewOrganizeReview() {
         h("div", { class: "song-meta" }, where(songs[p.a]), " / ", where(songs[p.b])),
         h("div", { class: "song-meta" }, p.evidence),
       ), "similar"))));
-  add(frag, tally);
+  if (tally.childNodes.length) add(frag, tally);
+  if (media.length) {
+    add(frag, h("h2", null, "Audio and video"),
+      h("p", null, `When you go ahead, ${media.join(" and ")} after the steps above. This is checked file by file then: files that were worked on before are skipped.`));
+  }
 
   const out = v.config.outDir;
-  add(frag, h("p", { class: "muted" }, "Set-aside songs go to ", h("span", { class: "path" }, out), " (duplicates and invalid). Every move is recorded, so you can undo the whole run afterwards."));
-  const moveLabel = moving ? `Move ${plural(moving, "song folder", "song folders")}` : "Nothing to move";
+  add(frag, h("p", { class: "muted" }, t
+    ? ["Set-aside songs and files go to ", h("span", { class: "path" }, out), ". ", TIDY_UNDO, t.options.audio ? " The original audio files are kept in the output folder." : ""]
+    : ["Set-aside songs go to ", h("span", { class: "path" }, out), " (duplicates and invalid). Every move is recorded, so you can undo the whole run afterwards."]));
+  const todo = moving + fileChanges + media.length;
+  const moveLabel = t ? (todo ? "Go ahead" : "Nothing to do")
+    : moving ? `Move ${plural(moving, "song folder", "song folders")}` : "Nothing to move";
   add(frag, h("div", { class: "actions" },
-    h("button", { class: "btn primary", type: "button", disabled: !moving || v.applied, onclick: async () => {
+    h("button", { class: "btn primary", type: "button", disabled: !todo || v.applied, onclick: async () => {
       const aside = [sum.duplicates ? plural(sum.duplicates, "duplicate", "duplicates") : "", sum.invalid ? plural(sum.invalid, "broken song", "broken songs") : ""].filter(Boolean);
-      const ok = await confirmDialog(`${moveLabel}?`, [
+      const ok = await confirmDialog(t ? "Tidy up now?" : `${moveLabel}?`, [
+        t && t.textFiles.length ? `${plural(t.textFiles.length, "song text is", "song texts are")} fixed.` : "",
+        t && t.leftovers.length + t.brokenFolders.length ? `${plural(t.leftovers.length + t.brokenFolders.length, "file or folder goes", "files and folders go")} to ${out}.` : "",
         aside.length ? `${aside.join(" and ")} ${sum.duplicates + sum.invalid === 1 ? "goes" : "go"} to ${out}.` : "",
         sum.toLibrary ? `${plural(sum.toLibrary, "song moves", "songs move")} into ${v.config.library}.` : "",
-        "If anything changed since the check, nothing is moved and you see the new plan first.",
+        media.length ? `Then ${media.join(" and ")}${t.options.video ? ". Converted videos cannot be undone" : ""}.` : "",
+        moving && t && fileChanges ? "The song texts and leftover files are handled first. If any song changed since the check, no song folder is moved after that and you see the new plan." : "",
+        moving && !(t && fileChanges) ? "If any song changed since the check, no song folder is moved and you see the new plan first." : "",
       ].filter(Boolean), moveLabel);
       if (ok) startJob("/api/organize/apply", { analysis: v.id });
     } }, moveLabel),
     h("button", { class: "btn", type: "button", onclick: startAnalysis }, "Check again"),
+    t ? h("button", { class: "btn", type: "button", onclick: () => {
+      S.view = "options";
+      S.notice = null;
+      render();
+    } }, "Change what to do") : null,
     h("button", { class: "btn", type: "button", onclick: () => {
       S.view = "setup";
       S.notice = null;
@@ -915,7 +1084,7 @@ function viewOrganizeReview() {
       validate();
     } }, "Change folders"),
   ));
-  if (advanced()) add(frag, organizeTable(v));
+  if (advanced() && songsShown) add(frag, organizeTable(v));
   return frag;
 }
 
@@ -986,7 +1155,23 @@ function viewDone() {
     render();
     validate();
   } }, "Start over");
-  if (d.kind === "organize") {
+  if (d.kind === "organize" && j.result?.tidy) {
+    const steps = j.result.steps || [];
+    const songsMoved = steps.find((s) => s.step === "songs")?.stats.moved || 0;
+    add(frag, h("h1", null, d.stopped ? "Stopped part-way" : j.state === "done" ? "Done" : "Not everything could be done"));
+    add(frag, noticeBox(S.notice));
+    const lines = steps.flatMap((s) => (STEP_DONE[s.step]?.(s.stats) || []).filter(Boolean));
+    if (lines.length) add(frag, h("ul", { class: "done-list" }, lines.map((l) => h("li", null, l))));
+    else if (j.state === "done") add(frag, h("p", null, "Nothing needed to be changed."));
+    const errors = steps.filter((s) => s.error);
+    if (errors.length && !S.notice) add(frag, noticeBox({ kind: "bad", title: `${plural(errors.length, "step", "steps")} did not finish`, details: errors.map((s) => `${PHASES[s.step] || s.step}: ${s.error}`) }));
+    if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "file or folder", "files or folders")} could not be worked on`, text: advanced() ? "The log below says why." : "Switch to Advanced to see the log." }));
+    if (d.stopped) add(frag, h("p", null, "Run the tidy-up again to finish the rest: what is done already is skipped."));
+    if (d.cfg) add(frag, h("p", null, "Set-aside songs and files are in ", h("span", { class: "path" }, d.cfg.outDir), ", together with the reports. Look through them before you delete anything."));
+    add(frag, h("div", { class: "actions" },
+      songsMoved && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Put back the set-aside songs") : null,
+      again));
+  } else if (d.kind === "organize") {
     add(frag, h("h1", null, d.stopped ? "Stopped part-way" : "Done"));
     add(frag, noticeBox(S.notice));
     add(frag, h("p", null, d.stopped

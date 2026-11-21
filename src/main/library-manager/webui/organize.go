@@ -3,9 +3,11 @@ package webui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 
 	log "github.com/sirupsen/logrus"
@@ -24,6 +26,8 @@ type organizeRequest struct {
 	Priority  bool       `json:"priority"`
 	IgnoreThe bool       `json:"ignoreThe"`
 	Deep      bool       `json:"deep"`
+	// Tidy, for a dedupe, are the options of the tidy-up screen (nil: only the dedupe).
+	Tidy *tidyOptions `json:"tidy,omitempty"`
 }
 
 func (q organizeRequest) mode() (organize.Mode, error) {
@@ -41,6 +45,9 @@ func (q organizeRequest) config(dry bool) (config.OrganizeConfig, error) {
 	if err != nil {
 		return config.OrganizeConfig{}, err
 	}
+	if err := q.Tidy.check(m); err != nil {
+		return config.OrganizeConfig{}, err
+	}
 	var tiers [][]string
 	for _, t := range q.Tiers {
 		var dirs []string
@@ -54,6 +61,15 @@ func (q organizeRequest) config(dry bool) (config.OrganizeConfig, error) {
 		}
 	}
 	return organize.NewConfig(m, tiers, q.Library, q.Out, dry)
+}
+
+// jobKind is the kind of the job that does action (analyse, apply): "tidy-…" for a
+// tidy-up, so a page that reconnects to it knows what runs, else "organize-…".
+func (q organizeRequest) jobKind(action string) string {
+	if q.Tidy != nil {
+		return "tidy-" + action
+	}
+	return "organize-" + action
 }
 
 func (q organizeRequest) options(m organize.Mode) organize.Options {
@@ -102,8 +118,13 @@ type organizeAnalysis struct {
 	cfg     configView
 	review  *organize.Review
 	exclude map[string]bool
-	plan    organize.Plan // review.Plan with exclude applied
+	plan    organize.Plan // review.Plan with exclude applied; review is nil if no song step ran
 	applied bool
+	// tidy is what a tidy-up's text and cleanup steps would change (nil for other runs);
+	// tidyDone: an apply ran them already (it then stopped at a changed song plan).
+	tidy     *tidyPlan
+	tidyDone bool
+	steps    []stepResult // what the check's steps planned
 }
 
 func (s *Server) handleOrganizeAnalyse(w http.ResponseWriter, r *http.Request) {
@@ -121,31 +142,40 @@ func (s *Server) handleOrganizeAnalyse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := q.Tidy.checkTools(r.Context()); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	a := &organizeAnalysis{id: s.newID("o"), req: q, cfg: viewConfig(cfg), exclude: map[string]bool{}}
 	ops := fsops.New(true)
-	s.startJob(w, a.id, "organize-analyse", ops, func(ctx context.Context, c jobControl) (any, error) {
+	s.startJob(w, a.id, q.jobKind("analyse"), ops, func(ctx context.Context, c jobControl) (any, error) {
 		if err := cfg.PrepareOutDir(); err != nil {
 			return nil, err
 		}
-		opts := q.options(m)
-		opts.Ctx, opts.Progress = ctx, c.Progress
-		opts.Review = func(rv *organize.Review) error {
+		run := &stepRun{tidy: q.Tidy, cfg: cfg, ops: ops, ctx: ctx, c: c, songs: q.options(m)}
+		run.songs.Review = func(rv *organize.Review) error {
 			a.review, a.plan = rv, rv.Plan
 			return nil
 		}
+		if q.Tidy != nil {
+			run.onText = func(p tidyPlan) { a.tidy = &p }
+		}
 		log.Infof("Checking %s (dry run, nothing is changed); library %s, output %s", m, cfg.Library, cfg.OutDir)
-		if err := organize.Run(cfg, ops, opts); err != nil {
+		steps, err := run.run()
+		if err != nil {
 			return nil, err
 		}
-		if a.review == nil {
+		if a.review == nil && slices.Contains(q.Tidy.steps(true), stepSongs) {
 			return nil, fmt.Errorf("the run made no plan")
 		}
+		a.steps = steps
 		s.mu.Lock()
 		// Only the newest analysis is kept: an older one holds every song of its library and
 		// is not shown any more (applying it answers "check again").
 		s.organize = map[string]*organizeAnalysis{a.id: a}
+		v := buildOrganizeView(a)
 		s.mu.Unlock()
-		return map[string]any{"analysis": a.id, "summary": summarize(a.review.Cands, a.plan)}, nil
+		return map[string]any{"analysis": a.id, "summary": v.Summary}, nil
 	})
 }
 
@@ -196,6 +226,10 @@ func (s *Server) handleOrganizeExclude(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, fmt.Errorf("this plan was applied already"))
 		return
 	}
+	if rv == nil {
+		writeError(w, http.StatusConflict, fmt.Errorf("this check moves no song folders, so there is none to leave alone"))
+		return
+	}
 	plan := rv.Replan(ex) // in memory (only buckets no plan needed yet are read), may take a moment for a big library
 	s.mu.Lock()
 	if a.review != rv {
@@ -241,13 +275,14 @@ func (s *Server) handleOrganizeApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ops := fsops.New(false)
-	s.startJob(w, s.newID("a"), "organize-apply", ops, func(ctx context.Context, c jobControl) (any, error) {
+	s.startJob(w, s.newID("a"), a.req.jobKind("apply"), ops, func(ctx context.Context, c jobControl) (any, error) {
 		if err := cfg.PrepareOutDir(); err != nil {
 			return nil, err
 		}
-		opts := a.req.options(m)
-		opts.Ctx, opts.Progress, opts.Exclude = ctx, c.Progress, exclude
-		opts.Review = func(rv *organize.Review) error {
+		run := &stepRun{tidy: a.req.Tidy, cfg: cfg, ops: ops, ctx: ctx, c: c, songs: a.req.options(m)}
+		run.songs.Exclude = exclude
+		var changed map[string]any // the result of a changed plan
+		run.songs.Review = func(rv *organize.Review) error {
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			diff := organize.PlanDiff(a.review.Cands, a.plan, rv.Cands, rv.Plan)
@@ -256,22 +291,49 @@ func (s *Server) handleOrganizeApply(w http.ResponseWriter, r *http.Request) {
 				return nil
 			}
 			a.review, a.plan = rv, rv.Plan
+			if a.tidy != nil {
+				// The text and cleanup steps ran already: the next apply finds nothing left.
+				a.tidy, a.tidyDone = &tidyPlan{TextFiles: []string{}, Leftovers: []string{}, BrokenFolders: []string{}}, true
+			}
 			n := len(diff)
 			if n > maxDiffLines {
 				diff = append(diff[:maxDiffLines], fmt.Sprintf("… and %d more", n-maxDiffLines))
 			}
+			changed = map[string]any{"analysis": a.id, "planChanged": true}
+			moved := "nothing was moved"
+			if a.tidy != nil {
+				moved = "no song folder was moved (the song texts and leftover files were handled)"
+			}
 			return &detailedError{
-				msg:     fmt.Sprintf("%v: %d song folder(s) would be handled differently, so nothing was moved; review the new plan", organize.ErrPlanChanged, n),
-				details: diff, result: map[string]any{"analysis": a.id, "planChanged": true},
+				msg:     fmt.Sprintf("%v: %d song folder(s) would be handled differently, so %s; review the new plan", organize.ErrPlanChanged, n, moved),
+				details: diff, result: changed,
 			}
 		}
+		if !slices.Contains(a.req.Tidy.steps(false), stepSongs) {
+			s.mu.Lock()
+			a.applied = true // no song plan to compare: the check's lists are all there is
+			s.mu.Unlock()
+		}
 		log.Infof("Applying %s: library %s, output %s", m, cfg.Library, cfg.OutDir)
-		runErr := organize.Run(cfg, ops, opts)
-		res := map[string]any{"analysis": a.id, "outDir": cfg.OutDir, "library": cfg.Library}
-		if data, err := os.ReadFile(cfg.ReportPath("organize_plan.json")); err == nil && a.applied {
+		steps, runErr := run.run()
+		res := map[string]any{"analysis": a.id, "outDir": cfg.OutDir, "library": cfg.Library, "steps": steps}
+		if a.req.Tidy != nil {
+			res["tidy"] = true // the page shows the steps (also after a reload)
+		}
+		s.mu.Lock()
+		reported := a.applied && a.review != nil // the song step ran with the reviewed plan
+		s.mu.Unlock()
+		if data, err := os.ReadFile(cfg.ReportPath("organize_plan.json")); err == nil && reported {
 			res["report"] = json.RawMessage(data)
 		}
-		return res, runErr // a changed plan's detailedError brings its own result
+		if changed != nil {
+			changed["steps"] = steps // a changed plan's detailedError brings its own result
+		}
+		var de *detailedError
+		if errors.As(runErr, &de) && de.result == nil {
+			de.result = res // failed steps: the others' results are still shown
+		}
+		return res, runErr
 	})
 }
 
@@ -402,6 +464,17 @@ type organizeView struct {
 	Similar            []similarView   `json:"similar"`
 	Excluded           []string        `json:"excluded"`
 	Applied            bool            `json:"applied"`
+	Tidy               *tidyView       `json:"tidy,omitempty"`
+}
+
+// tidyView is the tidy-up part of a review: the options, what the text and cleanup steps
+// would change, and whether the song step ran (Songs: the song lists are its plan).
+type tidyView struct {
+	Options tidyOptions  `json:"options"`
+	Steps   []stepResult `json:"steps"`
+	tidyPlan
+	Done  bool `json:"done"`
+	Songs bool `json:"songs"`
 }
 
 func summarize(cands []organize.Candidate, p organize.Plan) organizeSummary {
@@ -429,9 +502,14 @@ func summarize(cands []organize.Candidate, p organize.Plan) organizeSummary {
 
 // buildOrganizeView renders an analysis; the caller holds s.mu.
 func buildOrganizeView(a *organizeAnalysis) organizeView {
-	cands, p := a.review.Cands, a.plan
+	var cands []organize.Candidate
+	var notes []string
+	if a.review != nil {
+		cands, notes = a.review.Cands, a.review.Notes
+	}
+	p := a.plan
 	v := organizeView{
-		ID: a.id, Mode: a.req.Mode, Config: a.cfg, Notes: a.review.Notes, Summary: summarize(cands, p),
+		ID: a.id, Mode: a.req.Mode, Config: a.cfg, Notes: notes, Summary: summarize(cands, p),
 		Songs: make([]songView, len(cands)), PossibleDuplicates: p.PossibleDuplicates, Similar: []similarView{},
 		Excluded: []string{}, Applied: a.applied,
 	}
@@ -462,5 +540,17 @@ func buildOrganizeView(a *organizeAnalysis) organizeView {
 		v.Excluded = append(v.Excluded, ref)
 	}
 	sort.Strings(v.Excluded)
+	if t := a.req.Tidy; t != nil {
+		tv := &tidyView{Options: *t, Steps: a.steps, Done: a.tidyDone, Songs: a.review != nil}
+		if tv.Steps == nil {
+			tv.Steps = []stepResult{}
+		}
+		if a.tidy != nil {
+			tv.tidyPlan = *a.tidy
+		} else {
+			tv.tidyPlan = tidyPlan{TextFiles: []string{}, Leftovers: []string{}, BrokenFolders: []string{}}
+		}
+		v.Tidy = tv
+	}
 	return v
 }

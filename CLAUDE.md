@@ -27,6 +27,7 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   config/                     Config{SongDir, OutDir, DryRun}: path validation, output layout, marker file;
                               organize.go: OrganizeConfig{Sources (tier, label), Library, OutDir}; NewDedupe, NewAdd
   fsops/                      the ONLY place that modifies files: dry-run (planned writes/moves visible via ReadFile), atomic writes, moves, stats;
+                              planned.go: Stats.Sub, PlannedWrites/PlannedMoves (a dry run's list, for the UI review);
                               MoveTo (exact target, ordered dry-run moves), AppendJournal, RemoveEmptyDir (undo),
                               WriteJSONReport/MarshalReport (the one JSON report encoding), FailUnreadable (the
                               "unreadable:<path>" FailOnce key), SkipUnreadable ("Skipping <folder>: <err>")
@@ -47,12 +48,17 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   utils/image.go              image headers (JPEG/PNG/GIF via stdlib, own BMP/WebP readers), cover/background choice
   songtxt/                    UltraStar txt parser (tags, notes, breaks, duets, RELATIVE, B lines, BeatToMs); pure;
                               the shared rules: IsBodyLine (end of header), LineSpans (line numbering), IsDuet
-  fixtxt/                     dedupe song txts, decode → UTF-8, fix #MP3/#AUDIO/#VIDEO/#COVER/#BACKGROUND, fill #ARTIST/#TITLE from the folder name
-  cleanup/                    move unreferenced files to extra-files/, near-empty folders to invalid/
+  fixtxt/                     dedupe song txts, decode → UTF-8, fix #MP3/#AUDIO/#VIDEO/#COVER/#BACKGROUND, fill #ARTIST/#TITLE from the folder name;
+                              RunWith(Options{Encoding, FileTags, FillTags, DuplicateTxts, MoveBroken, Ctx, Progress}) (Run = all on);
+                              with Encoding off a txt that is not UTF-8 is never written (every write is UTF-8)
+  cleanup/                    move unreferenced files to extra-files/, near-empty folders to invalid/;
+                              RunWith(Options{LeftoverFiles, BrokenFolders, Ctx, Progress})
   check/                      broken-song detection: analyze.go (pure), probe.go (ffprobe/ffmpeg), report.go;
                               inspect.go: Inspector (one folder -> findings, broken, MediaSummary), used by Run and organize
   fixvideos/                  ffmpeg: re-encode to H.264 mp4, downscale to fit 1920x1080, strip audio, flag corrupt files (tagged, idempotent)
   fixaudio/                   ffmpeg: downmix to stereo, peak-normalize to -3 dB, originals kept (tagged, idempotent)
+                              (fixaudio and fixvideos: RunWith(Options{Ctx, Progress}); a stop starts no further file,
+                              a running encode finishes, a stopped probe is never a failure)
   journal/                    content-fingerprint journal for media formats that cannot carry a marker tag
   mediatools/                 mediatools.go: Detect, Lookup, Require (ffmpeg/ffprobe on PATH, "-version" parsed: releases,
                               N-… and date git builds; >= 5.1); probe.go: Probe (one ffprobe JSON call -> ProbeInfo),
@@ -62,11 +68,13 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               Host/Origin/JSON checks, CSP, routes),
                               jobs.go (one job at a time, logrus hook, SSE /api/job/events), system.go (tools, folder lister),
                               organize.go (validate/analyse/exclude/apply/history/undo),
+                              tidy.go (the tidy-up options and stepRun: the steps of one job on one ops),
                               static/ (index.html, style.css, app.js: embedded, no build step)
   organize/                   organize/dedupe/add: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey, StripCopySuffix),
                               content.go (ContentHash, union-find joining of groups by content),
                               remove.go (Pattern, ParsePatternFile, planRemove (pure), Remove, remove_plan.json/.txt),
                               similar.go (Profile, findSimilar, similarJoin, review evidence),
+                              plan.go also BrokenRule (BrokenByMode, BrokenKeep, BrokenSetAside) and KeepDuplicates (dedupe only);
                               setup.go (NewConfig per Mode, NewUndoConfig, NewOptions: shared by the CLI and the UI;
                               dedupe drops -priority/-ignore-the), quality.go (keeper order), plan.go (MakePlan, orderMoves; pure), organize.go (Run, Undo),
                               journal.go (organize-journal.jsonl), report.go (organize_plan.json/.txt;
@@ -332,6 +340,17 @@ Same exit codes and leftover-argument rule.
   visible there after `signal.Reset`. `runSafely`
   turns a panic in the job goroutine into a job error, and a panic in a module's pool counts
   in the job's `Stats.Failed`; a panic in any other goroutine still ends the program.
+- webui tidy-up ("Tidy up my library" = dedupe with `organizeRequest.Tidy`): the options page sends
+  `tidyOptions`; `stepRun` runs fixtxt → cleanup → organize (dedupe; `Broken` = SetAside or Keep,
+  `KeepDuplicates` = !dedupe) → fixvideos → fixaudio on ONE ops, the modules with a `config.Config`
+  on the organize out dir (one output folder). The check (dry run) skips the media steps (their dry
+  runs decode every file) and lists the text and cleanup steps' planned writes/moves
+  (`plannedChanges`, taken before the song step plans its moves). Apply runs the text and
+  cleanup steps for real, then the song step with the PlanDiff hook; a failing song step (also a
+  changed plan) ends the job before the media steps. Job kinds are `tidy-analyse`/`tidy-apply`.
+  Only the song step is journaled: undo does not cover fixtxt/cleanup moves, txt rewrites or
+  media. The media journal is `<out>/media-journal.txt`, so the CLI's `sanitizer-output/`
+  journal is not shared with the UI's `organize-output/`.
 - organize: when a keeper from another source cannot reach the library, the library's own
   copies of that song stay in place (not moved to duplicates/). The report's duplicate and
   invalid `Dest` is the actual target (with ` (2)`), also in dry runs. Moves a stopped run or
