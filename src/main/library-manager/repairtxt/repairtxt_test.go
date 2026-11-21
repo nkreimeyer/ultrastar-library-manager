@@ -3,6 +3,7 @@ package repairtxt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -963,5 +964,36 @@ func TestLanguagesRepeatedTag(t *testing.T) {
 	song, _ := songtxt.Parse("#TITLE:X\n#ARTIST:Y\n#LANGUAGE:English\n#LANGUAGE:German\n: 0 1 0 a\n")
 	if codes, how := p.languages(song, nil); !slices.Equal(codes, []string{"de"}) || how != "tag" {
 		t.Errorf("languages = %v (%s), want [de] from the last #LANGUAGE", codes, how)
+	}
+}
+
+// TestReadLines pins the line rules readWordList and readReviewed share: a BOM is dropped,
+// CRLF and blanks are trimmed, blank and '#' lines are skipped but counted, CP1252 is read
+// when the file is not UTF-8, and an error of fn stops reading.
+func TestReadLines(t *testing.T) {
+	type line struct {
+		n    int
+		text string
+	}
+	var got []line
+	for _, in := range []string{
+		"\xef\xbb\xbf# comment\r\n  one two \r\n\r\n#x\nGl\xc3\xbcck\n", // UTF-8 with a BOM
+		"# comment\r\n  one two \r\n\r\n#x\nGl\xfcck\n",                 // CP1252
+	} {
+		got = nil
+		err := readLines(strings.NewReader(in), func(n int, l string) error {
+			got = append(got, line{n, l})
+			return nil
+		})
+		want := []line{{2, "one two"}, {5, "Gl\u00fcck"}}
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("readLines(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	stop := errors.New("stop")
+	calls := 0
+	err := readLines(strings.NewReader("a\nb\n"), func(int, string) error { calls++; return stop })
+	if err != stop || calls != 1 {
+		t.Errorf("fn error: err %v after %d calls, want stop after 1", err, calls)
 	}
 }

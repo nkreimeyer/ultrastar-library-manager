@@ -48,24 +48,8 @@ func ParseWordListFlag(v string) (WordList, error) {
 // starting with '#' are comments. A file that is not valid UTF-8 is read as CP1252 (older
 // hunspell dictionaries are ISO-8859-1).
 func readWordList(r io.Reader) ([]string, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, err
-	}
-	if !utf8.Valid(data) {
-		if data, err = charmap.Windows1252.NewDecoder().Bytes(data); err != nil {
-			return nil, err
-		}
-	}
-	data = bytes.TrimPrefix(data, []byte("\uFEFF"))
 	var words []string
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
+	err := readLines(r, func(_ int, line string) error {
 		for _, f := range strings.Fields(line) {
 			if i := strings.IndexByte(f, '/'); i >= 0 {
 				f = f[:i]
@@ -75,8 +59,39 @@ func readWordList(r io.Reader) ([]string, error) {
 				break
 			}
 		}
+		return nil
+	})
+	return words, err
+}
+
+// readLines reads the lines of a -wordlist or -words file and calls fn with each line,
+// trimmed, and its 1-based number. Blank lines and lines starting with '#' (comments) are
+// skipped. A file that is not valid UTF-8 is read as CP1252; a UTF-8 BOM at the start is
+// dropped; lines end at "\n" ("\r\n" counts, as bufio.ScanLines reads it) and may be up to
+// 1 MiB long. An error of fn stops reading and is returned.
+func readLines(r io.Reader, fn func(n int, line string) error) error {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return err
 	}
-	return words, sc.Err()
+	if !utf8.Valid(data) {
+		if data, err = charmap.Windows1252.NewDecoder().Bytes(data); err != nil {
+			return err
+		}
+	}
+	data = bytes.TrimPrefix(data, []byte("\uFEFF"))
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	for n := 1; sc.Scan(); n++ {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if err := fn(n, line); err != nil {
+			return err
+		}
+	}
+	return sc.Err()
 }
 
 // loadWordLists reads the word lists into one langLex per language. Every word counts

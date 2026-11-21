@@ -1,17 +1,13 @@
 package repairtxt
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
-	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -36,37 +32,21 @@ type songSection struct {
 // (or "[]") goes back to words for every song. A file that is not valid UTF-8 is read as
 // CP1252.
 func readReviewed(r io.Reader) (global []string, sections []*songSection, err error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !utf8.Valid(data) {
-		if data, err = charmap.Windows1252.NewDecoder().Bytes(data); err != nil {
-			return nil, nil, err
-		}
-	}
-	data = bytes.TrimPrefix(data, []byte("\uFEFF"))
 	var cur *songSection
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	for n := 1; sc.Scan(); n++ {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
+	err = readLines(r, func(n int, line string) error {
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			name := strings.TrimSpace(line[1 : len(line)-1])
 			if name == "" || name == "*" {
 				cur = nil
-				continue
+				return nil
 			}
 			key := matchKey(name)
 			if len(key) == 0 {
-				return nil, nil, fmt.Errorf("line %d: section %q names no song", n, line)
+				return fmt.Errorf("line %d: section %q names no song", n, line)
 			}
 			cur = &songSection{name: name, key: key}
 			sections = append(sections, cur)
-			continue
+			return nil
 		}
 		for _, f := range strings.Fields(line) {
 			if strings.IndexFunc(f, unicode.IsLetter) < 0 {
@@ -79,8 +59,12 @@ func readReviewed(r io.Reader) (global []string, sections []*songSection, err er
 				global = append(global, f)
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
 	}
-	return global, sections, sc.Err()
+	return global, sections, nil
 }
 
 // reviewedLex is a lexicon of the words, each counted once.
