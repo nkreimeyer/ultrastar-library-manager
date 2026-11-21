@@ -45,7 +45,7 @@ func tagValues(t *testing.T, txt string, keys ...string) []string {
 // the header #BPM was dropped and the ignored body copy kept.
 func TestRemoveDuplicateTagsIgnoresBody(t *testing.T) {
 	in := []string{"#TITLE:T\n", "#ARTIST:A\n", "#BPM:300\n", ": 0 2 0 la\n", "#BPM:30\n", "E\n"}
-	got, _, _ := fixTxtLines(in, t.TempDir(), songFiles{})
+	got, _, _ := fixTxtLines(in, t.TempDir(), songFiles{}, DefaultOptions())
 	if !slices.Equal(got, in) {
 		t.Errorf("fixTxtLines = %q, want the lines unchanged %q", got, in)
 	}
@@ -66,7 +66,7 @@ func TestFixTxtLinesKeepsBody(t *testing.T) {
 	dir := t.TempDir()
 	testutil.WriteFiles(t, dir, map[string]string{"a.mp3": "a"})
 	in := []string{"#TITLE:T\n", "#ARTIST:A\n", "#MP3:gone.mp3\n", ": 0 4 0 Hey:\n", ": 4 4 0 you\n", "- 8\n", ": 10 2 0 la\n", "#VIDEO:x.mp4\n", "E\n"}
-	got, _, _ := fixTxtLines(in, dir, songFiles{audio: []string{"a.mp3"}})
+	got, _, _ := fixTxtLines(in, dir, songFiles{audio: []string{"a.mp3"}}, DefaultOptions())
 	want := slices.Clone(in)
 	want[2] = "#MP3:a.mp3\n"
 	if !slices.Equal(got, want) {
@@ -78,7 +78,7 @@ func TestFixTxtLinesKeepsBody(t *testing.T) {
 func TestFixTxtLinesWithoutHeader(t *testing.T) {
 	dir := t.TempDir()
 	in := []string{": 0 4 0 La\n", ": 4 4 0 la\n", "E\n"}
-	got, _, _ := fixTxtLines(in, dir, songFiles{audio: []string{"a.mp3"}})
+	got, _, _ := fixTxtLines(in, dir, songFiles{audio: []string{"a.mp3"}}, DefaultOptions())
 	want := append([]string{"#MP3:a.mp3\n"}, in...)
 	if !slices.Equal(got, want) {
 		t.Errorf("fixTxtLines = %q, want %q", got, want)
@@ -91,12 +91,12 @@ func TestFixTxtLinesShortFiles(t *testing.T) {
 	testutil.WriteFiles(t, dir, map[string]string{"a.mp3": "a"})
 	files := songFiles{audio: []string{"a.mp3"}}
 	two := []string{"#TITLE:x\n", "#MP3:gone.mp3\n"}
-	if got, notes, filled := fixTxtLines(slices.Clone(two), dir, files); !slices.Equal(got, two) || notes != nil || filled != nil {
+	if got, notes, filled := fixTxtLines(slices.Clone(two), dir, files, DefaultOptions()); !slices.Equal(got, two) || notes != nil || filled != nil {
 		t.Errorf("2 lines: fixTxtLines = %q, %q, %q, want the lines unchanged", got, notes, filled)
 	}
 	three := []string{"#TITLE:x\n", "#ARTIST:y\n", "#MP3:gone.mp3\n"}
 	want := []string{"#TITLE:x\n", "#ARTIST:y\n", "#MP3:a.mp3\n"}
-	if got, _, _ := fixTxtLines(three, dir, files); !slices.Equal(got, want) {
+	if got, _, _ := fixTxtLines(three, dir, files, DefaultOptions()); !slices.Equal(got, want) {
 		t.Errorf("3 lines: fixTxtLines = %q, want %q", got, want)
 	}
 }
@@ -657,7 +657,7 @@ func TestFixTxtLinesHeaderlessNothingToInsert(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := []string{": 0 1 1 a\n", "- 2\n", "E\n"}
-	got, notes, filled := fixTxtLines(slices.Clone(in), dir, songFiles{})
+	got, notes, filled := fixTxtLines(slices.Clone(in), dir, songFiles{}, DefaultOptions())
 	if !slices.Equal(got, in) || filled != nil {
 		t.Errorf("fixTxtLines = %q, filled %q, want the lines unchanged", got, filled)
 	}

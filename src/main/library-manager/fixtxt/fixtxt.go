@@ -110,37 +110,75 @@ func (c *collector) leftUnchanged() {
 	c.mu.Unlock()
 }
 
-// Run scans all song folders below cfg.SongDir and applies the text sanitization rules:
+// Options selects what fixtxt does; DefaultOptions is everything (what Run and the CLI do).
+type Options struct {
+	Encoding      bool                  // write song txts as UTF-8 (BOM, line endings, stale #ENCODING dropped)
+	FileTags      bool                  // fix #MP3/#AUDIO/#VIDEO/#COVER/#BACKGROUND/#VOCALS/#INSTRUMENTAL (and the header's repeated tags)
+	FillTags      bool                  // fill a missing #ARTIST/#TITLE from an obvious "Artist - Title" folder name
+	DuplicateTxts bool                  // move all but the newest song txt of a folder to extra-files/
+	MoveBroken    bool                  // move folders without a txt, without media or without a song txt to invalid/
+	Ctx           context.Context       // nil = context.Background(); once done no further folder starts
+	Progress      func(done, total int) // per folder, may be nil
+}
+
+// DefaultOptions returns the options with every step on.
+func DefaultOptions() Options {
+	return Options{Encoding: true, FileTags: true, FillTags: true, DuplicateTxts: true, MoveBroken: true}
+}
+
+// Run is RunWith with DefaultOptions.
+func Run(cfg config.Config, ops *fsops.Ops) error {
+	return RunWith(cfg, ops, DefaultOptions())
+}
+
+// RunWith scans all song folders below cfg.SongDir and applies the text sanitization rules
+// opts selects (all of them with DefaultOptions):
 //   - a media or image file whose name is not valid UTF-8 → the folder is reported in
 //     encoding_issues.txt and left completely untouched
 //   - no .txt at all, neither audio nor video, or no song txt → the folder is moved to
-//     invalid/ as a whole
+//     invalid/ as a whole (MoveBroken; otherwise it is logged and left alone)
 //   - several song .txt files → the most recently modified one is kept, the others are
-//     moved to extra-files/ (other txts such as License.txt are never touched)
+//     moved to extra-files/ (DuplicateTxts; otherwise they stay, and the newest one is still
+//     the one fixed). Other txts such as License.txt are never touched.
 //
-// The song txt of every remaining folder is decoded, converted to UTF-8 and its file tags
-// are fixed. Txts that cannot be decoded unambiguously are left untouched and listed in
-// encoding_issues.txt. A missing or empty #ARTIST/#TITLE is filled from the folder name if
-// that is obvious (utils.TagsFromFolderName). Every fill is added to filled_tags.txt for
-// review (the report keeps the fills of earlier runs), and a tag that cannot be filled is
-// noted in missing_files.txt. Songs without a cover or background, or with several audio
-// (video) files to choose #MP3 (#VIDEO) from, are listed in missing_files.txt. Folders are
-// processed concurrently by a pool of workers; a panic in one folder is logged and
-// counted as a failure, and the other folders are still processed.
-func Run(cfg config.Config, ops *fsops.Ops) error {
+// The song txt of every remaining folder is decoded, converted to UTF-8 (Encoding) and its
+// file tags are fixed (FileTags). Txts that cannot be decoded unambiguously are left
+// untouched and listed in encoding_issues.txt. A missing or empty #ARTIST/#TITLE is filled
+// from the folder name if that is obvious (FillTags, utils.TagsFromFolderName). Every fill
+// is added to filled_tags.txt for review (the report keeps the fills of earlier runs), and
+// a tag that cannot be filled is noted in missing_files.txt. Songs without a cover or
+// background, or with several audio (video) files to choose #MP3 (#VIDEO) from, are listed
+// in missing_files.txt. Folders are processed concurrently by a pool of workers; a panic in
+// one folder is logged and counted as a failure, and the other folders are still processed.
+//
+// Once opts.Ctx is done no further folder starts; the reports are then not written (a
+// partial run would overwrite the full report of an earlier one) and ctx.Err() is returned.
+func RunWith(cfg config.Config, ops *fsops.Ops, opts Options) error {
+	ctx := opts.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	folders, err := utils.GetAllSongFolders(ops, cfg.SongDir)
 	if err != nil {
 		return fmt.Errorf("finding song folders in %q: %w", cfg.SongDir, err)
 	}
 
 	col := &collector{}
-	_ = utils.ForEachParallel(context.Background(), folders, utils.Parallel{
-		Workers: workers,
+	err = utils.ForEachParallel(ctx, folders, utils.Parallel{
+		Workers:  workers,
+		Progress: opts.Progress,
 		OnPanic: func(i int, _ any) {
 			log.Errorf("fixtxt: %s not finished: internal error (logged above)", folders[i])
 			ops.Fail()
 		},
-	}, func(_ int, folder string) { handleFolder(cfg, ops, col, folder) })
+	}, func(_ int, folder string) { handleFolder(cfg, ops, col, opts, folder) })
+	if err != nil {
+		log.Warnf("fixtxt stopped: %v (reports not written)", err)
+		return err
+	}
 
 	writeReport(cfg, ops, missingFilesReport, col.missingFiles)
 	writeReport(cfg, ops, encodingIssuesReport, col.encodingIssues)
@@ -188,10 +226,10 @@ func writeFilledReport(cfg config.Config, ops *fsops.Ops, lines []string) {
 }
 
 // handleFolder checks a song folder and fixes its song txt. Broken songs (no txt, neither
-// audio nor video, or no song txt) are moved to invalid/ as a whole, before any duplicate
-// song txt is split off. Folders that cannot be read, or that contain a media file whose
-// name is not valid UTF-8, are left untouched.
-func handleFolder(cfg config.Config, ops *fsops.Ops, col *collector, folder string) {
+// audio nor video, or no song txt) are moved to invalid/ as a whole (if opts.MoveBroken),
+// before any duplicate song txt is split off. Folders that cannot be read, or that contain
+// a media file whose name is not valid UTF-8, are left untouched.
+func handleFolder(cfg config.Config, ops *fsops.Ops, col *collector, opts Options, folder string) {
 	entries, err := os.ReadDir(folder)
 	if err != nil {
 		ops.SkipUnreadable(folder, err)
@@ -215,8 +253,7 @@ func handleFolder(cfg config.Config, ops *fsops.Ops, col *collector, folder stri
 		return
 	}
 	if len(txtFiles) == 0 {
-		log.Infof("Folder %s contains no .txt file, moving it to invalid", folder)
-		moveToInvalid(cfg, ops, folder)
+		handleBroken(cfg, ops, opts, folder, "contains no .txt file")
 		return
 	}
 	// An unreadable txt might be the song txt: never mistake the folder for a broken song.
@@ -231,27 +268,26 @@ func handleFolder(cfg config.Config, ops *fsops.Ops, col *collector, folder stri
 	files.video = utils.VideoFiles(folder)
 	// The video may contain the audio track, so only a song without both is broken.
 	if len(files.audio) == 0 && len(files.video) == 0 {
-		log.Infof("Folder %s has neither audio nor video, moving it to invalid", folder)
-		moveToInvalid(cfg, ops, folder)
+		handleBroken(cfg, ops, opts, folder, "has neither audio nor video")
 		return
 	}
 	if len(songTxts) == 0 {
-		log.Infof("Folder %s has no UltraStar song txt, moving it to invalid", folder)
-		moveToInvalid(cfg, ops, folder)
+		handleBroken(cfg, ops, opts, folder, "has no UltraStar song txt")
 		return
 	}
 
-	txtFile, ok := keepNewestSongTxt(cfg, ops, folder, songTxts)
+	txtFile, ok := keepNewestSongTxt(cfg, ops, opts, folder, songTxts)
 	if !ok {
 		return
 	}
 	files.txtName = filepath.Base(txtFile)
 	files.cover = utils.FindCoverImage(ops, folder)
 	files.background = utils.FindBackgroundImage(ops, folder)
-	// The notes follow the tags the txt has after this run. If that is unknown (the txt
+	// These notes only report, so they are written with FileTags off too. The notes follow
+	// the tags the txt has after this run. If that is unknown (the txt
 	// could not be read or decoded), they follow what was detected on disk.
 	hasCover, hasBackground := files.cover != "", files.background != ""
-	if final := updateTxtFile(cfg, ops, col, folder, txtFile, files); final != nil {
+	if final := updateTxtFile(cfg, ops, col, opts, folder, txtFile, files); final != nil {
 		header := final[:headerLen(final)]
 		hasCover = tagNamesImage(folder, header, "#COVER")
 		hasBackground = tagNamesImage(folder, header, "#BACKGROUND")
@@ -280,9 +316,9 @@ func tagNamesImage(dir string, header []string, tag string) bool {
 
 // keepNewestSongTxt makes sure folder keeps only one of its song txts: the most recently
 // modified one stays, the others are moved to extra-files/ (other txts such as License.txt
-// are not in songTxts and stay where they are). It returns the song txt to fix and false
-// if the folder cannot be processed.
-func keepNewestSongTxt(cfg config.Config, ops *fsops.Ops, folder string, songTxts []string) (string, bool) {
+// are not in songTxts and stay where they are). With opts.DuplicateTxts off the others
+// stay too. It returns the song txt to fix and false if the folder cannot be processed.
+func keepNewestSongTxt(cfg config.Config, ops *fsops.Ops, opts Options, folder string, songTxts []string) (string, bool) {
 	keep, err := utils.NewestFile(songTxts)
 	if err != nil {
 		log.Errorf("Could not determine the most recently modified song txt in %s: %v", folder, err)
@@ -290,6 +326,11 @@ func keepNewestSongTxt(cfg config.Config, ops *fsops.Ops, folder string, songTxt
 		return "", false
 	}
 	if len(songTxts) < 2 {
+		return keep, true
+	}
+	if !opts.DuplicateTxts {
+		log.Infof("Folder %s has %d song .txt files; fixing the most recently modified one (%s), leaving the others",
+			folder, len(songTxts), filepath.Base(keep))
 		return keep, true
 	}
 	for _, f := range songTxts {
@@ -306,6 +347,17 @@ func keepNewestSongTxt(cfg config.Config, ops *fsops.Ops, folder string, songTxt
 	return keep, true
 }
 
+// handleBroken moves a broken song folder to invalid/ (moveToInvalid), or with
+// opts.MoveBroken off only logs it. why completes "Folder <folder> ...".
+func handleBroken(cfg config.Config, ops *fsops.Ops, opts Options, folder, why string) {
+	if !opts.MoveBroken {
+		log.Infof("Folder %s %s, leaving it (moving broken folders is off)", folder, why)
+		return
+	}
+	log.Infof("Folder %s %s, moving it to invalid", folder, why)
+	moveToInvalid(cfg, ops, folder)
+}
+
 // moveToInvalid moves a broken song folder to the invalid dir, mirroring its path
 // relative to the library root. Errors are logged (and counted by ops).
 func moveToInvalid(cfg config.Config, ops *fsops.Ops, folder string) {
@@ -320,7 +372,7 @@ func moveToInvalid(cfg config.Config, ops *fsops.Ops, folder string) {
 // its target may lie outside the library); it is noted in missing_files.txt if it needs a
 // change. It returns the lines the txt has after this run (in a dry run: the planned
 // ones), or nil if the txt could not be read or decoded.
-func updateTxtFile(cfg config.Config, ops *fsops.Ops, col *collector, rootDir, txtFile string, files songFiles) []string {
+func updateTxtFile(cfg config.Config, ops *fsops.Ops, col *collector, opts Options, rootDir, txtFile string, files songFiles) []string {
 	raw, err := ops.ReadFile(txtFile)
 	if err != nil {
 		log.Errorf("Could not read %s: %v", txtFile, err)
@@ -343,14 +395,28 @@ func updateTxtFile(cfg config.Config, ops *fsops.Ops, col *collector, rootDir, t
 	}
 
 	lines := splitLines(decoded.Text)
-	updatedLines, notes, filled := fixTxtLines(lines, rootDir, files)
+	updatedLines, notes, filled := fixTxtLines(lines, rootDir, files, opts)
 	col.addMissing(notes...)
 	content := []byte(strings.Join(updatedLines, ""))
-	if st, err := os.Lstat(txtFile); err == nil && st.Mode()&os.ModeSymlink != 0 {
-		if !bytes.Equal(content, raw) {
-			log.Warnf("Not changing %s: it is a symlink, replace it by the file it points to", txtFile)
-			col.addMissing("Song txt is a symlink and needs changes, replace it by the file it points to: " + txtFile)
+	needsWrite := !bytes.Equal(content, raw)
+	if !opts.Encoding {
+		// Only the other steps may cause a write. Every write is UTF-8, so a txt in another
+		// encoding stays as it is. A UTF-8 txt that is written loses its BOM and CRLF
+		// line endings on the way, which is harmless.
+		needsWrite = string(content) != strings.Join(lines, "")
+		if needsWrite && decoded.Encoding != utils.EncUTF8 {
+			log.Warnf("Not changing %s: it is %s, and fixing it needs the UTF-8 conversion", txtFile, decoded.Encoding)
+			col.addEncodingIssue(txtFile, "not UTF-8 (read as "+decoded.Encoding+"); fixing it needs the UTF-8 conversion")
+			col.leftUnchanged()
+			return lines
 		}
+	}
+	if !needsWrite {
+		return lines
+	}
+	if st, err := os.Lstat(txtFile); err == nil && st.Mode()&os.ModeSymlink != 0 {
+		log.Warnf("Not changing %s: it is a symlink, replace it by the file it points to", txtFile)
+		col.addMissing("Song txt is a symlink and needs changes, replace it by the file it points to: " + txtFile)
 		return lines
 	}
 	changed, err := ops.WriteFileAtomic(txtFile, content)
@@ -387,15 +453,15 @@ func splitLines(text string) []string {
 	return lines
 }
 
-// fixTxtLines removes duplicate tags and a stale #ENCODING tag, fills a missing #ARTIST or
-// #TITLE from the folder name (see fillNameTags), and updates or inserts the #MP3/#AUDIO,
-// #VIDEO, #COVER and #BACKGROUND tags. Tags that already point to an existing file of the
-// right kind are left alone (cleanup takes care of unreferenced files later). Only the
+// fixTxtLines applies the txt steps opts selects to the lines of a song txt: it drops a
+// stale #ENCODING tag (Encoding), fills a missing #ARTIST or #TITLE from the folder name
+// (FillTags, see fillNameTags), and removes duplicate tags and updates or inserts the
+// #MP3/#AUDIO, #VIDEO, #COVER and #BACKGROUND tags (FileTags, see fixFileTags). Only the
 // header is changed (see headerLen): "#" lines after it are ignored by players and copied
 // unchanged, like the notes. It also returns notes for missing_files.txt (an audio file
 // that cannot be chosen, a name tag that cannot be filled) and the filled tags
 // ("#ARTIST:value"). The lines passed in are not modified.
-func fixTxtLines(lines []string, rootDir string, files songFiles) ([]string, []string, []string) {
+func fixTxtLines(lines []string, rootDir string, files songFiles, opts Options) ([]string, []string, []string) {
 	// With fewer than 3 lines it's not a valid song txt, so return the lines unchanged.
 	if len(lines) < 3 {
 		return lines, nil, nil
@@ -403,10 +469,46 @@ func fixTxtLines(lines []string, rootDir string, files songFiles) ([]string, []s
 
 	n := headerLen(lines)
 	body := lines[n:]
-	lines = dropEncodingTag(removeDuplicateTags(lines[:n]))
+	// A copy: fillNameTags and dropEncodingTag change the slice they get.
+	header := slices.Clone(lines[:n])
+	if opts.FileTags {
+		header = removeDuplicateTags(header)
+	}
+	if opts.Encoding {
+		header = dropEncodingTag(header)
+	}
 
-	info := getSongInfoFromTxtFile(lines)
-	nameLines, filled, notes := fillNameTags(lines, rootDir, &info)
+	info := getSongInfoFromTxtFile(header)
+	var nameLines, filled, notes []string
+	if opts.FillTags {
+		// Without FileTags the header may repeat a tag; nameTagLine fills the last one,
+		// the one players read.
+		nameLines, filled, notes = fillNameTags(header, rootDir, &info)
+	}
+	updatedLines := header
+	if opts.FileTags {
+		var tagNotes []string
+		updatedLines, tagNotes = fixFileTags(header, rootDir, files, info)
+		notes = append(notes, tagNotes...)
+	}
+
+	// A filled #TITLE/#ARTIST goes to the top of the header, as players write it, but
+	// after a leading #VERSION: format 1.x wants it as the first line.
+	at := 0
+	if len(updatedLines) > 0 && hasTag(updatedLines[0], "#VERSION") {
+		at = 1
+	}
+	updatedLines = slices.Insert(updatedLines, at, nameLines...)
+	return append(updatedLines, body...), notes, filled
+}
+
+// fixFileTags updates or inserts the #MP3/#AUDIO, #VIDEO, #COVER and #BACKGROUND tags of a
+// header without repeated tags. Tags that already point to an existing file of the right
+// kind are left alone (cleanup takes care of unreferenced files later). info holds the
+// header's tags (with filled name tags, which the audio choice uses). It returns the new
+// header and notes for missing_files.txt (several audio or video files to choose from).
+func fixFileTags(lines []string, rootDir string, files songFiles, info SongInfo) ([]string, []string) {
+	var notes []string
 	video := chooseVideo(rootDir, lines, files, info)
 	audio := preferTaggedAudio(rootDir, lines, chooseAudio(rootDir, lines, files, info, video))
 	// Images with the wrong shape for their tag are replaced; unreadable ones are re-detected.
@@ -456,19 +558,11 @@ func fixTxtLines(lines []string, rootDir string, files songFiles) ([]string, []s
 	if !isFlagSet(foundTagFlags, flagBackground) && files.background != "" {
 		linesToInsert = append(linesToInsert, "#BACKGROUND:"+files.background+"\n")
 	}
-	// A filled #TITLE/#ARTIST goes to the top of the header, as players write it, but
-	// after a leading #VERSION: format 1.x wants it as the first line.
-	if len(nameLines)+len(linesToInsert) > 0 {
-		log.Debugf("Inserting into %s: %q", rootDir, append(slices.Clone(nameLines), linesToInsert...))
+	if len(linesToInsert) > 0 {
+		log.Debugf("Inserting into %s: %q", rootDir, linesToInsert)
 	}
 	// A header-less txt (only possible for an odd file) gets the lines at the top.
-	updatedLines = slices.Insert(updatedLines, min(1, len(updatedLines)), linesToInsert...)
-	at := 0
-	if len(updatedLines) > 0 && hasTag(updatedLines[0], "#VERSION") {
-		at = 1
-	}
-	updatedLines = slices.Insert(updatedLines, at, nameLines...)
-	return append(updatedLines, body...), notes, filled
+	return slices.Insert(updatedLines, min(1, len(updatedLines)), linesToInsert...), notes
 }
 
 // fillNameTags fills a missing or empty #TITLE and #ARTIST from the folder name of the
