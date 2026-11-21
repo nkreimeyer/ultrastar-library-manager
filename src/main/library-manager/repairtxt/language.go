@@ -10,10 +10,10 @@ import (
 )
 
 // languagePrefixes maps the start of a folded, letters-only language name (English,
-// German or native spelling) to a code. Longer prefixes are listed before shorter ones
-// that share their start.
+// German or native spelling) to a code. The first matching prefix wins, so a prefix is
+// listed before every shorter one it starts with (TestLanguagePrefixOrder).
 var languagePrefixes = []struct{ prefix, code string }{
-	{"deu", "de"}, {"deus", "de"}, {"ger", "de"}, {"dt", "de"},
+	{"deu", "de"}, {"ger", "de"}, {"dt", "de"},
 	{"eng", "en"},
 	{"fr", "fr"},
 	{"spa", "es"}, {"esp", "es"}, {"cast", "es"},
@@ -26,11 +26,12 @@ var languagePrefixes = []struct{ prefix, code string }{
 	{"fin", "fi"}, {"suom", "fi"},
 	{"por", "pt"},
 	{"tur", "tr"},
-	{"tsch", "cs"}, {"cze", "cs"}, {"ces", "cs"}, {"cest", "cs"},
-	{"slovak", "sk"}, {"slowak", "sk"}, {"slove", "sl"}, {"slowe", "sl"},
+	{"tsch", "cs"}, {"cze", "cs"}, {"ces", "cs"},
+	{"slovak", "sk"}, {"slowak", "sk"}, {"slovenc", "sk"}, {"slove", "sl"}, {"slowe", "sl"},
 	{"hin", "hi"}, {"chin", "zh"},
 	{"hun", "hu"}, {"ung", "hu"}, {"magy", "hu"},
-	{"kor", "ko"}, {"jap", "ja"}, {"rus", "ru"}, {"lat", "la"},
+	{"kor", "ko"}, {"jap", "ja"}, {"rus", "ru"},
+	{"latv", "lv"}, {"lett", "lv"}, {"lat", "la"},
 	{"ice", "is"}, {"isl", "is"},
 	{"kroat", "hr"}, {"croat", "hr"}, {"hrv", "hr"},
 	{"rum", "ro"}, {"rom", "ro"},
