@@ -9,6 +9,8 @@ import (
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/nkreimeyer/library-manager/utils"
 )
 
 // Bucket names besides the letters "A".."Z".
@@ -22,38 +24,6 @@ const (
 // as " (2)" and for the temporary names used while moving.
 const MaxFolderNameBytes = 180
 
-// letterFolds maps letters that do not decompose under Unicode normalization to the Latin
-// base letter used for bucketing. Upper and lower case are both listed so the map can be
-// applied before upper-casing.
-var letterFolds = map[rune]rune{
-	'Ø': 'O', 'ø': 'O',
-	'Æ': 'A', 'æ': 'A',
-	'Œ': 'O', 'œ': 'O',
-	'Ł': 'L', 'ł': 'L',
-	'Đ': 'D', 'đ': 'D',
-	'Ð': 'D', 'ð': 'D',
-	'Þ': 'T', 'þ': 'T',
-	'ß': 'S', 'ẞ': 'S',
-	'ı': 'I',
-	'Ħ': 'H', 'ħ': 'H',
-	'Ŧ': 'T', 'ŧ': 'T',
-	'Ŋ': 'N', 'ŋ': 'N',
-	'ĸ': 'K',
-	// 'Ŀ' and 'ŀ' decompose to "L·"/"l·": no entry needed.
-	'Ɨ': 'I', 'ɨ': 'I',
-	'Ƶ': 'Z', 'ƶ': 'Z',
-	'Ɓ': 'B', 'ɓ': 'B',
-	'Ƈ': 'C', 'ƈ': 'C',
-	'Ɗ': 'D', 'ɗ': 'D',
-	'Ƒ': 'F', 'ƒ': 'F',
-	'Ɠ': 'G', 'ɠ': 'G',
-	'Ƙ': 'K', 'ƙ': 'K',
-	'Ƥ': 'P', 'ƥ': 'P',
-	'Ƭ': 'T', 'ƭ': 'T',
-	'Ʋ': 'V', 'ʋ': 'V',
-	'Ȥ': 'Z', 'ȥ': 'Z',
-}
-
 // Bucket returns the top-level library folder for a song by its #ARTIST: "A".."Z",
 // BucketDigits ("0-9") or BucketOther ("#").
 //
@@ -63,9 +33,9 @@ var letterFolds = map[rune]rune{
 //     follows it: "The Beatles" -> "B", "The 1975" -> "0-9". "The" alone, "Theory" and
 //     "The !!!" keep their "T".
 //   - The first letter is folded to its Latin base letter: compatibility decomposition with
-//     combining marks dropped ("Ä" -> "A", "Ｆ" -> "F", "ﬁ" -> "F") plus letterFolds for
-//     letters that do not decompose ("Ø" -> "O", "ß" -> "S", "Ł" -> "L", ...), then
-//     upper-cased.
+//     combining marks dropped ("Ä" -> "A", "Ｆ" -> "F", "ﬁ" -> "F") plus the Latin
+//     spelling of letters that do not decompose ("Ø" -> "O", "ß" -> "S", "Ł" -> "L",
+//     "Æ" -> "A"; utils.FoldString), then upper-cased.
 //   - A decimal digit of any script (unicode.IsDigit) -> "0-9".
 //   - Anything else (non-Latin scripts, no letter or digit at all, empty) -> "#".
 func Bucket(artist string, ignoreThe bool) string {
@@ -117,19 +87,16 @@ func cutLeadingThe(s string) (string, bool) {
 	return rest, true
 }
 
-// foldLetter maps a letter to an upper-case Latin base letter if it has one; other runes
-// come back upper-cased (and are then not in A-Z).
+// foldLetter maps a letter to an upper-case Latin base letter if it has one: the first
+// rune of utils.FoldString, upper-cased. Other runes come back upper-cased (and are then
+// not in A-Z); a rune that folds to nothing (a lone mark) comes back as it is.
 func foldLetter(r rune) rune {
-	for _, d := range norm.NFKD.String(string(r)) {
-		if unicode.Is(unicode.Mn, d) {
-			continue
-		}
-		if f, ok := letterFolds[d]; ok {
-			return f
-		}
-		return unicode.ToUpper(d)
+	f := utils.FoldString(string(r))
+	if f == "" {
+		return unicode.ToUpper(r)
 	}
-	return unicode.ToUpper(r)
+	first, _ := utf8.DecodeRuneInString(f)
+	return unicode.ToUpper(first)
 }
 
 // Placeholders used by FolderName for an artist or title that is empty after sanitizing.
