@@ -285,3 +285,40 @@ func TestSingleP1MarkerIsNoDuet(t *testing.T) {
 		t.Errorf("to library = %+v, want nothing (no \"[DUET]\" copy)", rep.ToLibrary)
 	}
 }
+
+// A retry skips the moves an earlier undo of the run did. The paths cannot tell: after a
+// swap is undone, both folders exist again, and moving them "back" once more would redo the
+// swap. The earlier undo here lost its "undone" line, as when it stopped or a move failed.
+func TestUndoRetrySkipsRevertedSwap(t *testing.T) {
+	noFFprobe(t)
+	base := t.TempDir()
+	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
+	writeFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A")))
+	before := tree(t, lib)
+	runOrganize(t, organizeCfg(t, [][]string{{lib}}, lib, out, false), Options{})
+	cfg := organizeCfg(t, nil, lib, out, false)
+	if st := runUndo(t, cfg); st.Moved != 3 || st.Failed != 0 {
+		t.Fatalf("undo: %+v", st)
+	}
+	data, err := os.ReadFile(cfg.JournalPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.SplitAfter(strings.TrimSuffix(string(data), "\n"), "\n")
+	if last := lines[len(lines)-1]; !strings.Contains(last, `"op":"undone"`) {
+		t.Fatalf("last journal line %q", last)
+	}
+	if err := os.WriteFile(cfg.JournalPath(), []byte(strings.Join(lines[:len(lines)-1], "")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if st := runUndo(t, cfg); st.Moved != 0 || st.Failed != 0 {
+		t.Errorf("retry: %+v, want nothing moved", st)
+	}
+	if got := tree(t, lib); !reflect.DeepEqual(got, before) {
+		t.Errorf("after the retry:\n%v\nwant:\n%v", got, before)
+	}
+	runs, _ := readJournal(cfg.JournalPath())
+	if len(runs) != 1 || !runs[0].Undone || len(runs[0].Reverted) != 3 {
+		t.Errorf("journal: %+v", runs[0])
+	}
+}

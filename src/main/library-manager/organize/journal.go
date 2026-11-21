@@ -25,7 +25,11 @@ import (
 //	                                                          creates this folder (outermost first)
 //	{"op":"move","run":"<id>","src":"<abs>","dst":"<abs>"}   after every completed move
 //
-// and an undo of that run appends {"op":"undone","run":"<id>"}. Undo walks the entries
+// and an undo of that run appends {"op":"reverted","run":"<id>","entry":<n>} after it moved
+// the n-th entry of the run (1-based, move and mkdir entries counted) back, and
+// {"op":"undone","run":"<id>"} at the end. A retry of an undo that did not finish skips the
+// reverted entries: whether a path exists cannot tell, as in a swap of two songs both
+// paths exist again after the undo. Undo walks the entries
 // backwards: it moves every dst back to its src and removes the folders of "mkdir"
 // entries again if they are empty, so the library is left exactly as before the run. Each line is fsynced
 // before the next move starts, so after a crash the journal lists every completed move.
@@ -33,10 +37,11 @@ import (
 
 // Journal operations.
 const (
-	opRun    = "run"
-	opMove   = "move"
-	opMkdir  = "mkdir"
-	opUndone = "undone"
+	opRun      = "run"
+	opMove     = "move"
+	opMkdir    = "mkdir"
+	opUndone   = "undone"
+	opReverted = "reverted"
 )
 
 type journalEntry struct {
@@ -45,6 +50,8 @@ type journalEntry struct {
 	Time string `json:"time,omitempty"`
 	Src  string `json:"src,omitempty"`
 	Dst  string `json:"dst,omitempty"`
+	// Entry is the number of the entry a "reverted" line names (1-based).
+	Entry int `json:"entry,omitempty"`
 }
 
 // runCounter makes run ids unique within a process even if the clock does not advance.
@@ -120,6 +127,8 @@ type journalRun struct {
 	Time    string
 	Entries []journalEntry
 	Undone  bool
+	// Reverted holds the numbers of the entries an undo moved back (1-based).
+	Reverted map[int]bool
 }
 
 // moves counts the move entries of the run.
@@ -186,6 +195,16 @@ func readJournal(path string) ([]*journalRun, error) {
 			r.Entries = append(r.Entries, e)
 		case opUndone:
 			get(e.Run).Undone = true
+		case opReverted:
+			if e.Entry < 1 {
+				log.Warnf("Journal %s line %d: reverted without entry, skipping it", path, n)
+				continue
+			}
+			r := get(e.Run)
+			if r.Reverted == nil {
+				r.Reverted = map[int]bool{}
+			}
+			r.Reverted[e.Entry] = true
 		default:
 			log.Warnf("Journal %s line %d: unknown op %q, skipping it", path, n, e.Op)
 		}

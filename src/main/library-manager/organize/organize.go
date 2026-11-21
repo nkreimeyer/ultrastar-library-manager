@@ -795,9 +795,9 @@ func forEachParallel(n, w int, fn func(int)) {
 // was not undone yet: its moves in reverse order, each only if its target still exists and
 // its source does not (fsops.MoveTo checks both; a failing move is logged, counted and
 // skipped). A move whose target and source are both gone (moved or deleted by hand) is
-// counted as failed and skipped. Then it records the run as undone, unless a move failed
-// that a retry could do: then the next Undo retries this run, skipping what is back
-// already, instead of reverting an older run. A dry run only logs the planned moves. Undo
+// counted as failed and skipped. Each move back is journaled ("reverted"). Then it records
+// the run as undone, unless a move failed that a retry could do: then the next Undo retries
+// this run, skipping the reverted entries, instead of reverting an older run. A dry run only logs the planned moves. Undo
 // returns an error only if the journal cannot be read.
 func Undo(cfg config.OrganizeConfig, ops *fsops.Ops) error {
 	runs, err := readJournal(cfg.JournalPath())
@@ -811,6 +811,8 @@ func Undo(cfg config.OrganizeConfig, ops *fsops.Ops) error {
 	}
 	log.Infof("Undo: reverting run %s (%s), %d move(s)", r.ID, r.Time, r.moves())
 	reverted, already, gone, failed := 0, 0, 0, 0
+	j := &journal{ops: ops, path: cfg.JournalPath(), run: r.ID}
+	unrecorded := 0 // reverted moves the journal could not record
 	for i := len(r.Entries) - 1; i >= 0; i-- {
 		e := r.Entries[i]
 		if e.Op == opMkdir {
@@ -822,9 +824,14 @@ func Undo(cfg config.OrganizeConfig, ops *fsops.Ops) error {
 			}
 			continue
 		}
+		if r.Reverted[i+1] {
+			log.Debugf("Undo: %s was moved back to %s by an earlier undo", e.Dst, e.Src)
+			already++
+			continue
+		}
 		if !ops.Exists(e.Dst) {
 			if ops.Exists(e.Src) {
-				// Moved back by an earlier undo of this run that did not finish.
+				// Moved back by an earlier undo whose record was lost.
 				log.Debugf("Undo: %s is back at %s already", e.Dst, e.Src)
 				already++
 				continue
@@ -842,6 +849,10 @@ func Undo(cfg config.OrganizeConfig, ops *fsops.Ops) error {
 			continue
 		}
 		reverted++
+		if err := j.append(journalEntry{Op: opReverted, Run: r.ID, Entry: i + 1}); err != nil {
+			log.Errorf("Undo: cannot record that %s is back at %s: %v", e.Dst, e.Src, err)
+			unrecorded++
+		}
 	}
 	verb := "moved back"
 	if cfg.DryRun {
@@ -855,13 +866,15 @@ func Undo(cfg config.OrganizeConfig, ops *fsops.Ops) error {
 		summary += fmt.Sprintf(", %d moved back by an earlier undo", already)
 	}
 	log.Info(summary)
+	if unrecorded > 0 && failed > 0 {
+		log.Errorf("Undo: the journal lacks %d of the moves back; check the library before you run the undo again, it could repeat them", unrecorded)
+	}
 	if failed > 0 {
 		// Not recorded as undone: the next -undo retries this run (the moves done now
 		// are skipped then), instead of reverting the run before it.
 		log.Warnf("Undo: run %s is not completely undone; fix the cause of the failed move(s) and run the undo again to retry them", r.ID)
 		return nil
 	}
-	j := &journal{ops: ops, path: cfg.JournalPath(), run: r.ID}
 	if err := j.append(journalEntry{Op: opUndone, Run: r.ID}); err != nil {
 		log.Errorf("Undo: cannot record run %s as undone: %v", r.ID, err)
 	}
