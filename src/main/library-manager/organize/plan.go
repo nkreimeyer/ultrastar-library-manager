@@ -20,7 +20,8 @@ type Candidate struct {
 	InLibrary bool
 
 	Artist, Title string // #ARTIST / #TITLE as the player reads them (last occurrence)
-	// Duet: the txt has duet player markers (P1/P2) or the title a duet qualifier.
+	// Duet: two singers have notes in the txt (songtxt.IsDuet: P1/P2 sections, not a
+	// single P1 marker) or the title has a duet qualifier.
 	Duet bool
 	// MarkedCopy: the folder, the song txt, a media file or #ARTIST/#TITLE ends in
 	// "_dupl<n>" (StripCopySuffix), so it is a copy of another version; it loses against

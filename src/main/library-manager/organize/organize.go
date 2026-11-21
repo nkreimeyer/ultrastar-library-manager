@@ -274,7 +274,9 @@ func newCandidate(cfg config.OrganizeConfig, src config.Source, folder string, i
 				c.MarkedCopy = true
 			}
 		}
-		c.Duet = len(in.Song.Players) > 0 || IsDuetTitle(c.Title)
+		// A duet by its notes (a solo file with one "P1" marker is none, as for
+		// ContentHash) or by its title.
+		c.Duet = in.Song.IsDuet() || IsDuetTitle(c.Title)
 		c.ContentHash = ContentHash(in.Song)
 		c.Profile = NewProfile(in.Song)
 		c.Quality.HasVersion = tagValue(in.Song, "VERSION") != ""

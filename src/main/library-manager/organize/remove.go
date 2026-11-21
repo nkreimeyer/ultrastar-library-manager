@@ -238,7 +238,7 @@ func readRemoveSong(ops *fsops.Ops, lib, folder string) removeSong {
 		}
 		s.FromFolder = true
 	}
-	s.Duet = len(song.Players) > 0
+	s.Duet = song.IsDuet()
 	return s
 }
 

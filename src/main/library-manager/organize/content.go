@@ -36,13 +36,10 @@ func ContentHash(s *songtxt.Song) string {
 	if err != nil || bpm <= 0 {
 		return ""
 	}
-	players := map[int]bool{}
-	for _, n := range s.Notes {
-		players[n.Player] = true
-	}
+	solo := !s.IsDuet()
 	notes := make([]songtxt.Note, len(s.Notes))
 	for i, n := range s.Notes {
-		if len(players) == 1 {
+		if solo {
 			n.Player = 0
 		}
 		n.Text = norm.NFC.String(n.Text)

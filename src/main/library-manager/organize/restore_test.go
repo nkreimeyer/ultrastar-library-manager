@@ -262,3 +262,26 @@ func TestUndoDryRunOfSwapPlansEveryMove(t *testing.T) {
 		t.Errorf("undo: %+v", rst)
 	}
 }
+
+// A solo txt whose notes follow a single "P1" marker is the same song as the one without
+// it: ContentHash already treats it as solo, and so does the duet flag, so the copies are
+// joined and the keeper is not filed as "... [DUET]".
+func TestSingleP1MarkerIsNoDuet(t *testing.T) {
+	noFFprobe(t)
+	base := t.TempDir()
+	lib, src, out := filepath.Join(base, "lib"), filepath.Join(base, "src"), filepath.Join(base, "out")
+	writeFiles(t, lib, songFiles("A/ABBA - SOS", "ABBA", "SOS"))
+	marked := songFiles("SOS with P1", "ABBA", "SOS")
+	txt := marked["SOS with P1/song.txt"]
+	i := strings.Index(txt, ": 0 ")
+	marked["SOS with P1/song.txt"] = txt[:i] + "P1\n" + txt[i:]
+	writeFiles(t, src, marked)
+
+	_, rep := runOrganize(t, prepared(t)(config.NewAdd([][]string{{src}}, lib, out, true)), Options{Mode: ModeAdd})
+	if len(rep.Duplicates) != 1 || rep.Duplicates[0].Song != "src:SOS with P1" {
+		t.Errorf("duplicates = %+v, want the P1 copy as a duplicate of the library song", rep.Duplicates)
+	}
+	if len(rep.ToLibrary) != 0 {
+		t.Errorf("to library = %+v, want nothing (no \"[DUET]\" copy)", rep.ToLibrary)
+	}
+}

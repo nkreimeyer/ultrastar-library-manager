@@ -335,6 +335,21 @@ func (s *Song) Tag(key string) (string, bool) {
 	return "", false
 }
 
+// IsDuet reports whether the notes are sung by at least two singers: notes under two
+// different player markers (P1, P2, P3), or notes before the first marker and after one.
+// A solo file whose notes all follow a single "P1" marker is not a duet.
+func (s *Song) IsDuet() bool {
+	first := -1
+	for _, n := range s.Notes {
+		if first < 0 {
+			first = n.Player
+		} else if n.Player != first {
+			return true
+		}
+	}
+	return false
+}
+
 // Duplicates returns the upper-cased tag keys that occur more than once, sorted.
 func (s *Song) Duplicates() []string {
 	count := map[string]int{}

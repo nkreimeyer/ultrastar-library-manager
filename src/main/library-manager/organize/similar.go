@@ -67,13 +67,9 @@ func NewProfile(s *songtxt.Song) *Profile {
 	if err != nil || bpm <= 0 {
 		return nil
 	}
-	players := map[int]bool{}
-	for _, n := range s.Notes {
-		players[n.Player] = true
-	}
 	notes := append([]songtxt.Note(nil), s.Notes...)
-	for i := range notes {
-		if len(players) == 1 {
+	if !s.IsDuet() {
+		for i := range notes {
 			notes[i].Player = 0
 		}
 	}

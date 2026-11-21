@@ -708,3 +708,25 @@ func TestIsBodyLineMatchesParse(t *testing.T) {
 		}
 	}
 }
+
+func TestIsDuet(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{": 0 1 0 a\n: 2 1 0 b\n", false},
+		{"P1\n: 0 1 0 a\n: 2 1 0 b\n", false}, // a solo file with a single marker
+		{"P2\n: 0 1 0 a\n", false},
+		{"P1\n: 0 1 0 a\nP2\n: 0 1 0 b\n", true},
+		{"P1\n: 0 1 0 a\nP3\n: 2 1 0 b\n", true},
+		{": 0 1 0 a\nP2\n: 2 1 0 b\n", true}, // notes before the first marker and after one
+		{"P1\n: 0 1 0 a\nP2\n", false},       // P2 has no notes
+		{"P1\nP2\n: 0 1 0 a\n", false},       // P1 has no notes
+		{"P1\n: 0 1 0 a\nP2\nP1\n: 2 1 0 b\n", false},
+		{"", false},
+	} {
+		if got := mustParse(t, "#TITLE:T\n#BPM:300\n"+tc.body).IsDuet(); got != tc.want {
+			t.Errorf("IsDuet(%q) = %v, want %v", tc.body, got, tc.want)
+		}
+	}
+}
