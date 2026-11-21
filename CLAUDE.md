@@ -167,9 +167,13 @@ Same exit codes and leftover-argument rule.
   header stays readable). With an `#ENCODING` tag, only "clean" UTF-8 sequences count as
   mixed-encoding evidence, and in non-Latin codepages an isolated 2-byte sequence never does.
   `#LANGUAGE` names are diacritic-folded (`Čeština`, `Română`).
-- fsops: a move across file systems first checks that src can be renamed (fails cleanly if
+- fsops: a move across file systems (`isCrossDevice`: EXDEV, on Windows also
+  ERROR_NOT_SAME_DEVICE; GOOS is a parameter so the Windows rule is tested on Linux) first
+  checks that src can be renamed (fails cleanly if
   not), copies, then parks src under a hidden `.fsops-move-<pid>-<n>` name and deletes it.
   If that delete fails, the move still counts as done and the leftover is logged.
+  `Replace` and `Rename` fsync the (ffmpeg-written) file before the rename and keep the
+  original if that fails; the folder fsync after it is best effort (none on Windows).
   `AppendJournal` starts a new line after a crash-truncated last line. Collision names keep
   dotfiles intact (`.DS_Store (2)`).
 - Concurrency: fixtxt and cleanup run batches of 100 goroutines, one batch after another.
@@ -222,8 +226,13 @@ Same exit codes and leftover-argument rule.
   the bucket may have failed). The journal (`organize-journal.jsonl`: `run`, `mkdir`,
   `move`, `undone`) is appended and fsynced per entry, only in real runs; a journal write
   failure stops all further moves, and a song parked under the temporary name is moved back
-  (or, if its place is taken, to its target) so it never stays hidden. `-undo` walks the
-  newest not-undone run backwards. A dry run executes the same steps through ops (MoveTo
+  (or, if its place is taken, to its target) so it never stays hidden. After the library
+  moves, `restoreLibraryLosers` moves library duplicates (in dedupe/add also broken library
+  songs) whose keeper from another source did not arrive (failed, refused, stopped) back,
+  journaled (report outcome `moved back`). `-undo` walks the
+  newest not-undone run backwards; a run is only recorded `undone` if no retryable move
+  failed (a move whose source and target are both gone does not block), and a retry skips
+  the moves that are back already (`ops.Exists`, dry-run aware). A dry run executes the same steps through ops (MoveTo
   simulates the ordered moves), so its plan and move count match the real run
   (`TestRunDryRunMatchesRealRun`).
 - repair (`repairtxt`): every U+FFFD is one lost CP1252/CP1250 byte, so it is replaced by
@@ -332,7 +341,15 @@ stripped from the only audio source, and the README.
   and moves (e.g. the A–Z reorganization). `.m4a` files are journaled, not tagged: writing
   the tag needs `-movflags +use_metadata_tags`, which drops the cover and the iTunes tags.
 - fixvideos re-encodes always output 8-bit yuv420p with even dimensions. A conversion
-  whose `.mp4` target already exists is skipped before encoding.
+  whose `.mp4` target already exists is skipped before encoding. A result whose first
+  video stream is more than 0.5 s shorter or longer than the original's
+  (`sameVideoDuration`: stream duration, else Matroska `DURATION` tag, else the container
+  if the audio is kept) is discarded and the original listed in
+  `potentiallyCorruptedFiles.txt`: ffmpeg exits 0 on an AVI with a damaged section and
+  drops it, so the video would run ahead of the song with no original left. Such a file is
+  encoded (and discarded) again on every run, like unreadable input.
+- Symlinked media count as media (discovery, `collectVideos`), but fixaudio and fixvideos
+  skip them with a warning: `Replace` would turn the link into a regular copy.
 
 Still open (roadmap items):
 

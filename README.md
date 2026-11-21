@@ -148,14 +148,18 @@ after the video module, handles audio files and the `#VOCALS`/`#INSTRUMENTAL` ta
   - re-encodes old or too new codecs and high-bitrate videos, downscales videos wider than
     1920 or taller than 1080 px
   - removes the video's audio track if `#MP3`/`#AUDIO` names a separate audio file
-  - flags files ffmpeg cannot read in `potentiallyCorruptedFiles.txt`
+  - flags files ffmpeg cannot read in `potentiallyCorruptedFiles.txt`, and keeps the
+    original (and lists it there) when the processed video comes out shorter or longer
+    than the original, as with an AVI whose damaged section ffmpeg drops
+  - symbolic links to videos are left alone (process the file they point to)
   - every video it writes or checks is tagged (`SANITIZER_VIDEO`) and skipped on later
     runs; containers that cannot hold the tag (AVI, MPEG) are recorded in `media-journal.txt`
 - **audio** (`-a`) – downmixes multichannel audio to stereo and peak-normalizes to -3 dB
   (true sample peak), keeping codec, bitrate, tags and embedded cover art. The original is
   copied to `originals/` first. Normalized files are tagged (`SANITIZER_NORMALIZED`, or
   recorded in `media-journal.txt` for raw AAC/WAV) and not normalized again on later runs.
-  `#VOCALS`/`#INSTRUMENTAL` stems are left alone so their mix balance is kept
+  `#VOCALS`/`#INSTRUMENTAL` stems are left alone so their mix balance is kept, and so are
+  symbolic links to audio files
 
 ### Output folder layout
 
@@ -171,7 +175,7 @@ after the video module, handles audio files and the `#VOCALS`/`#INSTRUMENTAL` ta
 <out>/filled_tags.txt                        #ARTIST/#TITLE values fixtxt took from the folder name;
                                              kept across runs, a dry run's planned fills are
                                              marked "dry run: not written yet" and replaced next run
-<out>/potentiallyCorruptedFiles.txt          videos ffmpeg cannot read (-m)
+<out>/potentiallyCorruptedFiles.txt          videos ffmpeg cannot read or that change length when processed (-m)
 <out>/check_report.json, check_report.txt    broken and suspicious songs with reasons (-k), regenerated each run
 ```
 
@@ -395,8 +399,16 @@ To add new songs without re-bucketing the library, use `add` instead (see below)
 **Undo.** `organize -undo -o <out>` (or `-l <library>` for the default output folder)
 reverts the most recent run that was not undone yet: every move in reverse order, and the
 library folders the run created are removed again if they are empty. A move whose target
-is gone or whose original place is taken again is skipped and counted as failed. Run
-`-undo` again to revert the run before that.
+is gone or whose original place is taken again is skipped and counted as failed. If a
+move failed because something is in the way, the run is not marked as undone: clear the
+way and run `-undo` again, which retries that run and skips what is back already. A song
+that is gone (moved or deleted by hand) does not hold up the undo. Once a run is
+completely undone, `-undo` reverts the run before that.
+
+If a better copy from a source cannot be moved into the library (for example because the
+source cannot be written, or the run is stopped), the library's own copy, already moved
+to `duplicates/`, is moved back, so the library never loses a song; the report shows it
+as `[moved back]`.
 
 **Output folder** (`organize-output/` next to the library by default):
 
