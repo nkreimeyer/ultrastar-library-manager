@@ -3,6 +3,7 @@ package webui
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	"github.com/nkreimeyer/library-manager/organize"
 	"github.com/nkreimeyer/library-manager/repairtxt"
 )
@@ -86,11 +88,11 @@ func TestOrganizeValidate(t *testing.T) {
 func TestOrganizeFlow(t *testing.T) {
 	s := newTestServer(t)
 	lib, out := dedupeLibrary(t)
-	before := tree(t, lib)
+	before := testutil.Tree(t, lib)
 	q := organizeRequest{Mode: "dedupe", Library: lib, Out: out}
 
 	v := analyseOrganize(t, s, q)
-	if !equalTrees(tree(t, lib), before) {
+	if !maps.Equal(testutil.Tree(t, lib), before) {
 		t.Fatal("the analysis changed the library")
 	}
 	if v.Summary.Songs != 3 || v.Summary.InPlace != 2 || v.Summary.Duplicates != 1 || len(v.Notes) == 0 || v.Applied {
@@ -166,7 +168,7 @@ func TestOrganizeFlow(t *testing.T) {
 	if res, _ := j.Result.(map[string]any); res["library"] != lib || res["outDir"] != out {
 		t.Errorf("undo result = %#v, want library %s and outDir %s", j.Result, lib, out)
 	}
-	if !equalTrees(tree(t, lib), before) {
+	if !maps.Equal(testutil.Tree(t, lib), before) {
 		t.Error("undo did not restore the library")
 	}
 	s.do("POST", "/api/organize/history", folderRequest{Library: lib, Out: out}, &hist)
@@ -193,7 +195,7 @@ func planChanged(t *testing.T, s *testServer) (v organizeView, j Job, lib string
 	// A better version appears after the review: it would become the keeper.
 	writeSong(t, filepath.Join(lib, "New", "ABBA - SOS"), "ABBA", "SOS", map[string]string{"cover.png": "x"})
 	writeSong(t, filepath.Join(lib, "R", "Roxette - Joy"), "Roxette", "Joy", nil)
-	before = tree(t, lib)
+	before = testutil.Tree(t, lib)
 	s.do("POST", "/api/organize/apply", map[string]any{"analysis": v.ID}, &j)
 	return v, s.wait(), lib, before
 }
@@ -228,7 +230,7 @@ func TestOrganizeApplyPlanChanged(t *testing.T) {
 	if res, _ := j.Result.(map[string]any); res["planChanged"] != true || res["analysis"] != v.ID {
 		t.Errorf("result = %v", j.Result)
 	}
-	if !equalTrees(tree(t, lib), before) {
+	if !maps.Equal(testutil.Tree(t, lib), before) {
 		t.Error("a changed plan moved something")
 	}
 	// The analysis now holds the new plan; applying it works.
@@ -294,7 +296,7 @@ func damagedLib(t *testing.T) (lib, out string) {
 func TestRepairFlow(t *testing.T) {
 	s := newTestServer(t)
 	lib, out := damagedLib(t)
-	before := tree(t, lib)
+	before := testutil.Tree(t, lib)
 	var e apiError
 	if got := s.do("POST", "/api/repair/validate", repairRequest{SongDir: lib, LyricsCache: "x"}, &e); got != http.StatusBadRequest {
 		t.Errorf("cache without lyrics: %d", got)
@@ -318,7 +320,7 @@ func TestRepairFlow(t *testing.T) {
 	if j = s.wait(); j.State != stateDone {
 		t.Fatalf("analyse: %+v", j)
 	}
-	if !equalTrees(tree(t, lib), before) {
+	if !maps.Equal(testutil.Tree(t, lib), before) {
 		t.Fatal("the analysis changed the library")
 	}
 	id := j.Result.(map[string]any)["analysis"].(string)
@@ -370,7 +372,7 @@ func TestRepairFlow(t *testing.T) {
 	if strings.Contains(string(got), R) || !strings.Contains(string(got), "sürprise") || !strings.Contains(string(got), "für") {
 		t.Errorf("repaired txt:\n%s", got)
 	}
-	if after := tree(t, lib); after[filepath.ToSlash(other)] != before[filepath.ToSlash(other)] {
+	if after := testutil.Tree(t, lib); after[filepath.ToSlash(other)] != before[filepath.ToSlash(other)] {
 		t.Error("the skipped txt was written")
 	}
 	words, err := os.ReadFile(filepath.Join(out, uiWordsName))
@@ -431,14 +433,14 @@ func TestRepairApplyWordsFileUnreadable(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(out, uiWordsName), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	before := tree(t, lib)
+	before := testutil.Tree(t, lib)
 	id := j.Result.(map[string]any)["analysis"].(string)
 	choice := repairChoice{Path: filepath.Join("A - Weg", "song.txt"), Word: "s" + R + "rprise", Form: "sürprise"}
 	s.do("POST", "/api/repair/apply", map[string]any{"analysis": id, "choices": []repairChoice{choice}}, &j)
 	if j = s.wait(); j.State != stateFailed || !strings.Contains(j.Error, "saving the chosen spellings") {
 		t.Errorf("apply: %+v", j)
 	}
-	if !equalTrees(tree(t, lib), before) {
+	if !maps.Equal(testutil.Tree(t, lib), before) {
 		t.Error("txts were written although the choices could not be saved")
 	}
 }
@@ -548,7 +550,7 @@ func TestOrganizeUndoStopped(t *testing.T) {
 	for _, name := range []string{"Abba", "Bee", "Cee", "Dee"} {
 		writeSong(t, filepath.Join(src, name+" - Song"), name, "Song", nil)
 	}
-	before := tree(t, src)
+	before := testutil.Tree(t, src)
 	v := analyseOrganize(t, s, organizeRequest{Mode: "organize", Tiers: [][]string{{src}}, Library: lib, Out: out})
 	var j Job
 	s.do("POST", "/api/organize/apply", map[string]any{"analysis": v.ID}, &j)
@@ -582,7 +584,7 @@ func TestOrganizeUndoStopped(t *testing.T) {
 	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 3 {
 		t.Errorf("second undo: %+v", j)
 	}
-	if !equalTrees(tree(t, src), before) {
+	if !maps.Equal(testutil.Tree(t, src), before) {
 		t.Error("the two undos did not restore the source")
 	}
 	s.do("POST", "/api/organize/history", folderRequest{Library: lib, Out: out}, &hist)

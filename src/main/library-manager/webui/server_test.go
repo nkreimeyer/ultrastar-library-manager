@@ -20,6 +20,7 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	"github.com/nkreimeyer/library-manager/utils"
 )
 
@@ -415,13 +416,7 @@ func scanEvents(t *testing.T, sc *bufio.Scanner, done func([]event) bool) []even
 
 // notesTxt is a song txt with 10 notes sung to lyric (different lyrics, different content).
 func notesTxt(artist, title, lyric string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "#ARTIST:%s\n#TITLE:%s\n#MP3:song.mp3\n#BPM:300\n#GAP:0\n", artist, title)
-	for i := range 10 {
-		fmt.Fprintf(&b, ": %d 2 0 %s\n", i*4, lyric)
-	}
-	b.WriteString("E\n")
-	return b.String()
+	return fmt.Sprintf("#ARTIST:%s\n#TITLE:%s\n#MP3:song.mp3\n", artist, title) + testutil.NotesTxt(lyric)
 }
 
 func writeSong(t *testing.T, dir, artist, title string, extra map[string]string) {
@@ -438,31 +433,4 @@ func writeSong(t *testing.T, dir, artist, title string, extra map[string]string)
 			t.Fatal(err)
 		}
 	}
-}
-
-// tree lists the files below root with their content.
-func tree(t *testing.T, root string) map[string]string {
-	t.Helper()
-	m := map[string]string{}
-	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() {
-			data, _ := os.ReadFile(p)
-			rel, _ := filepath.Rel(root, p)
-			m[filepath.ToSlash(rel)] = string(data)
-		}
-		return nil
-	})
-	return m
-}
-
-func equalTrees(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
 }
