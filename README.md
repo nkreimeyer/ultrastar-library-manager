@@ -190,7 +190,11 @@ empty folders are merged into an existing target instead.
 Start `library-manager` without arguments (on Windows: double-click the `.exe`), or run
 `library-manager ui`. It starts a small web server on `127.0.0.1` and opens the browser. Keep
 the terminal window open while you use it; closing it (or Ctrl-C) stops the UI and any
-running job.
+running job (a move or undo finishes the song it is on). The printed address signs one
+browser in and then stops working, so a copy of it (browser history) lets no one else in;
+if your browser lost its sign-in, restart library-manager for a new address. Several UIs
+can run at once, each on its own port. A port given with `-addr` that is in use ends the
+program with exit code 1.
 
 The UI covers `dedupe`, `add`, `organize` and `repair`:
 
@@ -202,12 +206,14 @@ The UI covers `dedupe`, `add`, `organize` and `repair`:
 4. **Move**: the real run plans again and compares with the plan you reviewed. If anything
    changed in between (a new song, a moved folder), nothing is moved and the new plan is
    shown for another review.
-5. **Undo this run** reverts the moves, like `<cmd> -undo`.
+5. **Undo this run** reverts the moves, like `<cmd> -undo`. An undo can be stopped; undo
+   again to move back the rest.
 
 For `repair` the review lists the automatic repairs (best guesses marked) and the words that
 need a choice: click a suggestion or type the word. Choices are written to
 `<out>/ui-reviewed-words.txt` (a `-words` file with a section per song folder), so later runs
-from the UI keep them. A file can be left unchanged. Online lyrics (lrclib.net) are off unless
+from the UI keep them; choosing another spelling for the same word later replaces the
+earlier one. A file can be left unchanged. Online lyrics (lrclib.net) are off unless
 you tick the box, since they send each damaged song's artist and title to that site.
 
 **Easy** mode (the default) shows plain choices. **Advanced** adds the flags (`-priority`,
@@ -404,7 +410,8 @@ reverts the most recent run that was not undone yet: every move in reverse order
 library folders the run created are removed again if they are empty. A move whose target
 is gone or whose original place is taken again is skipped and counted as failed. If a
 move failed because something is in the way, the run is not marked as undone: clear the
-way and run `-undo` again, which retries that run and skips what is back already. A song
+way and run `-undo` again, which retries that run and skips what is back already (the
+journal records every move back). A song
 that is gone (moved or deleted by hand) does not hold up the undo. Once a run is
 completely undone, `-undo` reverts the run before that.
 

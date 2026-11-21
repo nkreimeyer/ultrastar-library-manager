@@ -42,7 +42,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   fixaudio/                   ffmpeg: downmix to stereo, peak-normalize to -3 dB, originals kept (tagged, idempotent)
   journal/                    content-fingerprint journal for media formats that cannot carry a marker tag
   mediatools/                 Detect: ffmpeg/ffprobe on PATH, "-version" parsed (releases, N-… and date git builds), >= 5.1
-  webui/                      browser UI: server.go (token -> session cookie, Host/Origin/JSON checks, CSP, routes),
+  webui/                      browser UI: server.go (single-use token -> session cookie lm_session_<port>, CheckAddr,
+                              Host/Origin/JSON checks, CSP, routes),
                               jobs.go (one job at a time, logrus hook, SSE /api/job/events), system.go (tools, folder lister),
                               organize.go (validate/analyse/exclude/apply/history/undo), repair.go (analyse/apply, choices ->
                               <out>/ui-reviewed-words.txt), static/ (index.html, style.css, app.js: embedded, no build step)
@@ -229,15 +230,18 @@ Same exit codes and leftover-argument rule.
   first, cycles and self-nesting through a hidden `.organize-tmp-*` name); right before each
   library move the bucket is checked again (an earlier move away of a song folder named like
   the bucket may have failed). The journal (`organize-journal.jsonl`: `run`, `mkdir`,
-  `move`, `undone`) is appended and fsynced per entry, only in real runs; a journal write
+  `move`, `reverted`, `undone`) is appended and fsynced per entry, only in real runs; a journal write
   failure stops all further moves, and a song parked under the temporary name is moved back
   (or, if its place is taken, to its target) so it never stays hidden. After the library
   moves, `restoreLibraryLosers` moves library duplicates (in dedupe/add also broken library
   songs) whose keeper from another source did not arrive (failed, refused, stopped) back,
   journaled (report outcome `moved back`). `-undo` walks the
   newest not-undone run backwards; a run is only recorded `undone` if no retryable move
-  failed (a move whose source and target are both gone does not block), and a retry skips
-  the moves that are back already (`ops.Exists`, dry-run aware). A dry run executes the same steps through ops (MoveTo
+  failed (a move whose source and target are both gone does not block) and it was not
+  stopped (`UndoOptions.Ctx`, checked before each entry but never while a song is at a
+  `.organize-tmp-*` name). Each move back is journaled as `reverted` (entry number in the
+  run, 1-based), and a retry skips those entries: the paths cannot tell, since both exist
+  again after a swap is undone (`ops.Exists` is only the fallback for a lost record). A dry run executes the same steps through ops (MoveTo
   simulates the ordered moves), so its plan and move count match the real run
   (`TestRunDryRunMatchesRealRun`).
 - repair (`repairtxt`): every U+FFFD is one lost CP1252/CP1250 byte, so it is replaced by
@@ -297,7 +301,14 @@ Same exit codes and leftover-argument rule.
   scan/plan/lyrics/write; a run stopped during the moves is journaled, a parked song is moved
   out of its temporary name) and `Progress`. Repair choices are `-words` sections named by the
   song folder (`forSong` matches the folder name). `fsops.Stats` has JSON names (the UI reads
-  them). Tests: `webui/*_test.go` run the real server with `httptest` against temp libraries;
+  them). The start URL's token works once (a signed-in browser opening it again is only
+  redirected); the cookie is `lm_session_<port>`, as browsers share cookies across ports.
+  Only the newest analysis of each kind is kept. Event streams send `id: <job>/<next line>`
+  with each log event and resume from `Last-Event-ID`; `Server.Close` ends them (before
+  `http.Server.Shutdown`). `ui` stops on SIGINT, SIGTERM and SIGHUP; `-addr` is checked
+  before listening (exit 2), a listen failure exits 1. The UI's words file is rewritten
+  (`writeChoices`): an earlier spelling that fits the same damaged word in that folder's
+  section is dropped. Tests: `webui/*_test.go` run the real server with `httptest` against temp libraries;
   `ui_cmd_test.go` stubs `openBrowser` in `init` (no test may open a browser).
 - organize: when a keeper from another source cannot reach the library, the library's own
   copies of that song stay in place (not moved to duplicates/). The report's duplicate and
