@@ -12,6 +12,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/mediatools"
 	"github.com/nkreimeyer/library-manager/utils"
 )
 
@@ -678,4 +679,68 @@ func TestConversionOfNFDNameKeepsTxtClean(t *testing.T) {
 	if got := dirNames(t, song); !slices.Equal(got, []string{"Mädchen.mp4", "song.txt"}) {
 		t.Errorf("song folder = %v", got)
 	}
+}
+
+// ffprobe's JSON leaves codec_name out for a video stream it has no codec descriptor for.
+// Such a stream is still a video: plan must not take it for a file without one (that
+// skipped it as readable, also when it needed a resize).
+func TestPlanVideoWithoutCodecName(t *testing.T) {
+	big := mediatools.ProbeInfo{Streams: []mediatools.Stream{
+		{CodecType: "video", Width: 2 * maxWidth, Height: 2 * maxHeight},
+		{CodecType: "audio", CodecName: "aac"},
+	}}
+	p := &processor{ops: fsops.New(false)}
+	dir := t.TempDir()
+	pl, ok := p.plan(dir, filepath.Join(dir, "v.mkv"), big, nil)
+	if !ok || !pl.resize || !pl.reEncode {
+		t.Errorf("plan = %+v, %v; want a resize re-encode", pl, ok)
+	}
+
+	noVideo := mediatools.ProbeInfo{Streams: []mediatools.Stream{{CodecType: "audio", CodecName: "aac"}}}
+	// Skipped before anything is planned (a planned file gets a crf).
+	if pl, ok := p.plan(dir, filepath.Join(dir, "a.mkv"), noVideo, nil); ok || pl != (encodePlan{}) {
+		t.Errorf("plan without a video stream = %+v, %v; want it skipped", pl, ok)
+	}
+}
+
+// The same with a real file: a Matroska video whose CodecID ffmpeg does not know. It needs
+// a resize, so it is processed, and ffmpeg's failure on it counts.
+func TestUnknownVideoCodecIsProcessed(t *testing.T) {
+	requireFFmpeg(t)
+	lowerLimits(t, 160, 120)
+	cfg, songDir, _ := newLibrary(t, false)
+	song := filepath.Join(songDir, "A - S")
+	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:a.mp3\n#VIDEO:v.mkv\n: 0 4 0 La\nE\n")
+	writeFile(t, filepath.Join(song, "a.mp3"), "audio")
+	video := filepath.Join(song, "v.mkv")
+	makeMedia(t, video, "-c:v", "mpeg4", "-c:a", "aac")
+	data, err := os.ReadFile(video)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same length, so the Matroska element sizes stay valid.
+	damaged := strings.Replace(string(data), "V_MPEG4/ISO/ASP", "V_ZZZZZ/ISO/ASP", 1)
+	if damaged == string(data) {
+		t.Fatal("fixture has no V_MPEG4/ISO/ASP CodecID")
+	}
+	if err := os.WriteFile(video, []byte(damaged), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if probe := probeOf(video); !probe.HasStream("video") {
+		t.Skipf("ffprobe does not report the video stream: %+v", probe.Streams)
+	} else if st, _ := probe.FirstStream("video"); st.CodecName != "" {
+		t.Skipf("ffprobe knows the codec: %q", st.CodecName)
+	}
+
+	ops := fsops.New(false)
+	if err := Run(cfg, ops); err != nil {
+		t.Fatal(err)
+	}
+	if st := ops.Stats(); st.Failed != 1 {
+		t.Errorf("stats = %+v, want ffmpeg's failure counted (Failed = 1), not the video skipped as readable", st)
+	}
+	if got := readFile(t, video); got != damaged {
+		t.Error("the original changed")
+	}
+	assertNoTempFiles(t, songDir)
 }

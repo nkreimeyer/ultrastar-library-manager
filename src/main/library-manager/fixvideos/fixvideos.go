@@ -296,18 +296,23 @@ func canCarryMarker(file string) bool {
 // plan decides what has to be done with file from its ffprobe result (probeErr is the
 // error of that probe). ok is false if the file needs no processing.
 func (p *processor) plan(dir, file string, probe mediatools.ProbeInfo, probeErr error) (pl encodePlan, ok bool) {
-	video, _ := probe.FirstStream("video")
+	video, hasVideo := probe.FirstStream("video")
 	switch {
 	case probeErr != nil:
 		// ffprobe cannot read the video stream. Try to re-encode anyway: if ffmpeg cannot
 		// read the file either, it is reported as potentially corrupted.
 		log.Debugf("Error probing %s: %v", file, probeErr)
 		pl.reEncode = true
-	case video.CodecName == "":
+	case !hasVideo:
 		log.Debugf("No video stream in %s, skipping", file)
 		return encodePlan{}, false
 	default:
-		log.Debugf("Video codec for %s: %s", file, video.CodecName)
+		// ffprobe's JSON leaves codec_name out for a stream it has no codec descriptor
+		// for (its CSV output prints "unknown"). Such a stream is still a video: it is
+		// planned like any other (an empty codec is in no codec list), so a resize it
+		// needs is tried and an ffmpeg failure on it counted, instead of the file
+		// passing as readable.
+		log.Debugf("Video codec for %s: %q", file, video.CodecName)
 		pl.reEncode = needsReEncode(file, video.CodecName, probe)
 	}
 
@@ -359,7 +364,8 @@ func (p *processor) processVideoFile(dir, file string) {
 
 	pl, ok := p.plan(dir, file, probe, probeErr)
 	if !ok {
-		// plan only skips a video whose codec ffprobe read (an unreadable one is re-encoded).
+		// plan only skips a file ffprobe read (an unreadable one is re-encoded): one
+		// without a video stream, or a video that needs nothing.
 		log.Debugf("No processing needed for: %s", file)
 		p.markReadable(file)
 		return
