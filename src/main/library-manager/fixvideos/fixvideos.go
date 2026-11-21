@@ -144,11 +144,10 @@ func Run(cfg config.Config, ops *fsops.Ops) error {
 	wg.Wait()
 
 	p.writeCorruptedReport()
-	// Nothing is added in dry-run mode; the check only makes sure the out dir stays empty.
-	if !cfg.DryRun {
-		if err := j.Save(ops); err != nil {
-			log.Errorf("%v", err) // counted as a failure by ops
-		}
+	// Save writes only a changed journal. A dry run never adds to it (entries are added
+	// after an encode), so it does not write the journal.
+	if err := j.Save(ops); err != nil {
+		log.Errorf("%v", err) // counted as a failure by ops
 	}
 	log.Infof("All video files have been processed.")
 	return nil
@@ -557,6 +556,7 @@ func (p *processor) replaceOriginal(dir, file, tmp string, pl encodePlan) {
 
 // rememberProcessed records a video written by fixvideos in the media journal if its
 // container cannot carry markerTag (e.g. audio stripped from an AVI by stream copy).
+// Unlike fixaudio, fixvideos journals only such containers: the others carry the tag.
 func (p *processor) rememberProcessed(file string) {
 	if canCarryMarker(file) {
 		return

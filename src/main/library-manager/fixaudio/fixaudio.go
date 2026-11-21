@@ -62,8 +62,8 @@ const (
 	normalizedTag = "SANITIZER_NORMALIZED"
 )
 
-// noMetadataExts cannot carry the custom normalizedTag. Files of these formats are
-// recorded in the media journal instead (see processor.journal), which matters most for
+// noMetadataExts cannot carry the custom normalizedTag. For files of these formats the
+// media journal is the only record (see processor.journal), which matters most for
 // lossy raw ADTS AAC, whose peak drifts with every re-encode. MP4 (.m4a) could carry it
 // only with "-movflags +use_metadata_tags", which writes all metadata as QuickTime mdta
 // keys instead of iTunes ilst atoms: the cover ("covr") is dropped and players reading
@@ -134,7 +134,9 @@ func forEachParallel[T any](items []T, n int, fn func(T)) {
 type processor struct {
 	cfg config.Config
 	ops *fsops.Ops
-	// journal records normalized files, for formats that cannot carry normalizedTag.
+	// journal records every file this module normalized, also those that carry
+	// normalizedTag (the tag can be lost, e.g. when another tool rewrites the file). For
+	// noMetadataExts it is the only record.
 	journal *journal.Journal
 }
 
@@ -283,8 +285,9 @@ func (p *processor) processFile(folder, name string) {
 		log.Errorf("Failed to %s to %s: %v", action, path, err)
 		return
 	}
-	// A failing Save is counted by ops (WriteReport); a failing Add (fingerprinting the
-	// new file) is not.
+	// Every normalized file is journaled, whether or not it carries normalizedTag (see
+	// processor.journal). A failing Save is counted by ops (WriteReport); a failing Add
+	// (fingerprinting the new file) is counted here.
 	if err := p.journal.Add(journalKind, path); err != nil {
 		log.Errorf("Recording %s in the media journal: %v", path, err)
 		ops.Fail()
