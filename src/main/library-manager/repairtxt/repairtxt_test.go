@@ -550,6 +550,36 @@ func TestRun(t *testing.T) {
 	}
 }
 
+// A damaged UTF-8 txt that still carries a stale #ENCODING:CP1252 tag is repaired: its
+// U+FFFD characters are no evidence that the file is not UTF-8.
+func TestRunRepairsDamagedTxtWithStaleEncodingTag(t *testing.T) {
+	base := t.TempDir()
+	lib := filepath.Join(base, "lib")
+	h := "#ARTIST:A\n#MP3:a.mp3\n#BPM:300\n#LANGUAGE:German\n"
+	damaged := songText("#ENCODING:CP1252\n#TITLE:Weg\n"+h, "f"+R+"r dich", "das Gl"+R+"ck")
+	writeLib(t, lib, map[string]string{
+		"A/A - Eins": songText("#TITLE:Eins\n"+h, "für dich", "das Glück für mich"),
+		"A/A - Zwei": songText("#TITLE:Zwei\n"+h, "nur für dich", "kein Glück"),
+		"A/A - Weg":  damaged,
+	})
+	out := filepath.Join(base, "out")
+	cfg, err := config.New(lib, out, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(cfg, fsops.New(false), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(lib, "A/A - Weg/song.txt"))
+	want := strings.NewReplacer("f"+R+"r", "für", "Gl"+R+"ck", "Glück").Replace(damaged)
+	if string(got) != want {
+		var rep Report
+		data, _ := os.ReadFile(filepath.Join(out, ReportJSON))
+		_ = json.Unmarshal(data, &rep)
+		t.Errorf("repaired =\n%s\nwant\n%s\nskipped: %+v", got, want, rep.Skipped)
+	}
+}
+
 func TestRunStrict(t *testing.T) {
 	base := t.TempDir()
 	lib := filepath.Join(base, "lib")

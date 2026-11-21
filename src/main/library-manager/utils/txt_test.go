@@ -38,6 +38,8 @@ func TestDecodeTxt(t *testing.T) {
 		{"cp1252 sharp s before ellipsis is not mojibake", "#TITLE:Gru\xdf\x85\n", "#TITLE:Gruß…\n", EncCP1252, false, false},
 		{"cp1250 hint", "#ENCODING:CP1250\n#TITLE:\xb9\n", "#ENCODING:CP1250\n#TITLE:ą\n", "CP1250", false, false},
 		{"stale cp1252 hint on converted utf8", "#ENCODING:CP1252\n#TITLE:Mädchen „x“\n", "#ENCODING:CP1252\n#TITLE:Mädchen „x“\n", EncUTF8, false, false},
+		{"stale cp1252 hint on damaged utf8 is damaged, no problem", "#ENCODING:CP1252\n#TITLE:M�dchen für\n", "#ENCODING:CP1252\n#TITLE:M�dchen für\n", EncUTF8, false, true},
+		{"cp1252 hint on damaged non-western utf8 is a problem", "#ENCODING:CP1252\n#TITLE:�ривет\n", "#ENCODING:CP1252\n#TITLE:�ривет\n", EncUTF8, true, true},
 		{"cp1252 hint on non-western utf8 is a problem", "#ENCODING:CP1252\n#TITLE:Привет\n", "#ENCODING:CP1252\n#TITLE:Привет\n", EncUTF8, true, false},
 		{"utf8 without hint stays utf8", "#TITLE:Привет\n", "#TITLE:Привет\n", EncUTF8, false, false},
 		{"cp1251 hint", "#ENCODING:CP1251\n#TITLE:\xca\xe0\xeb\xe8\xed\xea\xe0\n", "#ENCODING:CP1251\n#TITLE:Калинка\n", "CP1251", false, false},

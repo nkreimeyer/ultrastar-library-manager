@@ -51,7 +51,8 @@ type DecodedTxt struct {
 //  1. A UTF-16 BOM selects UTF-16.
 //  2. Valid UTF-8 is UTF-8, except:
 //     - with an #ENCODING tag naming a single-byte codec, every non-ASCII character must be
-//     one that codec can produce (a converted file with a stale tag); otherwise Problem;
+//     one that codec can produce (a converted file with a stale tag; U+FFFD, a character
+//     lost before, is damage and does not count); otherwise Problem;
 //     - without a tag, CP1252 text that is valid UTF-8 only by accident is read as CP1252
 //     if that is certain (an isolated "ß…" = 0xDF 0x85 reads as an NKo character) and is a
 //     Problem if it is merely likely (only isolated non-Latin characters amid ASCII).
@@ -309,9 +310,12 @@ func looksLikeCP1250(text string) bool {
 }
 
 // producibleBy reports whether every non-ASCII character of text exists in the codec.
+// U+FFFD does not count: in valid UTF-8 it is damage from an earlier conversion (a lost
+// character), not evidence of another encoding, and a damaged txt with a stale tag must
+// stay repairable.
 func producibleBy(cm *charmap.Charmap, text string) bool {
 	for _, r := range text {
-		if r < 0x80 {
+		if r < 0x80 || r == utf8.RuneError {
 			continue
 		}
 		if _, ok := cm.EncodeRune(r); !ok {
