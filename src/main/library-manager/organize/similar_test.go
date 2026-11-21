@@ -403,7 +403,7 @@ func TestRunDedupeSimilar(t *testing.T) {
 		"A/Band - Song/a.mp3":        "audio",
 		"Misc/Bnad - Sogn/song.txt":  "#ARTIST:The Band\n#TITLE:Sogn\n#MP3:a.mp3\n#COVER:c.png\n" + sung("600", 2, -12, verse(120, "w", map[int]string{60: "typo"})),
 		"Misc/Bnad - Sogn/a.mp3":     "audio",
-		"Misc/Bnad - Sogn/c.png":     pngImage(4, 4),
+		"Misc/Bnad - Sogn/c.png":     testutil.PNG(4, 4),
 		"Misc/Cover - Song/song.txt": "#ARTIST:Tribute Group\n#TITLE:Song\n#MP3:a.mp3\n" + sung("300", 1, 0, verse(120, "w", map[int]string{90: "other"})),
 		"Misc/Cover - Song/a.mp3":    "audio",
 	})

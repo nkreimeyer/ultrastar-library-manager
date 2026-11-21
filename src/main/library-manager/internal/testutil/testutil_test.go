@@ -1,8 +1,10 @@
 package testutil
 
 import (
+	"bytes"
 	"go/parser"
 	"go/token"
+	"image/png"
 	"io/fs"
 	"path/filepath"
 	"strconv"
@@ -78,5 +80,12 @@ func TestNotesTxtDiffersPerLyric(t *testing.T) {
 	}
 	if n := strings.Count(NotesTxt("la"), "\n: "); n != 10 {
 		t.Errorf("NotesTxt has %d notes, want 10", n)
+	}
+}
+
+func TestPNG(t *testing.T) {
+	cfg, err := png.DecodeConfig(bytes.NewReader([]byte(PNG(16, 9))))
+	if err != nil || cfg.Width != 16 || cfg.Height != 9 {
+		t.Errorf("PNG(16, 9) decodes as %+v, %v", cfg, err)
 	}
 }

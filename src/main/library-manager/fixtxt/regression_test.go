@@ -167,8 +167,8 @@ func TestRunFixesFileTagWithBlanks(t *testing.T) {
 				files["Artist - Song/"+name] = content
 			}
 			testutil.WriteFiles(t, cfg.SongDir, files)
-			writeTestPNG(t, filepath.Join(cfg.SongDir, "Artist - Song", "sq.png"), 10, 10)
-			writeTestPNG(t, filepath.Join(cfg.SongDir, "Artist - Song", "wide.png"), 64, 36)
+			testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Artist - Song", "sq.png"), 10, 10)
+			testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Artist - Song", "wide.png"), 64, 36)
 			run(t, cfg)
 			got := readFile(t, filepath.Join(cfg.SongDir, "Artist - Song", "song.txt"))
 			if v := tagValues(t, got, tc.keys...); !slices.Equal(v, []string{tc.want}) {
@@ -236,7 +236,7 @@ func TestMissingReportFollowsWrittenImageTags(t *testing.T) {
 				"Song/broken.png": "not an image",
 			})
 			if tc.png != "" {
-				writeTestPNG(t, filepath.Join(cfg.SongDir, "Song", tc.png), tc.w, tc.h)
+				testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Song", tc.png), tc.w, tc.h)
 			}
 			run(t, cfg)
 			txt := readFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
@@ -260,7 +260,7 @@ func TestMissingReportCompleteAndUndecodable(t *testing.T) {
 		"Song/song.mp3": "a",
 		"Song/clip.mp4": "v",
 	})
-	writeTestPNG(t, filepath.Join(cfg.SongDir, "Song", "cover.png"), 10, 10)
+	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Song", "cover.png"), 10, 10)
 	run(t, cfg)
 	if got := readFile(t, cfg.ReportPath(missingFilesReport)); got != "" {
 		t.Errorf("%s = %q, want empty", missingFilesReport, got)
@@ -271,7 +271,7 @@ func TestMissingReportCompleteAndUndecodable(t *testing.T) {
 		"Bad/song.txt": "#TITLE:\xe4\x81\n#ARTIST:A\n#MP3:song.mp3\n#COVER:c.png\n: 0 1 0 x\nE\n",
 		"Bad/song.mp3": "audio",
 	})
-	writeTestPNG(t, filepath.Join(cfg.SongDir, "Bad", "c.png"), 10, 10)
+	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Bad", "c.png"), 10, 10)
 	run(t, cfg)
 	bad := filepath.Join(cfg.SongDir, "Bad")
 	want := "No video or background file in " + bad + "\n"
@@ -399,8 +399,8 @@ func TestRunInsertsMissingTagsAsLine2(t *testing.T) {
 		"Artist - Song/song.mp3": "a",
 		"Artist - Song/clip.mp4": "v",
 	})
-	writeTestPNG(t, filepath.Join(cfg.SongDir, "Artist - Song", "sq.png"), 10, 10)
-	writeTestPNG(t, filepath.Join(cfg.SongDir, "Artist - Song", "wide.png"), 64, 36)
+	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Artist - Song", "sq.png"), 10, 10)
+	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Artist - Song", "wide.png"), 64, 36)
 	run(t, cfg)
 	want := "#TITLE:Song\n#MP3:song.mp3\n#VIDEO:clip.mp4\n#COVER:sq.png\n#BACKGROUND:wide.png\n#ARTIST:Artist\n#VIDEOGAP:2\n" + notesBody
 	if got := readFile(t, filepath.Join(cfg.SongDir, "Artist - Song", "song.txt")); got != want {
@@ -416,8 +416,8 @@ func TestRunReplacesUnreadableTaggedImages(t *testing.T) {
 		"Song/song.mp3":   "a",
 		"Song/broken.png": "not an image",
 	})
-	writeTestPNG(t, filepath.Join(cfg.SongDir, "Song", "sq.png"), 10, 10)
-	writeTestPNG(t, filepath.Join(cfg.SongDir, "Song", "wide.png"), 64, 36)
+	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Song", "sq.png"), 10, 10)
+	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Song", "wide.png"), 64, 36)
 	run(t, cfg)
 	got := readFile(t, filepath.Join(cfg.SongDir, "Song", "song.txt"))
 	if !strings.Contains(got, "#COVER:sq.png\n#BACKGROUND:wide.png\n") {

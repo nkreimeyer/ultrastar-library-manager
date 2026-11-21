@@ -1,8 +1,6 @@
 package cleanup
 
 import (
-	"image"
-	"image/png"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -419,23 +417,11 @@ func TestUntaggedCoverAndProblemTxtsAreKept(t *testing.T) {
 		"B/song.mp3": "a",
 		"B/junk.nfo": "x",
 	})
-	writePNG(t, filepath.Join(cfg.SongDir, "A", "cover.png"), 4, 4)
+	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "A", "cover.png"), 4, 4)
 	run(t, cfg)
 	want := []string{"A/cover.png", "A/song.mp3", "A/song.txt", "B/junk.nfo", "B/song.mp3", "B/song.txt"}
 	if got := files(testutil.Tree(t, cfg.SongDir)); !reflect.DeepEqual(got, want) {
 		t.Errorf("library files = %q, want %q", got, want)
-	}
-}
-
-func writePNG(t *testing.T, path string, w, h int) {
-	t.Helper()
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	if err := png.Encode(f, image.NewGray(image.Rect(0, 0, w, h))); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -451,11 +437,11 @@ func TestUntaggedHintedImagesAreKept(t *testing.T) {
 		"B/song.txt":       "#TITLE:B\n#ARTIST:B\n#MP3:song.mp3\n: 0 1 0 la\nE\n",
 		"B/song.mp3":       "a",
 	})
-	writePNG(t, filepath.Join(cfg.SongDir, "A", "Song [CO].png"), 64, 36) // hint beats shape
-	writePNG(t, filepath.Join(cfg.SongDir, "A", "square.png"), 10, 10)
-	writePNG(t, filepath.Join(cfg.SongDir, "A", "wide.png"), 64, 36)
-	writePNG(t, filepath.Join(cfg.SongDir, "B", "a.png"), 600, 598) // square within 5 %
-	writePNG(t, filepath.Join(cfg.SongDir, "B", "b.png"), 600, 600)
+	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "A", "Song [CO].png"), 64, 36) // hint beats shape
+	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "A", "square.png"), 10, 10)
+	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "A", "wide.png"), 64, 36)
+	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "B", "a.png"), 600, 598) // square within 5 %
+	testutil.WritePNG(t, filepath.Join(cfg.SongDir, "B", "b.png"), 600, 600)
 	run(t, cfg)
 	want := []string{"A/Song [BG].webp", "A/Song [CO].png", "A/song.mp3", "A/song.txt", "B/a.png", "B/song.mp3", "B/song.txt"}
 	if got := files(testutil.Tree(t, cfg.SongDir)); !reflect.DeepEqual(got, want) {

@@ -1,13 +1,10 @@
 package organize
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"image"
-	"image/png"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -37,15 +34,6 @@ func duetTxt(lyric string) string {
 	return b.String()
 }
 
-// pngImage is a valid w x h PNG.
-func pngImage(w, h int) string {
-	var b bytes.Buffer
-	if err := png.Encode(&b, image.NewGray(image.Rect(0, 0, w, h))); err != nil {
-		panic(err)
-	}
-	return b.String()
-}
-
 // songFiles returns the files of a working song folder dir (relative path) with a
 // placeholder mp3 (enough without ffprobe). extra: "duet" (P1/P2 notes), "cover" and
 // "background" (a referenced, valid image), "warning" (a repeated #GENRE: one song
@@ -61,10 +49,10 @@ func songFiles(dir, artist, title string, extra ...string) map[string]string {
 			body = duetTxt(lyric)
 		case e == "cover":
 			head += "#COVER:cover.png\n"
-			files[dir+"/cover.png"] = pngImage(4, 4)
+			files[dir+"/cover.png"] = testutil.PNG(4, 4)
 		case e == "background":
 			head += "#BACKGROUND:background.png\n"
-			files[dir+"/background.png"] = pngImage(16, 9)
+			files[dir+"/background.png"] = testutil.PNG(16, 9)
 		case e == "video":
 			head += "#VIDEO:video.mp4\n"
 			files[dir+"/video.mp4"] = "video of " + dir

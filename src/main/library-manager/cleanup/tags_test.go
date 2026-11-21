@@ -141,7 +141,7 @@ func TestMediaTagsMustNameAnExistingFile(t *testing.T) {
 				cfg := newEnv(t, dry)
 				testutil.WriteFiles(t, cfg.SongDir, tc.library)
 				for rel, wh := range tc.pngs {
-					writePNG(t, filepath.Join(cfg.SongDir, rel), wh[0], wh[1])
+					testutil.WritePNG(t, filepath.Join(cfg.SongDir, rel), wh[0], wh[1])
 				}
 				before := testutil.Tree(t, cfg.SongDir)
 				ops := fsops.New(dry)

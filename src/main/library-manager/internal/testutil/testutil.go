@@ -6,8 +6,11 @@
 package testutil
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"image"
+	"image/png"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -107,6 +110,23 @@ func Tree(t testing.TB, root string) map[string]string {
 		t.Fatal(err)
 	}
 	return got
+}
+
+// PNG is a valid w x h grayscale PNG.
+func PNG(w, h int) string {
+	var b bytes.Buffer
+	if err := png.Encode(&b, image.NewGray(image.Rect(0, 0, w, h))); err != nil {
+		panic(err) // cannot happen: encoding into memory
+	}
+	return b.String()
+}
+
+// WritePNG writes PNG(w, h) to path; the folder must exist.
+func WritePNG(t testing.TB, path string, w, h int) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(PNG(w, h)), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // RequireFFmpeg skips the test unless ffmpeg and ffprobe are on PATH.

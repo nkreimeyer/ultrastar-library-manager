@@ -1,12 +1,9 @@
 package fixtxt
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"image"
-	"image/png"
 	"io/fs"
 	"maps"
 	"os"
@@ -834,7 +831,7 @@ func TestRunChoosesCoverAndBackground(t *testing.T) {
 			}
 			testutil.WriteFiles(t, cfg.SongDir, files)
 			for name, wh := range tc.pngs {
-				writeTestPNG(t, filepath.Join(cfg.SongDir, "Song", name), wh[0], wh[1])
+				testutil.WritePNG(t, filepath.Join(cfg.SongDir, "Song", name), wh[0], wh[1])
 			}
 			ops := run(t, cfg)
 			if f := ops.Stats().Failed; f != 0 {
@@ -851,17 +848,6 @@ func TestRunChoosesCoverAndBackground(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func writeTestPNG(t *testing.T, path string, w, h int) {
-	t.Helper()
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, image.NewGray(image.Rect(0, 0, w, h))); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
 	}
 }
 
