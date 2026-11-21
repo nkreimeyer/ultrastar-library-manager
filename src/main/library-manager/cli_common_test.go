@@ -214,3 +214,62 @@ func TestCommandSummaryLines(t *testing.T) {
 		t.Errorf("undo with an unreadable journal: exit %d, logs %q", code, logs)
 	}
 }
+
+// -undo without -o or -l is a usage error of every journaled command: the message, then
+// the command's usage; nothing is logged and no folder is created.
+func TestUndoNeedsFolderPerCommand(t *testing.T) {
+	cliFixture(t)
+	for _, cmd := range []string{"organize", "dedupe", "add", "remove"} {
+		code, output, logs := runCaptured(t, cmd, "-undo")
+		want := "Error: -undo needs the output folder: give -o <out> or -l <library>.\n\nUsage: library-manager " + cmd + " "
+		if code != exitUsage || !strings.HasPrefix(output, want) || len(logs) != 0 {
+			t.Errorf("%s -undo: exit %d, logs %q, output:\n%s\nwant prefix:\n%s", cmd, code, logs, output, want)
+		}
+	}
+}
+
+// The repair inputs are named by their flags in the CLI's errors.
+func TestRepairInputErrorsNameTheFlag(t *testing.T) {
+	base, _, _, rlib, wl := cliFixture(t)
+	out := filepath.Join(base, "out")
+	missing := filepath.Join(base, "missing.dic")
+	for _, tt := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-wordlist", missing}, "Error: -wordlist: stat " + missing + ": "},
+		{[]string{"-wordlist", "de=" + missing}, "Error: -wordlist: stat " + missing + ": "},
+		{[]string{"-wordlist", wl, "-words", missing}, "Error: -words: stat " + missing + ": "},
+	} {
+		code, output, logs := runCaptured(t, append([]string{"repair", "-s", rlib, "-o", out}, tt.args...)...)
+		if code != exitUsage || !strings.HasPrefix(output, tt.want) || !strings.Contains(output, "\n\nUsage: library-manager repair ") || len(logs) != 0 {
+			t.Errorf("%q: exit %d, logs %q, output:\n%s\nwant prefix %q", tt.args, code, logs, output, tt.want)
+		}
+	}
+	cache := filepath.Join(rlib, "cache")
+	code, output, logs := runCaptured(t, "repair", "-s", rlib, "-o", out, "-lyrics", "-lyrics-cache", cache)
+	want := "-lyrics-cache: \"" + cache + "\" must not be inside the song dir "
+	if code != exitUsage || output != "" || len(logs) != 1 || !strings.HasPrefix(logs[0], want) {
+		t.Errorf("-lyrics-cache inside -s: exit %d, output %q, logs %q, want %q", code, output, logs, want)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("an input error created the out dir: %v", err)
+	}
+}
+
+// A failed run names its command: remove logs "remove failed", the organize family
+// "organize failed".
+func TestFailedRunNamesCommand(t *testing.T) {
+	base, _, _, _, _ := cliFixture(t)
+	file := filepath.Join(base, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(file, "out")
+	for cmd, want := range map[string]string{"organize": "organize", "dedupe": "organize", "add": "organize", "remove": "remove"} {
+		code, _, logs := runCaptured(t, cmd, "-undo", "-o", bad)
+		if code != exitFailures || !containsPrefix(logs, want+" failed: reading the journal: ") {
+			t.Errorf("%s -undo with an unreadable journal: exit %d, logs %q, want %q failed", cmd, code, logs, want)
+		}
+	}
+}
