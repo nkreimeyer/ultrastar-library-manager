@@ -106,7 +106,7 @@ func TestDetect(t *testing.T) {
 		old := Timeout
 		Timeout = 100 * time.Millisecond
 		t.Cleanup(func() { Timeout = old })
-		testutil.FakeTools(t, map[string]string{"ffmpeg": "#!/bin/sh\nexec sleep 10\n"})
+		testutil.FakeTools(t, map[string]string{"ffmpeg": "#!/bin/sh\nPATH=/usr/bin:/bin\nexec sleep 10\n"})
 		start := time.Now()
 		f := Detect(context.Background())[0]
 		if f.OK || !strings.Contains(f.Problem, "-version failed") {
