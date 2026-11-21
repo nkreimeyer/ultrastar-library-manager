@@ -34,7 +34,8 @@ func (q organizeRequest) mode() (organize.Mode, error) {
 	return "", fmt.Errorf("unknown mode %q", q.Mode)
 }
 
-// config builds the configuration like the organize, dedupe and add subcommands do.
+// config builds the configuration like the organize, dedupe and add subcommands do
+// (organize.NewConfig); empty folder fields of the form are dropped.
 func (q organizeRequest) config(dry bool) (config.OrganizeConfig, error) {
 	m, err := q.mode()
 	if err != nil {
@@ -52,23 +53,11 @@ func (q organizeRequest) config(dry bool) (config.OrganizeConfig, error) {
 			tiers = append(tiers, dirs)
 		}
 	}
-	switch m {
-	case organize.ModeDedupe:
-		return config.NewDedupe(q.Library, q.Out, dry)
-	case organize.ModeAdd:
-		return config.NewAdd(tiers, q.Library, q.Out, dry)
-	}
-	if len(tiers) == 0 {
-		return config.OrganizeConfig{}, fmt.Errorf("at least one source folder is required")
-	}
-	if q.Library == "" {
-		return config.OrganizeConfig{}, fmt.Errorf("a library folder is required")
-	}
-	return config.NewOrganize(tiers, q.Library, q.Out, dry)
+	return organize.NewConfig(m, tiers, q.Library, q.Out, dry)
 }
 
 func (q organizeRequest) options(m organize.Mode) organize.Options {
-	return organize.Options{Mode: m, Priority: q.Priority, IgnoreThe: q.IgnoreThe, Deep: q.Deep}
+	return organize.NewOptions(m, q.Priority, q.IgnoreThe, q.Deep)
 }
 
 type sourceView struct {

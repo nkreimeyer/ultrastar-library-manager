@@ -623,3 +623,26 @@ func TestWriteChoicesFindsEarlierSpellingLikeReader(t *testing.T) {
 		t.Errorf("another song's spelling was taken out:\n%s", got)
 	}
 }
+
+// dedupe has no -priority and no -ignore-the (one source, nothing moves into a bucket):
+// the UI keeps the checkboxes of an earlier organize or add form, and they must not reach
+// the run, or its plan report says "priority: on" for a run the CLI cannot even start.
+func TestDedupeIgnoresPriorityAndIgnoreThe(t *testing.T) {
+	s := newTestServer(t)
+	lib, out := dedupeLibrary(t)
+	analyseOrganize(t, s, organizeRequest{Mode: "dedupe", Library: lib, Out: out, Priority: true, IgnoreThe: true})
+	data, err := os.ReadFile(filepath.Join(out, "organize_plan.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rep struct {
+		Priority  bool `json:"priority"`
+		IgnoreThe bool `json:"ignoreThe"`
+	}
+	if err := json.Unmarshal(data, &rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep.Priority || rep.IgnoreThe {
+		t.Errorf("dedupe report: priority %v, ignoreThe %v, want both off", rep.Priority, rep.IgnoreThe)
+	}
+}
