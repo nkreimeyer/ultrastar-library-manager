@@ -11,6 +11,7 @@
 package fixaudio
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,7 +23,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
@@ -81,7 +81,8 @@ var workers = min(maxWorkers, runtime.NumCPU())
 // (the original keeps it, in originals/).
 var coverExts = map[string]bool{".mp3": true, ".m4a": true, ".flac": true}
 
-// Run processes all audio files of all song folders below cfg.SongDir.
+// Run processes all audio files of all song folders below cfg.SongDir. A panic in one
+// folder is logged and counted as a failure, and the other folders are still processed.
 func Run(cfg config.Config, ops *fsops.Ops) error {
 	for _, tool := range []string{"ffmpeg", "ffprobe"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -100,34 +101,19 @@ func Run(cfg config.Config, ops *fsops.Ops) error {
 	}
 
 	p := &processor{cfg: cfg, ops: ops, journal: j}
-	forEachParallel(folders, workers, p.processFolder)
+	_ = utils.ForEachParallel(context.Background(), folders, utils.Parallel{
+		Workers: workers,
+		OnPanic: func(i int, _ any) {
+			log.Errorf("fixaudio: %s not finished: internal error (logged above)", folders[i])
+			ops.Fail()
+		},
+	}, func(_ int, folder string) { p.processFolder(folder) })
 
 	if err := j.Save(ops); err != nil {
 		log.Errorf("Saving media journal: %v", err) // counted by ops
 	}
 	log.Infof("All audio files have been processed.")
 	return nil
-}
-
-// forEachParallel calls fn for every item, using up to n goroutines.
-func forEachParallel[T any](items []T, n int, fn func(T)) {
-	n = max(1, min(n, len(items)))
-	queue := make(chan T)
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for range n {
-		go func() {
-			defer wg.Done()
-			for item := range queue {
-				fn(item)
-			}
-		}()
-	}
-	for _, item := range items {
-		queue <- item
-	}
-	close(queue)
-	wg.Wait()
 }
 
 // processor holds the state of one run. It is safe for concurrent use.

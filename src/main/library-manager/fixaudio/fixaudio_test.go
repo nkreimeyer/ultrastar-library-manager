@@ -12,9 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
@@ -46,50 +44,6 @@ func TestParsePeakLevel(t *testing.T) {
 			}
 		})
 	}
-}
-
-// Small libraries must be processed in parallel too (the old code put up to 100 folders
-// into one sequential batch).
-func TestForEachParallelRunsConcurrently(t *testing.T) {
-	var started sync.WaitGroup
-	started.Add(2)
-	allStarted := make(chan struct{})
-	go func() { started.Wait(); close(allStarted) }()
-
-	var mu sync.Mutex
-	var concurrent []string
-	forEachParallel([]string{"a", "b"}, 2, func(item string) {
-		started.Done()
-		select {
-		case <-allStarted: // the other item is being processed at the same time
-			mu.Lock()
-			concurrent = append(concurrent, item)
-			mu.Unlock()
-		case <-time.After(5 * time.Second):
-		}
-	})
-	if len(concurrent) != 2 {
-		t.Errorf("items processed concurrently: %v, want both", concurrent)
-	}
-}
-
-func TestForEachParallelProcessesEveryItemOnce(t *testing.T) {
-	for _, n := range []int{0, 1, 3, 100} {
-		var mu sync.Mutex
-		seen := map[int]int{}
-		items := []int{1, 2, 3, 4, 5, 6, 7}
-		forEachParallel(items, n, func(i int) {
-			mu.Lock()
-			seen[i]++
-			mu.Unlock()
-		})
-		for _, i := range items {
-			if seen[i] != 1 {
-				t.Errorf("n=%d: item %d processed %d times", n, i, seen[i])
-			}
-		}
-	}
-	forEachParallel(nil, 4, func(int) { t.Error("called for an empty list") })
 }
 
 func TestParseProbe(t *testing.T) {
