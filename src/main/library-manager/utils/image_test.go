@@ -10,11 +10,12 @@ import (
 	"image/png"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // --- header builders -------------------------------------------------------------------
@@ -184,9 +185,7 @@ func TestReadImageHeaderMissingFile(t *testing.T) {
 // TestReadImageHeaderFFmpeg checks the hand-written readers against files written by real
 // encoders.
 func TestReadImageHeaderFFmpeg(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not found")
-	}
+	testutil.RequireTool(t, "ffmpeg")
 	dir := t.TempDir()
 	tests := []struct {
 		file, input, pixFmt string
@@ -205,7 +204,7 @@ func TestReadImageHeaderFFmpeg(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {
 			path := filepath.Join(dir, tt.file)
-			args := []string{"-v", "error", "-y", "-f", "lavfi", "-i", tt.input}
+			args := []string{"-f", "lavfi", "-i", tt.input}
 			if !slices.Contains(tt.args, "-frames:v") {
 				args = append(args, "-frames:v", "1")
 			}
@@ -213,9 +212,7 @@ func TestReadImageHeaderFFmpeg(t *testing.T) {
 				args = append(args, "-pix_fmt", tt.pixFmt)
 			}
 			args = append(append(args, tt.args...), path)
-			if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
-				t.Skipf("ffmpeg cannot write %s: %v: %s", tt.file, err, out)
-			}
+			testutil.GenerateMedia(t, args...)
 			if tt.file == "anim.webp" {
 				if b, _ := os.ReadFile(path); len(b) < 16 || string(b[12:16]) != "VP8X" {
 					t.Fatalf("ffmpeg did not write a VP8X file: % x", b[:min(len(b), 16)])
@@ -447,7 +444,7 @@ func TestFindCoverAndBackgroundImage(t *testing.T) {
 				}
 			}
 			if tt.txt != "" {
-				writeFile(t, filepath.Join(dir, "song.txt"), tt.txt)
+				testutil.WriteFile(t, filepath.Join(dir, "song.txt"), tt.txt)
 			}
 			cover, bg := FindCoverImage(nil, dir), FindBackgroundImage(nil, dir)
 			if cover != tt.cover || bg != tt.bg {

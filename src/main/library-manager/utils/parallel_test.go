@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	log "github.com/sirupsen/logrus"
-	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 // Every item is processed exactly once, with its own index, whatever the worker count.
@@ -191,8 +191,7 @@ func TestForEachParallelCancel(t *testing.T) {
 // A panic in one item is recovered, logged with the index and the stack, and reported;
 // the other items still run.
 func TestForEachParallelPanic(t *testing.T) {
-	hook := logtest.NewGlobal()
-	t.Cleanup(hook.Reset)
+	hook := testutil.CaptureLogs(t)
 	var mu sync.Mutex
 	var panicked []int
 	var values []any

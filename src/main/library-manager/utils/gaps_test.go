@@ -11,6 +11,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // Tests for behaviours the 2026-11 audit found unpinned.
@@ -110,7 +111,7 @@ func TestReplaceFileReferenceDetails(t *testing.T) {
 	setup := func(t *testing.T, content string) (string, string) {
 		dir := t.TempDir()
 		txt := filepath.Join(dir, "song.txt")
-		writeFile(t, txt, content)
+		testutil.WriteFile(t, txt, content)
 		return dir, txt
 	}
 	tests := []struct {
@@ -179,12 +180,12 @@ func TestReplaceFileReferenceDetails(t *testing.T) {
 
 func TestResolveFileNameDetails(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "Song.mp3"), "")
-	writeFile(t, filepath.Join(dir, "Mädchen.mp3"), "")
+	testutil.WriteFile(t, filepath.Join(dir, "Song.mp3"), "")
+	testutil.WriteFile(t, filepath.Join(dir, "Mädchen.mp3"), "")
 	if _, err := os.Stat(filepath.Join(dir, "song.mp3")); err == nil {
 		t.Skip("case-insensitive file system")
 	}
-	writeFile(t, filepath.Join(dir, "song.mp3"), "")
+	testutil.WriteFile(t, filepath.Join(dir, "song.mp3"), "")
 	for _, name := range []string{"song.mp3", "Song.mp3"} {
 		if got, exact, found := ResolveFileName(dir, name); got != name || !exact || !found {
 			t.Errorf("ResolveFileName(%q) = %q, %v, %v; want the exact match", name, got, exact, found)
@@ -208,7 +209,7 @@ func TestIsFileReferencedAndReadSongTagsDetails(t *testing.T) {
 		t.Errorf("ReadSongTags without a song txt = %v, %v", tags, err)
 	}
 	// A CP1252 txt referencing a CP1252 file name (raw bytes) and its UTF-8 spelling.
-	writeFile(t, filepath.Join(dir, "song.txt"), "#TITLE:t\n#MP3:M\xe4dchen.mp3\n#COVER:Cover.JPG\n")
+	testutil.WriteFile(t, filepath.Join(dir, "song.txt"), "#TITLE:t\n#MP3:M\xe4dchen.mp3\n#COVER:Cover.JPG\n")
 	for name, want := range map[string]bool{
 		"M\xe4dchen.mp3": true, // raw byte match
 		"Mädchen.mp3":    true, // decoded match
@@ -225,7 +226,7 @@ func TestIsFileReferencedAndReadSongTagsDetails(t *testing.T) {
 		// An unreadable song txt: every file counts as referenced, and ReadSongTags fails.
 		dir2 := t.TempDir()
 		txt := filepath.Join(dir2, "song.txt")
-		writeFile(t, txt, "#TITLE:t\n")
+		testutil.WriteFile(t, txt, "#TITLE:t\n")
 		if err := os.Chmod(txt, 0); err != nil {
 			t.Fatal(err)
 		}
@@ -243,7 +244,7 @@ func TestIsFileReferencedAndReadSongTagsDetails(t *testing.T) {
 func TestMediaFileHelpers(t *testing.T) {
 	dir := t.TempDir()
 	for _, n := range []string{"b.mp3", "a.ogg", "._b.mp3", ".hidden.mp4", "v.mp4", "notes.txt", "M\xe4dchen.mp3", "C\xf6ver.jpg", "R\xe9adme.txt"} {
-		writeFile(t, filepath.Join(dir, n), "x")
+		testutil.WriteFile(t, filepath.Join(dir, n), "x")
 	}
 	if err := os.Mkdir(filepath.Join(dir, "c.mp3"), 0o755); err != nil {
 		t.Fatal(err)
@@ -282,8 +283,8 @@ func TestMediaFileHelpers(t *testing.T) {
 		t.Errorf("VideoFiles = %q, want %q", got, want)
 	}
 	empty := t.TempDir()
-	writeFile(t, filepath.Join(empty, "._a.mp3"), "x")
-	writeFile(t, filepath.Join(empty, "v.mp4"), "x")
+	testutil.WriteFile(t, filepath.Join(empty, "._a.mp3"), "x")
+	testutil.WriteFile(t, filepath.Join(empty, "v.mp4"), "x")
 	if got := AudioFiles(empty); got != nil {
 		t.Errorf("AudioFiles with only a hidden audio file = %q, want nil", got)
 	}
@@ -301,7 +302,7 @@ func TestMediaFileHelpers(t *testing.T) {
 func TestGetAllSongFoldersEdges(t *testing.T) {
 	t.Run("hidden media is no content", func(t *testing.T) {
 		lib := t.TempDir()
-		writeFile(t, filepath.Join(lib, "Cat", "X", "._a.mp3"), "x")
+		testutil.WriteFile(t, filepath.Join(lib, "Cat", "X", "._a.mp3"), "x")
 		if err := os.MkdirAll(filepath.Join(lib, "Cat", "Y"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -312,9 +313,9 @@ func TestGetAllSongFoldersEdges(t *testing.T) {
 	})
 	t.Run("nested output folder", func(t *testing.T) {
 		lib := t.TempDir()
-		writeFile(t, filepath.Join(lib, "Cat", "out", config.OutputMarker), "")
-		writeFile(t, filepath.Join(lib, "Cat", "out", "invalid", "B", "song.txt"), songTxt)
-		writeFile(t, filepath.Join(lib, "Cat", "A", "song.txt"), songTxt)
+		testutil.WriteFile(t, filepath.Join(lib, "Cat", "out", config.OutputMarker), "")
+		testutil.WriteFile(t, filepath.Join(lib, "Cat", "out", "invalid", "B", "song.txt"), songTxt)
+		testutil.WriteFile(t, filepath.Join(lib, "Cat", "A", "song.txt"), songTxt)
 		got, err := GetAllSongFolders(nil, lib)
 		if want := []string{filepath.Join(lib, "Cat", "A")}; err != nil || !slices.Equal(got, want) {
 			t.Errorf("GetAllSongFolders = %q, %v; want %q", got, err, want)
@@ -322,9 +323,9 @@ func TestGetAllSongFoldersEdges(t *testing.T) {
 	})
 	t.Run("output folder of the old program name", func(t *testing.T) {
 		lib := t.TempDir()
-		writeFile(t, filepath.Join(lib, "Cat", "out", config.LegacyOutputMarker), "")
-		writeFile(t, filepath.Join(lib, "Cat", "out", "invalid", "B", "song.txt"), songTxt)
-		writeFile(t, filepath.Join(lib, "Cat", "A", "song.txt"), songTxt)
+		testutil.WriteFile(t, filepath.Join(lib, "Cat", "out", config.LegacyOutputMarker), "")
+		testutil.WriteFile(t, filepath.Join(lib, "Cat", "out", "invalid", "B", "song.txt"), songTxt)
+		testutil.WriteFile(t, filepath.Join(lib, "Cat", "A", "song.txt"), songTxt)
 		got, err := GetAllSongFolders(nil, lib)
 		if want := []string{filepath.Join(lib, "Cat", "A")}; err != nil || !slices.Equal(got, want) {
 			t.Errorf("GetAllSongFolders = %q, %v; want %q", got, err, want)
@@ -332,8 +333,8 @@ func TestGetAllSongFoldersEdges(t *testing.T) {
 	})
 	t.Run("category with only an output folder", func(t *testing.T) {
 		lib := t.TempDir()
-		writeFile(t, filepath.Join(lib, "Cat", "out", config.OutputMarker), "")
-		writeFile(t, filepath.Join(lib, "Cat", "out", "invalid", "B", "song.txt"), songTxt)
+		testutil.WriteFile(t, filepath.Join(lib, "Cat", "out", config.OutputMarker), "")
+		testutil.WriteFile(t, filepath.Join(lib, "Cat", "out", "invalid", "B", "song.txt"), songTxt)
 		got, err := GetAllSongFolders(nil, lib)
 		if err != nil || len(got) != 0 {
 			t.Errorf("GetAllSongFolders = %q, %v; want no songs (the output folder must not make Cat a broken song)", got, err)
@@ -363,9 +364,9 @@ func TestTagsFromFolderNameEmptyKeys(t *testing.T) {
 // allowed as often as "Artist Title" has it, and the words are compared in NFC.
 func TestImageHintsUseCombinedNameAndNFC(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "Song")
-	writeFile(t, filepath.Join(dir, "song.txt"), "#ARTIST:Cover\n#TITLE:Take Cover\n")
-	writeFile(t, filepath.Join(dir, "Cover - Take Cover.png"), string(pngBytes(t, 40, 20)))
-	writeFile(t, filepath.Join(dir, "a.png"), string(pngBytes(t, 20, 20)))
+	testutil.WriteFile(t, filepath.Join(dir, "song.txt"), "#ARTIST:Cover\n#TITLE:Take Cover\n")
+	testutil.WriteFile(t, filepath.Join(dir, "Cover - Take Cover.png"), string(pngBytes(t, 40, 20)))
+	testutil.WriteFile(t, filepath.Join(dir, "a.png"), string(pngBytes(t, 20, 20)))
 	if got := FindCoverImage(nil, dir); got != "a.png" {
 		t.Errorf("FindCoverImage = %q, want a.png", got)
 	}
@@ -392,9 +393,9 @@ func TestImageHintsUseCombinedNameAndNFC(t *testing.T) {
 func TestFindImagesReadThePlannedTxt(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "Song")
 	txt := filepath.Join(dir, "song.txt")
-	writeFile(t, txt, "#ARTIST:Artist\n#MP3:a.mp3\n")
-	writeFile(t, filepath.Join(dir, "Artist - Take Cover.png"), string(pngBytes(t, 40, 20)))
-	writeFile(t, filepath.Join(dir, "a.png"), string(pngBytes(t, 20, 20)))
+	testutil.WriteFile(t, txt, "#ARTIST:Artist\n#MP3:a.mp3\n")
+	testutil.WriteFile(t, filepath.Join(dir, "Artist - Take Cover.png"), string(pngBytes(t, 40, 20)))
+	testutil.WriteFile(t, filepath.Join(dir, "a.png"), string(pngBytes(t, 20, 20)))
 	if got := FindCoverImage(nil, dir); got != "Artist - Take Cover.png" {
 		t.Fatalf("FindCoverImage(disk) = %q, want the hinted image", got)
 	}

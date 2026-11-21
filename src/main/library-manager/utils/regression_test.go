@@ -13,6 +13,7 @@ import (
 	"golang.org/x/text/encoding/charmap"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // Regression tests for bugs found in the 2026-11 audit of the utils package.
@@ -83,9 +84,9 @@ func TestFindSongTxtAcceptsSymlinkedTxtLikeDiscovery(t *testing.T) {
 	lib := t.TempDir()
 	store := t.TempDir()
 	real := filepath.Join(store, "real.txt")
-	writeFile(t, real, songTxt)
+	testutil.WriteFile(t, real, songTxt)
 	dir := filepath.Join(lib, "A - B")
-	writeFile(t, filepath.Join(dir, "song.mp3"), "x")
+	testutil.WriteFile(t, filepath.Join(dir, "song.mp3"), "x")
 	if err := os.Symlink(real, filepath.Join(dir, "song.txt")); err != nil {
 		t.Skipf("symlinks not supported: %v", err)
 	}
@@ -135,7 +136,7 @@ func TestHeaderTagsRepeatedTagLastWins(t *testing.T) {
 		t.Errorf("HeaderTags MP3 = %q, want %q (last occurrence in the header)", tags["MP3"], "clip.mp4")
 	}
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "song.txt"), "#TITLE:a\n#ARTIST:x\n#TITLE:b\n")
+	testutil.WriteFile(t, filepath.Join(dir, "song.txt"), "#TITLE:a\n#ARTIST:x\n#TITLE:b\n")
 	if tags, err := ReadSongTags(nil, dir); err != nil || tags["TITLE"] != "b" {
 		t.Errorf("ReadSongTags = %v, %v; want TITLE b", tags, err)
 	}
@@ -189,7 +190,7 @@ func TestReplaceFileReferenceIndentedTag(t *testing.T) {
 	dir := t.TempDir()
 	txt := filepath.Join(dir, "song.txt")
 	content := "\ufeff #TITLE:x\n  #VIDEO:clip.avi\n\t#MP3:clip.avi\n: 0 1 2 x\n"
-	writeFile(t, txt, content)
+	testutil.WriteFile(t, txt, content)
 	if got := HeaderTags(DecodeTxt([]byte(content)).Text)["VIDEO"]; got != "clip.avi" {
 		t.Fatalf("HeaderTags VIDEO = %q", got)
 	}
@@ -229,7 +230,7 @@ func TestDecodeTxtBOMlessUTF16IsProblem(t *testing.T) {
 		}
 	}
 	path := filepath.Join(t.TempDir(), "song.txt")
-	writeFile(t, path, tests[0].raw)
+	testutil.WriteFile(t, path, tests[0].raw)
 	if !IsSongTxt(nil, path) {
 		t.Error("a BOM-less UTF-16 song txt is not recognised as a song txt")
 	}
@@ -251,9 +252,9 @@ func TestReadImageHeaderArithmeticJPEGNotInvalid(t *testing.T) {
 
 	// A hinted arithmetic JPEG is still chosen; without a hint (shape unknown) it is not.
 	dir := filepath.Join(t.TempDir(), "Song")
-	writeFile(t, filepath.Join(dir, "song.txt"), "#ARTIST:A\n#TITLE:T\n")
-	writeFile(t, filepath.Join(dir, "cover.jpg"), string(b))
-	writeFile(t, filepath.Join(dir, "scan.jpg"), string(b))
+	testutil.WriteFile(t, filepath.Join(dir, "song.txt"), "#ARTIST:A\n#TITLE:T\n")
+	testutil.WriteFile(t, filepath.Join(dir, "cover.jpg"), string(b))
+	testutil.WriteFile(t, filepath.Join(dir, "scan.jpg"), string(b))
 	if got := FindCoverImage(nil, dir); got != "cover.jpg" {
 		t.Errorf("FindCoverImage = %q, want cover.jpg", got)
 	}
@@ -283,7 +284,7 @@ func TestReplaceFileReferenceRefusesDecodeProblem(t *testing.T) {
 			}
 			dir := t.TempDir()
 			txt := filepath.Join(dir, "song.txt")
-			writeFile(t, txt, tc.content)
+			testutil.WriteFile(t, txt, tc.content)
 			replaced, err := ReplaceFileReference(fsops.New(false), dir, "v.avi", "v.mp4")
 			got, _ := os.ReadFile(txt)
 			if replaced || !errors.Is(err, tc.want) || string(got) != tc.content {
@@ -294,7 +295,7 @@ func TestReplaceFileReferenceRefusesDecodeProblem(t *testing.T) {
 	// Clean UTF-8 with a BOM and earlier damage (U+FFFD is no Problem) is still updated.
 	dir := t.TempDir()
 	txt := filepath.Join(dir, "song.txt")
-	writeFile(t, txt, "\ufeff#TITLE:F\ufffdr dich\n#VIDEO:v.avi\n")
+	testutil.WriteFile(t, txt, "\ufeff#TITLE:F\ufffdr dich\n#VIDEO:v.avi\n")
 	if replaced, err := ReplaceFileReference(fsops.New(false), dir, "v.avi", "v.mp4"); !replaced || err != nil {
 		t.Errorf("clean UTF-8: replaced=%v err=%v", replaced, err)
 	}
@@ -316,7 +317,7 @@ func TestReplaceFileReferenceNFDNewNameKeepsTxtClean(t *testing.T) {
 		}
 		dir := t.TempDir()
 		txt := filepath.Join(dir, "song.txt")
-		writeFile(t, txt, content)
+		testutil.WriteFile(t, txt, content)
 		replaced, err := ReplaceFileReference(fsops.New(false), dir, nfd+".avi", nfd+".mp4")
 		got, _ := os.ReadFile(txt)
 		if !replaced || err != nil || string(got) != header+"#VIDEO:"+nfc+".mp4\n: 0 1 2 x\nE\n" {
@@ -334,7 +335,7 @@ func TestReplaceFileReferenceRefusesResultWithProblem(t *testing.T) {
 	content := "#TITLE:t\n#ARTIST:a\n#ENCODING:CP1252\n#VIDEO:v.avi\n: 0 1 2 x\nE\n"
 	dir := t.TempDir()
 	txt := filepath.Join(dir, "song.txt")
-	writeFile(t, txt, content)
+	testutil.WriteFile(t, txt, content)
 	replaced, err := ReplaceFileReference(fsops.New(false), dir, "v.avi", "видео.mp4")
 	got, _ := os.ReadFile(txt)
 	if replaced || !errors.Is(err, ErrTxtProblem) || string(got) != content {
@@ -347,7 +348,7 @@ func TestReplaceFileReferenceRefusesResultWithProblem(t *testing.T) {
 func TestFileReferenceReplacementWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	txt := filepath.Join(dir, "song.txt")
-	writeFile(t, txt, "#TITLE:t\n#VIDEO:v.avi\n")
+	testutil.WriteFile(t, txt, "#TITLE:t\n#VIDEO:v.avi\n")
 	ops := fsops.New(false)
 	gotTxt, content, err := FileReferenceReplacement(ops, dir, "v.avi", "v.mp4")
 	disk, _ := os.ReadFile(txt)

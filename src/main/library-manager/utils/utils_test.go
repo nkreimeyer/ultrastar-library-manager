@@ -11,23 +11,13 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	log "github.com/sirupsen/logrus"
 )
 
 func TestMain(m *testing.M) {
 	log.SetOutput(io.Discard)
 	os.Exit(m.Run())
-}
-
-// writeFile creates path (and its parents) with the given content.
-func writeFile(t *testing.T, path, content string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func setMtime(t *testing.T, path string, mt time.Time) {
@@ -75,7 +65,7 @@ func TestIsSongTxt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(dir, tt.name+".txt")
-			writeFile(t, path, tt.content)
+			testutil.WriteFile(t, path, tt.content)
 			if got := IsSongTxt(nil, path); got != tt.want {
 				t.Errorf("IsSongTxt(%q) = %v, want %v", tt.content, got, tt.want)
 			}
@@ -88,11 +78,11 @@ func TestIsSongTxt(t *testing.T) {
 
 func TestListAndSongTxtFiles(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "b.txt"), songTxt)
-	writeFile(t, filepath.Join(dir, "A.TXT"), songTxt)
-	writeFile(t, filepath.Join(dir, "License.txt"), "MIT\n")
-	writeFile(t, filepath.Join(dir, "song.mp3"), "audio")
-	writeFile(t, filepath.Join(dir, "sub", "nested.txt"), songTxt) // not top-level
+	testutil.WriteFile(t, filepath.Join(dir, "b.txt"), songTxt)
+	testutil.WriteFile(t, filepath.Join(dir, "A.TXT"), songTxt)
+	testutil.WriteFile(t, filepath.Join(dir, "License.txt"), "MIT\n")
+	testutil.WriteFile(t, filepath.Join(dir, "song.mp3"), "audio")
+	testutil.WriteFile(t, filepath.Join(dir, "sub", "nested.txt"), songTxt) // not top-level
 	if err := os.Mkdir(filepath.Join(dir, "dir.txt"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -122,9 +112,9 @@ func TestFindSongTxt(t *testing.T) {
 	base := time.Now().Add(-time.Hour)
 	t.Run("ignores non-song txt and picks newest", func(t *testing.T) {
 		dir := t.TempDir()
-		writeFile(t, filepath.Join(dir, "old.txt"), songTxt)
-		writeFile(t, filepath.Join(dir, "new.txt"), songTxt)
-		writeFile(t, filepath.Join(dir, "License.txt"), "Licensed under CC-BY\n")
+		testutil.WriteFile(t, filepath.Join(dir, "old.txt"), songTxt)
+		testutil.WriteFile(t, filepath.Join(dir, "new.txt"), songTxt)
+		testutil.WriteFile(t, filepath.Join(dir, "License.txt"), "Licensed under CC-BY\n")
 		setMtime(t, filepath.Join(dir, "old.txt"), base)
 		setMtime(t, filepath.Join(dir, "new.txt"), base.Add(time.Minute))
 		setMtime(t, filepath.Join(dir, "License.txt"), base.Add(time.Hour)) // newest, but no song
@@ -139,7 +129,7 @@ func TestFindSongTxt(t *testing.T) {
 	t.Run("tie keeps first by name", func(t *testing.T) {
 		dir := t.TempDir()
 		for _, n := range []string{"b.txt", "a.txt"} {
-			writeFile(t, filepath.Join(dir, n), songTxt)
+			testutil.WriteFile(t, filepath.Join(dir, n), songTxt)
 			setMtime(t, filepath.Join(dir, n), base)
 		}
 		got, err := FindSongTxt(nil, dir)
@@ -152,7 +142,7 @@ func TestFindSongTxt(t *testing.T) {
 	})
 	t.Run("no song txt", func(t *testing.T) {
 		dir := t.TempDir()
-		writeFile(t, filepath.Join(dir, "readme.txt"), "hello\n")
+		testutil.WriteFile(t, filepath.Join(dir, "readme.txt"), "hello\n")
 		if _, err := FindSongTxt(nil, dir); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("FindSongTxt err = %v, want os.ErrNotExist", err)
 		}
@@ -162,8 +152,8 @@ func TestFindSongTxt(t *testing.T) {
 func TestNewestFile(t *testing.T) {
 	dir := t.TempDir()
 	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
-	writeFile(t, a, "")
-	writeFile(t, b, "")
+	testutil.WriteFile(t, a, "")
+	testutil.WriteFile(t, b, "")
 	setMtime(t, a, time.Now())
 	setMtime(t, b, time.Now().Add(-time.Hour))
 	got, err := NewestFile([]string{filepath.Join(dir, "missing"), b, a})
@@ -197,9 +187,9 @@ func TestIsFileReferenced(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			writeFile(t, filepath.Join(dir, "License.txt"), "mentions cover.jpg\n")
+			testutil.WriteFile(t, filepath.Join(dir, "License.txt"), "mentions cover.jpg\n")
 			if tt.txt != nil {
-				writeFile(t, filepath.Join(dir, "song.txt"), string(tt.txt))
+				testutil.WriteFile(t, filepath.Join(dir, "song.txt"), string(tt.txt))
 			}
 			if got := IsFileReferenced(nil, dir, tt.check); got != tt.want {
 				t.Errorf("IsFileReferenced(%q) = %v, want %v", tt.check, got, tt.want)
@@ -333,7 +323,7 @@ func TestGetAllSongFolders(t *testing.T) {
 					}
 					continue
 				}
-				writeFile(t, p, f.content)
+				testutil.WriteFile(t, p, f.content)
 			}
 			got, err := GetAllSongFolders(nil, lib)
 			if err != nil {
@@ -356,7 +346,7 @@ func TestGetAllSongFolders(t *testing.T) {
 func TestGetAllSongFoldersSkipsUnreadableAndPlannedMoves(t *testing.T) {
 	lib := t.TempDir()
 	for _, f := range []string{"A - One/song.txt", "B - Two/song.txt", "Locked/C - Three/song.txt"} {
-		writeFile(t, filepath.Join(lib, filepath.FromSlash(f)), songTxt)
+		testutil.WriteFile(t, filepath.Join(lib, filepath.FromSlash(f)), songTxt)
 	}
 
 	ops := fsops.New(true)
@@ -396,9 +386,9 @@ func TestGetAllSongFoldersCountsUnreadableOnce(t *testing.T) {
 	// Cat2 contains nothing but the unreadable folder: its content is unknown, so Cat2 must
 	// not be returned as one (broken) song.
 	for _, f := range []string{"A - One/song.txt", "Cat/B - Locked/song.txt", "Cat/C - Fine/song.txt", "Cat2/Locked/D - Hidden/song.txt"} {
-		writeFile(t, filepath.Join(lib, filepath.FromSlash(f)), songTxt)
+		testutil.WriteFile(t, filepath.Join(lib, filepath.FromSlash(f)), songTxt)
 	}
-	writeFile(t, filepath.Join(lib, "Cat", "B - Locked", "song.mp3"), "audio")
+	testutil.WriteFile(t, filepath.Join(lib, "Cat", "B - Locked", "song.mp3"), "audio")
 	lockedTxt := filepath.Join(lib, "Cat", "B - Locked", "song.txt")
 	lockedDir := filepath.Join(lib, "Cat2", "Locked")
 	for path, mode := range map[string]os.FileMode{lockedTxt: 0o644, lockedDir: 0o755} {
@@ -460,9 +450,9 @@ func TestMediaFileTypes(t *testing.T) {
 // A folder whose only audio is Matroska audio is a song, not a broken folder.
 func TestGetAllSongFoldersMatroskaAudio(t *testing.T) {
 	lib := t.TempDir()
-	writeFile(t, filepath.Join(lib, "Cat", "Song", "song.mka"), "a")
-	writeFile(t, filepath.Join(lib, "Cat", "Broken", "song.mka"), "a") // no txt: broken song
-	writeFile(t, filepath.Join(lib, "Cat", "Song", "song.txt"), songTxt)
+	testutil.WriteFile(t, filepath.Join(lib, "Cat", "Song", "song.mka"), "a")
+	testutil.WriteFile(t, filepath.Join(lib, "Cat", "Broken", "song.mka"), "a") // no txt: broken song
+	testutil.WriteFile(t, filepath.Join(lib, "Cat", "Song", "song.txt"), songTxt)
 	cfg, err := config.New(lib, t.TempDir(), false)
 	if err != nil {
 		t.Fatal(err)

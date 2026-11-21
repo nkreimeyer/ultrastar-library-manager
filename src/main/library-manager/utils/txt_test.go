@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	"github.com/nkreimeyer/library-manager/songtxt"
 )
 
@@ -288,7 +289,7 @@ func TestHeaderTagsJunkLineInHeader(t *testing.T) {
 func TestReplaceFileReferenceJunkLineInHeader(t *testing.T) {
 	dir := t.TempDir()
 	txt := "#TITLE:T\n#ARTIST:A\nCreated with Foo\n#VIDEO:v.avi\n: 0 1 0 v.avi\n#VIDEO:v.avi\n"
-	writeFile(t, filepath.Join(dir, "song.txt"), txt)
+	testutil.WriteFile(t, filepath.Join(dir, "song.txt"), txt)
 	replaced, err := ReplaceFileReference(fsops.New(false), dir, "v.avi", "v.mp4")
 	if err != nil || !replaced {
 		t.Fatalf("ReplaceFileReference = %v, %v", replaced, err)
