@@ -47,39 +47,27 @@ func (q repairRequest) config(dry bool) (config.Config, error) {
 	return config.New(q.SongDir, q.Out, dry)
 }
 
-// options builds the repair options like the repair subcommand does, plus the UI's own
-// words file if it exists.
+// uiInputNames name the repair inputs in errors as the form does.
+var uiInputNames = repairtxt.InputNames{WordList: "word list", Words: "words file", LyricsCache: "lyrics cache"}
+
+// options builds the repair options like the repair subcommand does (the same input
+// checks, repairtxt.ResolveWordFiles and LyricsCacheDir), plus the UI's own words file if
+// it exists.
 func (q repairRequest) options(cfg config.Config, ops *fsops.Ops) (repairtxt.Options, error) {
 	opts := repairtxt.Options{Strict: q.Strict}
-	for _, w := range q.WordLists {
-		wl, err := repairtxt.ParseWordListFlag(w)
-		if err != nil {
-			return opts, err
-		}
-		if _, err := os.Stat(wl.Path); err != nil {
-			return opts, fmt.Errorf("word list: %w", err)
-		}
-		opts.WordLists = append(opts.WordLists, wl)
-	}
-	for _, w := range q.Words {
-		if _, err := os.Stat(w); err != nil {
-			return opts, fmt.Errorf("words file: %w", err)
-		}
-		opts.Words = append(opts.Words, w)
+	var err error
+	if opts.WordLists, opts.Words, err = repairtxt.ResolveWordFiles(q.WordLists, q.Words, uiInputNames); err != nil {
+		return opts, err
 	}
 	ui := filepath.Join(cfg.OutDir, uiWordsName)
 	if _, err := os.Stat(ui); err == nil {
 		opts.Words = append(opts.Words, ui)
 	}
 	if q.Lyrics {
-		cache := q.LyricsCache
-		if cache == "" {
-			cache = filepath.Join(cfg.OutDir, "lyrics-cache")
-		}
 		// The cache is written in the analysis (a dry run) too.
-		cache, err := cfg.OutsideSongDir(cache)
+		cache, err := repairtxt.LyricsCacheDir(cfg, q.LyricsCache, uiInputNames)
 		if err != nil {
-			return opts, fmt.Errorf("lyrics cache: %w", err)
+			return opts, err
 		}
 		opts.Lyrics = repairtxt.NewLRCLib(cache, ops)
 	} else if q.LyricsCache != "" {
