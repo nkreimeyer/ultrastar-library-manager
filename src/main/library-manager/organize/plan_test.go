@@ -8,6 +8,13 @@ import (
 	"testing"
 )
 
+// better reports whether a is the better of the two versions a and b (chooseKeeper over
+// the pair), and the reason the loser loses.
+func better(a, b *Candidate, priority bool) (bool, string) {
+	k, reasons := chooseKeeper([]*Candidate{a, b}, priority)
+	return k == 0, reasons[1-k]
+}
+
 // source describes a test source: its label and tier.
 type source struct {
 	label string

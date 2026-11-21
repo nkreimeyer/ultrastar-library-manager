@@ -159,13 +159,6 @@ func cappedHeight(c *Candidate) int {
 	return min(c.Quality.VideoHeight, fixvideos.MaxHeight)
 }
 
-// better reports whether a is the better of the two versions a and b (chooseKeeper over
-// the pair), and the reason the loser loses.
-func better(a, b *Candidate, priority bool) (bool, string) {
-	k, reasons := chooseKeeper([]*Candidate{a, b}, priority)
-	return k == 0, reasons[1-k]
-}
-
 // bitrateClose reports whether the known bitrate b counts as equal to the highest
 // bitrate hi of the group: within bitrateTolerance of it.
 func bitrateClose(b, hi int64) bool {
