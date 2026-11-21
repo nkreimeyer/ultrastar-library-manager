@@ -530,7 +530,9 @@ func (o *Ops) Replace(tmp, dst string) error {
 		return o.fail(fmt.Errorf("replacing %s: %w", dst, err))
 	}
 	syncDir(filepath.Dir(dst))
-	log.Infof("Replaced %s", dst)
+	// Debug only: the callers log the result themselves (fixaudio "Processed", fixvideos
+	// "Processing video" before it and "Tagged ... as checked" after a remux).
+	log.Debugf("Replaced %s", dst)
 	o.replaced.Add(1)
 	return nil
 }

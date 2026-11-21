@@ -31,10 +31,17 @@ func warnings(hook *logtest.Hook) []string {
 	return msgs
 }
 
-// Real runs log every modification, as dry runs log every planned one: CopyInto, Rename,
-// Replace and Remove used to log only in dry-run mode (MoveInto and MoveTo log both).
-func TestRealRunLogsEveryModification(t *testing.T) {
+// Real runs log copies, renames and removals at Info level, as dry runs log them
+// ("[dry-run] would ..."): CopyInto, Rename and Remove used to log only in dry-run mode.
+// Replace logs at Debug level, because its callers (fixaudio, fixvideos) log one Info line
+// for the processed file themselves. (MoveInto, MoveTo and RemoveEmptyDir log real moves
+// too; WriteFileAtomic, WriteReport and AppendJournal log nothing in real runs, fixtxt logs
+// its own txt writes.)
+func TestRealRunLogsCopiesRenamesRemovals(t *testing.T) {
 	hook := captureWarnings(t)
+	level := log.GetLevel()
+	log.SetLevel(log.DebugLevel)
+	t.Cleanup(func() { log.SetLevel(level) })
 	dir := t.TempDir()
 	song := filepath.Join(dir, "song.mp3")
 	writeFile(t, song, "a", 0o644)
@@ -55,20 +62,25 @@ func TestRealRunLogsEveryModification(t *testing.T) {
 	if err := o.Remove(renamed); err != nil {
 		t.Fatal(err)
 	}
-	var infos []string
+	var infos, debugs []string
 	for _, e := range hook.AllEntries() {
-		if e.Level == log.InfoLevel {
+		switch e.Level {
+		case log.InfoLevel:
 			infos = append(infos, e.Message)
+		case log.DebugLevel:
+			debugs = append(debugs, e.Message)
 		}
 	}
 	want := []string{
 		"Copied " + song + " -> " + backup,
-		"Replaced " + song,
 		"Renamed " + song + " -> " + renamed,
 		"Removed " + renamed,
 	}
 	if strings.Join(infos, "\n") != strings.Join(want, "\n") {
 		t.Errorf("info logs = %q, want %q", infos, want)
+	}
+	if want := []string{"Replaced " + song}; strings.Join(debugs, "\n") != strings.Join(want, "\n") {
+		t.Errorf("debug logs = %q, want %q", debugs, want)
 	}
 }
 
