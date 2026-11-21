@@ -30,7 +30,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	log "github.com/sirupsen/logrus"
 
@@ -189,86 +188,80 @@ func scan(ctx context.Context, cfg config.Config, ops *fsops.Ops, lex *Lexicon, 
 	if err != nil {
 		return nil, nil, 0, 0, err
 	}
-	var scanned atomic.Int64
 	progress(PhaseScan, 0, len(folders))
 	var mu sync.Mutex
-	jobs := make(chan string)
-	var wg sync.WaitGroup
-	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for dir := range jobs {
-				if ctx.Err() != nil {
-					continue
-				}
-				progress(PhaseScan, int(scanned.Add(1)), len(folders))
-				txts, err := utils.SongTxtFiles(ops, dir)
-				if err != nil {
-					log.Warnf("%s: %v", dir, err)
-					continue
-				}
-				for _, txt := range txts {
-					raw, err := ops.ReadFile(txt)
-					if err != nil {
-						log.Warnf("reading %s: %v", txt, err)
-						continue
-					}
-					d := utils.DecodeTxt(raw)
-					song, _ := songtxt.Parse(d.Text)
-					rel := cfg.RelPath(txt)
-					skip := ""
-					switch {
-					case !d.Damaged:
-					case d.Problem != "":
-						skip = "decoding problem: " + d.Problem
-					case d.Encoding != utils.EncUTF8:
-						skip = "encoded as " + d.Encoding + " (run fixtxt first)"
-					default:
-						if st, err := os.Lstat(txt); err == nil && st.Mode()&os.ModeSymlink != 0 {
-							skip = "symlink"
-						}
-					}
-					if !d.Damaged {
-						if d.Problem != "" {
-							continue
-						}
-						if _, err := os.Stat(filepath.Join(cfg.OriginalsDir(), rel)); err == nil {
-							// Repaired by an earlier run: its repairs are no evidence.
-							mu.Lock()
-							repairedBefore++
-							mu.Unlock()
-							continue
-						}
-						var langs []string
-						if v, ok := song.Tag("LANGUAGE"); ok {
-							langs = utils.LanguageCodes(v)
-						}
-						for _, rs := range corpusText(segments([]byte(d.Text), song)) {
-							lex.addText(langs, rs)
-						}
-						mu.Lock()
-						corpus++
-						mu.Unlock()
-						continue
-					}
-					mu.Lock()
-					if skip != "" {
-						skipped = append(skipped, Skipped{rel, skip})
-					} else {
-						files, dirs := listNames(dir)
-						damaged = append(damaged, damagedTxt{path: txt, rel: rel, raw: raw, song: song, folder: filepath.Base(dir), names: files, dirs: dirs, own: oldestOriginal(cfg, rel)})
-					}
-					mu.Unlock()
+	// locked runs f holding mu, released by defer: a panic the pool recovers must not
+	// leave it held.
+	locked := func(f func()) {
+		mu.Lock()
+		defer mu.Unlock()
+		f()
+	}
+	scanFolder := func(dir string) {
+		txts, err := utils.SongTxtFiles(ops, dir)
+		if err != nil {
+			log.Warnf("%s: %v", dir, err)
+			return
+		}
+		for _, txt := range txts {
+			raw, err := ops.ReadFile(txt)
+			if err != nil {
+				log.Warnf("reading %s: %v", txt, err)
+				continue
+			}
+			d := utils.DecodeTxt(raw)
+			song, _ := songtxt.Parse(d.Text)
+			rel := cfg.RelPath(txt)
+			skip := ""
+			switch {
+			case !d.Damaged:
+			case d.Problem != "":
+				skip = "decoding problem: " + d.Problem
+			case d.Encoding != utils.EncUTF8:
+				skip = "encoded as " + d.Encoding + " (run fixtxt first)"
+			default:
+				if st, err := os.Lstat(txt); err == nil && st.Mode()&os.ModeSymlink != 0 {
+					skip = "symlink"
 				}
 			}
-		}()
+			if !d.Damaged {
+				if d.Problem != "" {
+					continue
+				}
+				if _, err := os.Stat(filepath.Join(cfg.OriginalsDir(), rel)); err == nil {
+					// Repaired by an earlier run: its repairs are no evidence.
+					locked(func() { repairedBefore++ })
+					continue
+				}
+				var langs []string
+				if v, ok := song.Tag("LANGUAGE"); ok {
+					langs = utils.LanguageCodes(v)
+				}
+				for _, rs := range corpusText(segments([]byte(d.Text), song)) {
+					lex.addText(langs, rs)
+				}
+				locked(func() { corpus++ })
+				continue
+			}
+			locked(func() {
+				if skip != "" {
+					skipped = append(skipped, Skipped{rel, skip})
+				} else {
+					files, dirs := listNames(dir)
+					damaged = append(damaged, damagedTxt{path: txt, rel: rel, raw: raw, song: song, folder: filepath.Base(dir), names: files, dirs: dirs, own: oldestOriginal(cfg, rel)})
+				}
+			})
+		}
 	}
-	for _, f := range folders {
-		jobs <- f
-	}
-	close(jobs)
-	wg.Wait()
+	_ = utils.ForEachParallel(ctx, folders, utils.Parallel{
+		Workers:  workers,
+		Progress: func(done, total int) { progress(PhaseScan, done, total) },
+		OnPanic: func(i int, _ any) {
+			// Its txts may be missing from the corpus and from the repairs.
+			log.Errorf("repair: %s not scanned: internal error (logged above)", folders[i])
+			ops.Fail()
+		},
+	}, func(_ int, dir string) { scanFolder(dir) })
 	if err := ctx.Err(); err != nil {
 		return nil, nil, 0, 0, err
 	}
@@ -277,43 +270,37 @@ func scan(ctx context.Context, cfg config.Config, ops *fsops.Ops, lex *Lexicon, 
 	return damaged, skipped, corpus, repairedBefore, nil
 }
 
-// planAll plans every damaged txt (in parallel; the planner only reads).
-func planAll(ctx context.Context, p *planner, damaged []damagedTxt, refs map[int][]string, only []int, plans []*filePlan, workers int, progress func(string, int, int)) error {
-	total := len(damaged)
-	if only != nil {
-		total = len(only)
-	}
-	var planned atomic.Int64
-	progress(PhasePlan, 0, total)
-	jobs := make(chan int)
-	var wg sync.WaitGroup
-	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range jobs {
-				if ctx.Err() != nil {
-					continue
-				}
-				d := damaged[i]
-				plans[i] = p.plan(songInput{raw: d.raw, song: d.song, folder: d.folder, names: d.names, dirs: d.dirs, refs: refs[i], own: d.own, songWords: d.songWords})
-				progress(PhasePlan, int(planned.Add(1)), total)
-			}
-		}()
-	}
+// planAll plans the damaged txts only (all if nil) in parallel; the planner only reads.
+// A txt whose planning panics keeps its earlier plan, or gets one that repairs nothing,
+// and counts as a failure.
+func planAll(ctx context.Context, ops *fsops.Ops, p *planner, damaged []damagedTxt, refs map[int][]string, only []int, plans []*filePlan, workers int, progress func(string, int, int)) error {
 	if only == nil {
-		for i := range damaged {
-			jobs <- i
-		}
-	} else {
-		for _, i := range only {
-			jobs <- i
+		only = make([]int, len(damaged))
+		for i := range only {
+			only[i] = i
 		}
 	}
-	close(jobs)
-	wg.Wait()
+	progress(PhasePlan, 0, len(only))
+	_ = utils.ForEachParallel(ctx, only, utils.Parallel{
+		Workers:  workers,
+		Progress: func(done, total int) { progress(PhasePlan, done, total) },
+		OnPanic: func(k int, _ any) {
+			i := only[k]
+			log.Errorf("repair: %s not planned: internal error (logged above)", damaged[i].rel)
+			ops.Fail()
+			if plans[i] == nil {
+				plans[i] = &filePlan{repl: map[int]rune{}, total: strings.Count(string(damaged[i].raw), string(replChar))}
+			}
+		},
+	}, func(_ int, i int) {
+		d := damaged[i]
+		plans[i] = planSong(p, songInput{raw: d.raw, song: d.song, folder: d.folder, names: d.names, dirs: d.dirs, refs: refs[i], own: d.own, songWords: d.songWords})
+	})
 	return ctx.Err()
 }
+
+// planSong plans one damaged txt; a variable so tests can make it panic.
+var planSong = (*planner).plan
 
 // Run repairs the damaged song txts below cfg.SongDir and writes the report.
 func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
@@ -352,7 +339,7 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 	log.Infof("repair: %d damaged txts, corpus of %d undamaged txts (%d words)", len(damaged), corpus, lex.global().total)
 	p := &planner{lex: lex, wordlists: wl, reviewed: rw.global, strict: opts.Strict}
 	plans := make([]*filePlan, len(damaged))
-	if err := planAll(ctx, p, damaged, nil, nil, plans, workers, opts.progress); err != nil {
+	if err := planAll(ctx, ops, p, damaged, nil, nil, plans, workers, opts.progress); err != nil {
 		return err
 	}
 
@@ -390,7 +377,7 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 			}
 		}
 		log.Infof("repair: lyrics found for %d songs", len(redo))
-		if err := planAll(ctx, p, damaged, refs, redo, plans, workers, opts.progress); err != nil {
+		if err := planAll(ctx, ops, p, damaged, refs, redo, plans, workers, opts.progress); err != nil {
 			return err
 		}
 	}
