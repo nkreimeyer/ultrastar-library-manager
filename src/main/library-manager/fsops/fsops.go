@@ -64,6 +64,9 @@ type Ops struct {
 	// plannedDirs: in dry-run mode, whether the item a planned move or copy put at a path
 	// is a folder (see isDirNow); a planned copy always puts a file there.
 	plannedDirs map[string]bool
+	// plannedList: in dry-run mode, every planned MoveInto and MoveTo in the order they
+	// were planned (see PlannedMoves).
+	plannedList []PlannedMove
 
 	// writesMu guards plannedWrites: in dry-run mode, the content of every planned write
 	// that changes a file (cleaned path -> data), so that later modules read the txts as
@@ -664,6 +667,7 @@ func (o *Ops) markPlanned(src, dst string) {
 	if dst != "" {
 		o.plannedPresent[filepath.Clean(dst)] = true
 		o.plannedDirs[filepath.Clean(dst)] = srcIsDir
+		o.plannedList = append(o.plannedList, PlannedMove{Src: filepath.Clean(src), Dst: filepath.Clean(dst)})
 	}
 	o.plannedMu.Unlock()
 	if dst != "" {
