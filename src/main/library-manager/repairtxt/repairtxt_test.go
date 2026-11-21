@@ -750,6 +750,34 @@ func TestPickRecord(t *testing.T) {
 	}
 }
 
+// lrclib often spells letters that do not decompose in ASCII (or the other way round):
+// they match like diacritics ("Mø" = "Mo", "Łzy" = "Lzy", "Æ" = "Ae", "ß" = "ss"), also
+// inside a longer artist. Different letters still differ.
+func TestLooseMatchUndecomposableLetters(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{"Mø", "Mo", true}, {"Łzy", "Lzy", true}, {"Ærosmith", "Aerosmith", true},
+		{"Straße", "Strasse", true}, {"Đorđe", "Dorde", true}, {"Þór", "Thor", true},
+		{"Œuvre", "Oeuvre", true}, {"Désolé", "Desole", true}, {"Mø", "MØ", true},
+		{"Gr" + R + "ße", "Größe", true}, {"Str" + R + "sse", "Straße", false},
+		{"Mø", "Ma", false}, {"Straße", "Strase", false}, {"Ærosmith", "Arosmith", false},
+		{"й", "и", false}, {"ゲーム", "ケーム", false}, {"Łzy", "Lzx", false},
+	} {
+		if got := looseEqual(matchKey(c.a), matchKey(c.b)); got != c.want {
+			t.Errorf("looseEqual(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+	if !looseContains(matchKey("Aerosmith feat. X"), matchKey("Ærosmith")) || looseContains(matchKey("Arosmith X"), matchKey("Ærosmith")) {
+		t.Error("looseContains with a spelled-out letter")
+	}
+	recs := []lrclibRecord{{TrackName: "Lzy", ArtistName: "Mome feat. X", PlainLyrics: "ja"}}
+	if got := pickRecord(recs, "Møme", "Łzy"); got != "ja" {
+		t.Errorf("pickRecord = %q", got)
+	}
+}
+
 func TestRunReviewedWords(t *testing.T) {
 	base := t.TempDir()
 	lib := filepath.Join(base, "lib")

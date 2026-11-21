@@ -22,6 +22,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/utils"
 )
 
 // LyricsSource looks up the plain lyrics of a song. Artist and title may still contain
@@ -90,29 +91,67 @@ func matchKey(s string) []rune {
 	return out
 }
 
-// baseRune is r without its diacritics (é = e).
-func baseRune(r rune) rune {
-	for _, b := range norm.NFD.String(string(r)) {
-		return b
+// foldRune is r folded for comparing names (utils.FoldString, letters and digits only):
+// "é" = "e", "ø" = "o", "ł" = "l", "æ" = "ae", "ß" = "ss". Marks of scripts other than
+// Latin and Greek are kept ("й" != "и").
+func foldRune(r rune) string {
+	if r < 0x80 {
+		return string(unicode.ToLower(r))
 	}
-	return r
+	var b strings.Builder
+	for _, f := range utils.FoldString(string(r)) {
+		if unicode.IsLetter(f) || unicode.IsDigit(f) || unicode.IsMark(f) {
+			b.WriteRune(f)
+		}
+	}
+	return b.String()
 }
 
-// looseEqual compares two match keys. Diacritics do not matter ("Desole" = "Désolé"), and
-// a U+FFFD on either side matches any non-ASCII rune (lrclib's own metadata is sometimes
-// damaged as well).
+// foldKey is a match key folded rune by rune (foldRune). ok is false if the key holds a
+// U+FFFD or nothing non-ASCII (then there is nothing to fold: matchKey lower-cased it).
+func foldKey(k []rune) (folded string, ok bool) {
+	var b strings.Builder
+	for _, r := range k {
+		if r == replChar {
+			return "", false
+		}
+		if r >= 0x80 {
+			ok = true
+		}
+		b.WriteString(foldRune(r))
+	}
+	return b.String(), ok
+}
+
+// looseEqual compares two match keys. Diacritics do not matter ("Desole" = "Désolé"), nor
+// do letters that do not decompose ("Mo" = "Mø", "Lzy" = "Łzy", "Aerosmith" =
+// "Ærosmith", "Strasse" = "Straße"), and a U+FFFD on either side matches any non-ASCII
+// rune (lrclib's own metadata is sometimes damaged as well). A spelled-out letter ("æ" =
+// "ae") is only matched in keys without U+FFFD.
 func looseEqual(a, b []rune) bool {
-	if len(a) != len(b) || len(a) == 0 {
+	if len(a) == 0 || len(b) == 0 {
 		return false
 	}
+	if len(a) == len(b) && runewiseEqual(a, b) {
+		return true
+	}
+	fa, oka := foldKey(a)
+	fb, okb := foldKey(b)
+	return (oka || okb) && fa != "" && fa == fb && !hasRepl(a) && !hasRepl(b)
+}
+
+// runewiseEqual compares two match keys of the same length rune by rune (see looseEqual).
+func runewiseEqual(a, b []rune) bool {
 	for i := range a {
-		if a[i] == b[i] || baseRune(a[i]) == baseRune(b[i]) {
+		if a[i] == b[i] {
 			continue
 		}
 		if (a[i] == replChar && b[i] >= 0x80) || (b[i] == replChar && a[i] >= 0x80) {
 			continue
 		}
-		return false
+		if fa := foldRune(a[i]); fa == "" || fa != foldRune(b[i]) {
+			return false
+		}
 	}
 	return true
 }
@@ -131,7 +170,16 @@ func looseContains(a, b []rune) bool {
 			return true
 		}
 	}
-	return false
+	// A spelled-out letter changes the length: compare the folded keys.
+	fa, oka := foldKey(a)
+	fb, okb := foldKey(b)
+	if !(oka || okb) || hasRepl(a) || hasRepl(b) {
+		return false
+	}
+	if len(fa) > len(fb) {
+		fa, fb = fb, fa
+	}
+	return len(fa) >= 3 && strings.Contains(fb, fa)
 }
 
 // searchQuery is the words of artist and title without U+FFFD: a damaged word is split at
