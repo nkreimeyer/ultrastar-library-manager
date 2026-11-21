@@ -18,7 +18,7 @@ var languagePrefixes = []struct{ prefix, code string }{
 	{"frie", "fy"}, {"fris", "fy"}, {"frys", "fy"}, {"friu", ""}, {"fria", ""}, {"frank", ""}, {"fr", "fr"},
 	{"spa", "es"}, {"esper", "eo"}, {"esp", "es"}, {"cast", "es"},
 	{"schwed", "sv"}, {"swe", "sv"}, {"sve", "sv"},
-	{"polyn", ""}, {"pol", "pl"},
+	{"poly", ""}, {"pol", "pl"},
 	{"ita", "it"},
 	{"dut", "nl"}, {"ned", "nl"}, {"niederl", "nl"}, {"holl", "nl"}, {"flam", "nl"}, {"flem", "nl"},
 	{"nor", "no"},
@@ -36,7 +36,8 @@ var languagePrefixes = []struct{ prefix, code string }{
 	{"ice", "is"}, {"isl", "is"},
 	{"kroat", "hr"}, {"croat", "hr"}, {"hrv", "hr"},
 	{"rumantsch", ""}, {"rum", "ro"},
-	{"romanian", "ro"}, {"romani", ""}, {"romanes", ""}, {"romansh", ""}, {"rom", "ro"},
+	// Romani (Romany, Romanes), Romansh (Romanche, Romancio) and Romagnol are no Romanian.
+	{"romanian", "ro"}, {"romani", ""}, {"romany", ""}, {"romanes", ""}, {"romansh", ""}, {"romanc", ""}, {"romag", ""}, {"rom", "ro"},
 }
 
 // foldLetters lower-cases s, drops diacritics and keeps only ASCII letters.
