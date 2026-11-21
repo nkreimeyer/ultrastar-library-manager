@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -238,8 +239,10 @@ var (
 )
 
 // handleJobEvents streams the current job as Server-Sent Events: "job" (its state, when
-// it changed) and "log" (new log lines, from the query parameter "log" on). The stream
-// stays open across jobs until the client goes away.
+// it changed) and "log" (new log lines, from the query parameter "log" on). Each "log" event
+// has the id "<job>/<next line>": a browser that reconnects sends it back (Last-Event-ID)
+// and gets only the lines it does not have. The stream stays open across jobs until the
+// client goes away or the server closes.
 func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 	fl, ok := w.(http.Flusher)
 	if !ok {
@@ -247,28 +250,34 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next, _ := strconv.Atoi(r.URL.Query().Get("log"))
+	logJob := "" // the job next counts the lines of ("" = the current one)
+	if id, n, ok := strings.Cut(r.Header.Get("Last-Event-ID"), "/"); ok {
+		if v, err := strconv.Atoi(n); err == nil && v >= 0 {
+			logJob, next = id, v
+		}
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	fl.Flush()
-	lastID, lastVersion := "", -1
+	lastID, lastVersion := "", -1 // the job state sent last
 	tick := time.NewTicker(eventInterval)
 	defer tick.Stop()
 	lastSent := time.Now()
 	for {
 		j, version, lines, ok := s.jobs.current(next)
 		if ok && (j.ID != lastID || version != lastVersion) {
-			if j.ID != lastID && lastID != "" {
-				next = 0 // a new job: its log starts at 0
-				_, _, lines, _ = s.jobs.current(0)
+			if logJob != "" && j.ID != logJob {
+				next = 0 // another job: its log starts at 0
+				j, version, lines, _ = s.jobs.current(0)
 			}
-			lastID, lastVersion = j.ID, version
-			if err := sendEvent(w, "job", j); err != nil {
+			logJob, lastID, lastVersion = j.ID, j.ID, version
+			if err := sendEvent(w, "job", "", j); err != nil {
 				return
 			}
 			if len(lines) > 0 {
 				next = lines[len(lines)-1].N + 1
-				if err := sendEvent(w, "log", lines); err != nil {
+				if err := sendEvent(w, "log", fmt.Sprintf("%s/%d", j.ID, next), lines); err != nil {
 					return
 				}
 			}
@@ -289,10 +298,16 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func sendEvent(w http.ResponseWriter, event string, v any) error {
+// sendEvent writes one event; id "" sends none (the browser keeps the last one).
+func sendEvent(w http.ResponseWriter, event, id string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
+	}
+	if id != "" {
+		if _, err := fmt.Fprintf(w, "id: %s\n", id); err != nil {
+			return err
+		}
 	}
 	_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
 	return err

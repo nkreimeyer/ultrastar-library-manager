@@ -266,3 +266,60 @@ func TestNewIDUnique(t *testing.T) {
 		t.Errorf("ids %q %q", a, b)
 	}
 }
+
+// A browser that reconnects sends the id of the last log event back and gets only the
+// lines it does not have; an id of another job gets the current job's lines from 0.
+func TestJobEventsResumeAfterReconnect(t *testing.T) {
+	old := eventInterval
+	eventInterval = 5 * time.Millisecond
+	t.Cleanup(func() { eventInterval = old })
+	s := newTestServer(t)
+	release := make(chan struct{})
+	defer close(release)
+	logged := make(chan struct{})
+	s.srv.jobs.start("j1", "test", fsops.New(true), func(context.Context, jobControl) (any, error) {
+		for i := range 3 {
+			log.Infof("line %d", i)
+		}
+		close(logged)
+		<-release
+		return nil, nil
+	})
+	<-logged
+	firstLog := func(lastID string) (id string, lines string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, "GET", s.base+"/api/job/events", nil)
+		if lastID != "" {
+			req.Header.Set("Last-Event-ID", lastID)
+		}
+		resp, err := s.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		sc := bufio.NewScanner(resp.Body)
+		for sc.Scan() {
+			switch line := sc.Text(); {
+			case strings.HasPrefix(line, "id: "):
+				id = strings.TrimPrefix(line, "id: ")
+			case strings.HasPrefix(line, "data: [") && id != "":
+				var ls []LogLine
+				json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ls)
+				return id, msgs(ls)
+			}
+		}
+		t.Fatalf("no log event: %v", sc.Err())
+		return "", ""
+	}
+	if id, got := firstLog(""); id != "j1/3" || got != "0:line 0 1:line 1 2:line 2" {
+		t.Errorf("first connection: id %q, lines %s", id, got)
+	}
+	if id, got := firstLog("j1/2"); id != "j1/3" || got != "2:line 2" {
+		t.Errorf("reconnect: id %q, lines %s", id, got)
+	}
+	if _, got := firstLog("j0/2"); got != "0:line 0 1:line 1 2:line 2" {
+		t.Errorf("reconnect from another job: lines %s", got)
+	}
+}
