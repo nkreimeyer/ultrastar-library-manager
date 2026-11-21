@@ -7,13 +7,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/nkreimeyer/library-manager/songtxt"
+	"github.com/nkreimeyer/library-manager/utils"
 )
-
-// fileTags name files; their values are repaired by matching the folder's file names.
-var fileTags = map[string]bool{
-	"MP3": true, "AUDIO": true, "VIDEO": true, "COVER": true, "BACKGROUND": true,
-	"VOCALS": true, "INSTRUMENTAL": true,
-}
 
 // segment is a text the repair works on: one header tag value, or the lyrics of one run
 // of notes (the syllables joined, '\n' at each line break and player marker).
@@ -115,7 +110,7 @@ func segments(src []byte, song *songtxt.Song) []segment {
 func corpusText(segs []segment) [][]rune {
 	var out [][]rune
 	for _, s := range segs {
-		if fileTags[s.tag] || !hasLetter(s.runes) {
+		if utils.IsFileTag(s.tag) || !hasLetter(s.runes) {
 			continue
 		}
 		out = append(out, s.runes)

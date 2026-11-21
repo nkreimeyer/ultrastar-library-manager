@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -233,11 +234,18 @@ func ResolveFileName(dir, name string) (onDisk string, exact, found bool) {
 	return "", false, false
 }
 
-// fileTags are the header tags that reference files of the song folder.
-var fileTags = map[string]bool{
-	"MP3": true, "AUDIO": true, "VOCALS": true, "INSTRUMENTAL": true,
-	"VIDEO": true, "COVER": true, "BACKGROUND": true,
-}
+// fileTags are the header tags (upper-case keys) that reference files of the song folder,
+// in check's report order. ReplaceFileReference rewrites them, check observes them and
+// repair fills their values from the folder's file names.
+var fileTags = []string{"AUDIO", "MP3", "VOCALS", "INSTRUMENTAL", "VIDEO", "COVER", "BACKGROUND"}
+
+// FileTags returns the header tags (upper-case keys) that reference files of the song
+// folder: #AUDIO, #MP3, #VOCALS, #INSTRUMENTAL, #VIDEO, #COVER and #BACKGROUND. The slice
+// is a copy.
+func FileTags() []string { return slices.Clone(fileTags) }
+
+// IsFileTag reports whether the upper-case tag key is one of FileTags.
+func IsFileTag(key string) bool { return slices.Contains(fileTags, key) }
 
 // ErrTxtNotUTF8 is returned by ReplaceFileReference for song txts that are not UTF-8 yet.
 var ErrTxtNotUTF8 = errors.New("song txt is not UTF-8 (run the fixtxt module first)")
@@ -299,7 +307,7 @@ func FileReferenceReplacement(ops *fsops.Ops, dir, oldName, newName string) (txt
 			continue // blank or junk line inside the header
 		}
 		name, value, ok := strings.Cut(trimmed[1:], ":")
-		if !ok || !fileTags[strings.ToUpper(strings.TrimSpace(name))] {
+		if !ok || !IsFileTag(strings.ToUpper(strings.TrimSpace(name))) {
 			continue
 		}
 		if v := strings.TrimSpace(value); v == oldName || normalizeName(v) == want {

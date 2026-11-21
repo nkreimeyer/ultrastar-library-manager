@@ -129,7 +129,7 @@ func localLex(in songInput, segs []segment) *langLex {
 		add(strings.ReplaceAll(r, "'", apo))
 	}
 	for _, s := range segs {
-		if !fileTags[s.tag] {
+		if !utils.IsFileTag(s.tag) {
 			w, _ := textStats(s.runes)
 			l.add(w, nil)
 		}
@@ -160,7 +160,7 @@ func (in songInput) nameTexts(whole bool) []string {
 func songApostrophe(segs []segment) rune {
 	counts := map[rune]int{}
 	for _, s := range segs {
-		if fileTags[s.tag] {
+		if utils.IsFileTag(s.tag) {
 			continue
 		}
 		for _, r := range s.runes {

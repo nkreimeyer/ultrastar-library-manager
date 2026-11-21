@@ -116,23 +116,13 @@ type ref struct {
 	Source bool // the audio source of the song (#AUDIO if present, else #MP3)
 }
 
-// refTags are the tags that reference files, in report order.
+// refTags are the tags that reference files (utils.FileTags, in its order) with their kind.
 var refTags = []struct {
 	tag  string
 	kind refKind
 }{
 	{"AUDIO", kindAudio}, {"MP3", kindAudio}, {"VOCALS", kindAudio}, {"INSTRUMENTAL", kindAudio},
 	{"VIDEO", kindVideo}, {"COVER", kindImage}, {"BACKGROUND", kindImage},
-}
-
-// isRefTag reports whether the upper-case key is one of refTags.
-func isRefTag(key string) bool {
-	for _, rt := range refTags {
-		if rt.tag == key {
-			return true
-		}
-	}
-	return false
 }
 
 // refCandidate is a file tag with all its non-empty occurrences, in file order.
@@ -381,11 +371,11 @@ func checkNameTags(fs *findings, s *songtxt.Song, in songInput) {
 func checkDuplicates(fs *findings, s *songtxt.Song) {
 	for _, key := range s.Duplicates() {
 		used := "the last one"
-		if isRefTag(key) {
+		if utils.IsFileTag(key) {
 			used = "the last one whose file exists"
 		}
 		tag := "" // a repeated file tag is about that file (Finding.Tag), others about the txt
-		if isRefTag(key) {
+		if utils.IsFileTag(key) {
 			tag = key
 		}
 		fs.addFile(tag, SevWarning, codeDuplicateTag, dupLine(s, key), "", "#%s occurs more than once; players use %s", key, used)

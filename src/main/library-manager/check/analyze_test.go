@@ -8,7 +8,20 @@ import (
 	"testing"
 
 	"github.com/nkreimeyer/library-manager/songtxt"
+	"github.com/nkreimeyer/library-manager/utils"
 )
+
+// TestRefTagsAreTheFileTags: check observes exactly the tags utils.FileTags names (the
+// list fixtxt's reference rewriting and repair use), in the same order.
+func TestRefTagsAreTheFileTags(t *testing.T) {
+	var got []string
+	for _, rt := range refTags {
+		got = append(got, rt.tag)
+	}
+	if want := utils.FileTags(); !reflect.DeepEqual(got, want) {
+		t.Errorf("refTags = %v, utils.FileTags() = %v", got, want)
+	}
+}
 
 // header is a complete header; BPM 300 gives 50 ms per beat.
 const header = "#TITLE:T\n#ARTIST:A\n#MP3:a.mp3\n#BPM:300\n"

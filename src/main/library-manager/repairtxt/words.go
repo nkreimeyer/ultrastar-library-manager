@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"github.com/nkreimeyer/library-manager/songtxt"
+	"github.com/nkreimeyer/library-manager/utils"
 )
 
 // More level names, as they appear in the report.
@@ -577,7 +578,7 @@ func (p *planner) plan(in songInput) *filePlan {
 			continue
 		}
 		if seg.tag != "" {
-			if fill, ok := nameFill(seg.runes, in.nameTexts(fileTags[seg.tag]), fileTags[seg.tag]); ok {
+			if fill, ok := nameFill(seg.runes, in.nameTexts(utils.IsFileTag(seg.tag)), utils.IsFileTag(seg.tag)); ok {
 				after := []rune(string(seg.runes))
 				for k, i := range replIdx {
 					after[i] = fill[k]
@@ -585,7 +586,7 @@ func (p *planner) plan(in songInput) *filePlan {
 				ff.add(seg, replIdx, fill, "#"+seg.tag+":"+string(seg.runes), "#"+seg.tag+":"+string(after), srcFileName, false)
 				continue
 			}
-			if fileTags[seg.tag] {
+			if utils.IsFileTag(seg.tag) {
 				ff.leave(seg, token{start: 0, end: len(seg.runes)}, nil)
 				continue
 			}

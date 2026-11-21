@@ -307,3 +307,21 @@ func TestEncodingHintJunkLineInHeader(t *testing.T) {
 		t.Errorf("encodingHint after the notes = %+v, want none", h)
 	}
 }
+
+func TestFileTags(t *testing.T) {
+	for _, k := range []string{"AUDIO", "MP3", "VOCALS", "INSTRUMENTAL", "VIDEO", "COVER", "BACKGROUND"} {
+		if !IsFileTag(k) {
+			t.Errorf("IsFileTag(%q) = false", k)
+		}
+	}
+	for _, k := range []string{"VIDEOGAP", "mp3", "TITLE", ""} {
+		if IsFileTag(k) {
+			t.Errorf("IsFileTag(%q) = true", k)
+		}
+	}
+	tags := FileTags()
+	tags[0] = "X"
+	if FileTags()[0] != "AUDIO" {
+		t.Error("FileTags returns the shared slice")
+	}
+}
