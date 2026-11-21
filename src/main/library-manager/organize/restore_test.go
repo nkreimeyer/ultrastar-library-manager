@@ -322,3 +322,57 @@ func TestUndoRetrySkipsRevertedSwap(t *testing.T) {
 		t.Errorf("journal: %+v", runs[0])
 	}
 }
+
+// A stopped undo is not recorded as undone: the next undo finishes the same run. It never
+// stops while a song is at a temporary name: in the swap, the song parked by one step
+// comes out only two steps later. Every stop point is tried.
+func TestUndoStopped(t *testing.T) {
+	stoppedOnce, keptGoing := false, false
+	total := 2
+	for stopAt := 1; stopAt < total; stopAt++ {
+		t.Run(fmt.Sprint(stopAt), func(t *testing.T) {
+			noFFprobe(t)
+			base := t.TempDir()
+			lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
+			writeFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A"), songFiles("Pop/Cee - C", "Cee", "C")))
+			before := tree(t, lib)
+			runOrganize(t, organizeCfg(t, [][]string{{lib}}, lib, out, false), Options{})
+			cfg := organizeCfg(t, nil, lib, out, false)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			last := 0
+			err := Undo(cfg, fsops.New(false), UndoOptions{Ctx: ctx, Progress: func(phase string, done, n int) {
+				if phase != PhaseUndo {
+					t.Errorf("phase %q", phase)
+				}
+				total, last = n, done
+				if done == stopAt {
+					cancel()
+				}
+			}})
+			for _, rel := range tree(t, lib) {
+				if strings.Contains(rel, tempPrefix) {
+					t.Errorf("%s is left under its temporary name", rel)
+				}
+			}
+			switch {
+			case errors.Is(err, context.Canceled):
+				stoppedOnce = true
+				if last != stopAt {
+					keptGoing = true // a song was parked at the stop
+				}
+				runUndo(t, cfg)
+			case err != nil:
+				t.Fatal(err)
+			default:
+				keptGoing = true // the stop came while parked, and then the run was done
+			}
+			if got := tree(t, lib); !reflect.DeepEqual(got, before) {
+				t.Errorf("after the undo:\n%v\nwant:\n%v", got, before)
+			}
+		})
+	}
+	if !stoppedOnce || !keptGoing {
+		t.Errorf("of %d stop points: stopped %v, kept going while parked %v", total-1, stoppedOnce, keptGoing)
+	}
+}

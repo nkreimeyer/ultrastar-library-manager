@@ -129,7 +129,7 @@ func runRemove(args []string, output io.Writer) int {
 	log.Infof("Output dir: %s", cfg.OutDir)
 	var runErr error
 	if *undo {
-		runErr = organize.Undo(cfg, ops)
+		runErr = organize.Undo(cfg, ops, organize.UndoOptions{})
 	} else {
 		if err := cfg.PrepareOutDir(); err != nil {
 			log.Error(err)

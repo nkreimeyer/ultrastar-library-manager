@@ -342,7 +342,7 @@ func (s *Server) handleOrganizeUndo(w http.ResponseWriter, r *http.Request) {
 	}
 	ops := fsops.New(cfg.DryRun)
 	job, err := s.jobs.start(s.newID("u"), "organize-undo", ops, func(ctx context.Context, c jobControl) (any, error) {
-		if err := organize.Undo(cfg, ops); err != nil {
+		if err := organize.Undo(cfg, ops, organize.UndoOptions{Ctx: ctx, Progress: c.Progress}); err != nil {
 			return nil, err
 		}
 		return map[string]any{"library": cfg.Library, "outDir": cfg.OutDir}, nil

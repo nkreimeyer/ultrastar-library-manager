@@ -362,7 +362,7 @@ func TestUndoJournalUnreadable(t *testing.T) {
 	base := t.TempDir()
 	cfg := organizeCfg(t, nil, filepath.Join(base, "lib"), filepath.Join(base, "out"), false)
 	writeFiles(t, cfg.JournalPath(), map[string]string{"x": "x"})
-	err := Undo(cfg, fsops.New(false))
+	err := Undo(cfg, fsops.New(false), UndoOptions{})
 	if err == nil || !strings.Contains(err.Error(), "reading the journal") {
 		t.Errorf("Undo = %v", err)
 	}

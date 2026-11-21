@@ -79,6 +79,7 @@ const TASKS = {
 const PHASES = {
   inspect: "Checking songs",
   move: "Moving songs",
+  undo: "Moving songs back",
   scan: "Reading song files",
   plan: "Working out the repairs",
   lyrics: "Looking up lyrics online",
@@ -91,6 +92,13 @@ const JOB_TITLES = {
   "organize-undo": "Undoing the last run",
   "repair-analyse": "Looking for broken characters. Nothing is changed yet.",
   "repair-apply": "Repairing files",
+};
+
+// What the Stop button does to a job that changes files (the others change nothing).
+const STOP_HINTS = {
+  "organize-apply": "Stopping finishes the current move; undo puts back what was moved.",
+  "organize-undo": "Stopping finishes the current move; undo again to move back the rest.",
+  "repair-apply": "Stopping finishes the current file; the files repaired so far stay repaired (their originals are kept).",
 };
 
 const emptyForm = () => ({
@@ -664,7 +672,7 @@ function viewRunning() {
     h("div", { class: "actions" },
       h("button", { class: "btn", type: "button", id: "stop", onclick: stopJob }, "Stop"),
       h("span", { class: "muted small", id: "stop-hint" },
-        j.kind === "organize-apply" ? "Stopping finishes the current move; undo puts back what was moved." : "Stopping changes nothing."),
+        STOP_HINTS[j.kind] || "Stopping changes nothing."),
     ),
   );
   queueMicrotask(updateRunning);

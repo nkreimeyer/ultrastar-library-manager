@@ -197,7 +197,7 @@ func runOrganize(t *testing.T, cfg config.OrganizeConfig, opts Options) (fsops.S
 func runUndo(t *testing.T, cfg config.OrganizeConfig) fsops.Stats {
 	t.Helper()
 	ops := fsops.New(cfg.DryRun)
-	if err := Undo(cfg, ops); err != nil {
+	if err := Undo(cfg, ops, UndoOptions{}); err != nil {
 		t.Fatalf("Undo: %v", err)
 	}
 	return ops.Stats()

@@ -11,6 +11,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/organize"
 	"github.com/nkreimeyer/library-manager/repairtxt"
 )
 
@@ -155,7 +156,7 @@ func TestOrganizeFlow(t *testing.T) {
 	if got := s.do("POST", "/api/organize/undo", folderRequest{Library: lib, Out: out}, &j); got != http.StatusAccepted {
 		t.Fatalf("undo: %d", got)
 	}
-	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 1 {
+	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 1 || j.Phase != organize.PhaseUndo || j.Total == 0 || j.Done != j.Total {
 		t.Errorf("undo job: %+v", j)
 	}
 	// The result names the folders, so the UI can offer to try a partial undo again.

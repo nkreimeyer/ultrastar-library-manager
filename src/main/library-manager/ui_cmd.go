@@ -98,7 +98,9 @@ func runUI(args []string, output io.Writer, noArgs bool) int {
 		}
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// SIGHUP: the terminal window was closed. Stopping lets a running job end cleanly
+	// (organize gets a song parked under a temporary name out of it and journals the moves).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 	served := make(chan error, 1)
 	go func() { served <- hs.Serve(ln) }()
