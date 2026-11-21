@@ -203,3 +203,21 @@ func TestDecodeTxtRomajiStaysCP1252(t *testing.T) {
 		}
 	}
 }
+
+// Letters that do not decompose are spelled out before the prefixes are matched: "ø" was
+// dropped, so Faroese ("Føroyskt", Danish "Færøsk") started like French; Polish "ł" was
+// dropped, so "Słoweński" (Slovenian) named nothing. Fullwidth letters decompose.
+func TestLanguageCodesUndecomposableLetters(t *testing.T) {
+	for in, want := range map[string][]string{
+		"Føroyskt":  nil,
+		"Færøsk":    nil,
+		"Słoweński": {"sl"},
+		"Włoski":    nil,
+		"Fransızca": {"fr"},
+		"Ｇｅｒｍａｎ":    {"de"},
+	} {
+		if got := LanguageCodes(in); !reflect.DeepEqual(got, want) {
+			t.Errorf("LanguageCodes(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -3,8 +3,6 @@ package utils
 import (
 	"strings"
 	"unicode"
-
-	"golang.org/x/text/unicode/norm"
 )
 
 // languagePrefixes maps the start of a folded, letters-only language name (English,
@@ -50,11 +48,11 @@ var languagePrefixes = []struct{ prefix, code string }{
 // "Roman" against "Romana", Romanian in Romanian).
 var notLanguageNames = map[string]bool{"roma": true, "roman": true}
 
-// foldLetters lower-cases s, drops diacritics and keeps only ASCII letters.
+// foldLetters folds s (FoldString: lower case, diacritics dropped, "ł" -> "l", "ø" -> "o",
+// "ß" -> "ss", ...) and keeps only ASCII letters.
 func foldLetters(s string) string {
 	var b strings.Builder
-	for _, r := range norm.NFD.String(s) {
-		r = unicode.ToLower(r)
+	for _, r := range FoldString(s) {
 		if r >= 'a' && r <= 'z' {
 			b.WriteRune(r)
 		}
