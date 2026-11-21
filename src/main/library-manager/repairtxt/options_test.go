@@ -351,3 +351,39 @@ type lyricsFunc func(artist, title string) (string, error)
 func (f lyricsFunc) Lyrics(_ context.Context, artist, title string) (string, error) {
 	return f(artist, title)
 }
+
+// TestReportLabelsUnwrittenFixes: the fixes of a txt that was not written are labelled
+// "planned" and "planned WEAK", never like done repairs.
+func TestReportLabelsUnwrittenFixes(t *testing.T) {
+	cfg, err := config.New(t.TempDir(), t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixes := []Fix{
+		{Before: "f" + R + "r", After: "für", Source: srcCorpus, Lines: []int{3}},
+		{Before: "s" + R + "ß", After: "süß", Source: srcCorpus, Weak: true, Lines: []int{4}},
+	}
+	rep := Report{Damaged: 4, Fixed: 2, Weak: 1, Files: []FileReport{
+		{Path: "written.txt", Damaged: 2, Fixed: 2, Weak: 1, Written: true, Fixes: fixes},
+		{Path: "excluded.txt", Damaged: 2, Fixed: 2, Weak: 1, Left: 2, Excluded: true, Fixes: fixes},
+	}}
+	if err := writeReports(cfg, fsops.New(false), rep); err != nil {
+		t.Fatal(err)
+	}
+	txt, err := os.ReadFile(cfg.ReportPath(ReportTxt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, unwritten, _ := strings.Cut(string(txt), "== excluded.txt")
+	written, _, _ := strings.Cut(string(txt), "== excluded.txt")
+	for _, want := range []string{"   fixed f" + R + "r -> für", "   WEAK  s" + R + "ß -> süß"} {
+		if !strings.Contains(written, want) {
+			t.Errorf("the written txt lacks %q:\n%s", want, txt)
+		}
+	}
+	for _, want := range []string{"   planned f" + R + "r -> für", "   planned WEAK s" + R + "ß -> süß"} {
+		if !strings.Contains(unwritten, want) {
+			t.Errorf("the unwritten txt lacks %q:\n%s", want, txt)
+		}
+	}
+}
