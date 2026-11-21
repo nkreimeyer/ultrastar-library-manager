@@ -1,6 +1,7 @@
 package repairtxt
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -452,7 +453,9 @@ func TestWordListDecides(t *testing.T) {
 
 type fakeLyrics map[string]string
 
-func (f fakeLyrics) Lyrics(artist, title string) (string, error) { return f[artist+" - "+title], nil }
+func (f fakeLyrics) Lyrics(_ context.Context, artist, title string) (string, error) {
+	return f[artist+" - "+title], nil
+}
 
 // writeLib writes song folders: rel -> txt (each with an a.mp3).
 func writeLib(t *testing.T, lib string, songs map[string]string) {
@@ -594,7 +597,7 @@ func TestLRCLib(t *testing.T) {
 	c := NewLRCLib(filepath.Join(dir, "cache"), fsops.New(false))
 	c.BaseURL, c.Delay, c.RetryWait = srv.URL, 0, time.Millisecond
 	for range 2 {
-		got, err := c.Lyrics("Dr"+R+"mhus", "Vill Ha Dig")
+		got, err := c.Lyrics(context.Background(), "Dr"+R+"mhus", "Vill Ha Dig")
 		if err != nil || got != "jag vill ha dig" {
 			t.Fatalf("Lyrics = %q, %v", got, err)
 		}
@@ -630,7 +633,7 @@ func TestLRCLibFallbackQueries(t *testing.T) {
 	if err := os.WriteFile(c.cachePath("Sexion d' Assaut feat. X", "Desole' (Live)"), old, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := c.Lyrics("Sexion d' Assaut feat. X", "Desole' (Live)")
+	got, err := c.Lyrics(context.Background(), "Sexion d' Assaut feat. X", "Desole' (Live)")
 	if err != nil || got != "désolé" {
 		t.Fatalf("Lyrics = %q, %v", got, err)
 	}
@@ -640,11 +643,11 @@ func TestLRCLibFallbackQueries(t *testing.T) {
 	}
 	// The new "not found" entry is final.
 	queries = nil
-	if got, _ := c.Lyrics("Nobody", "Nothing"); got != "" || len(queries) != 2 {
+	if got, _ := c.Lyrics(context.Background(), "Nobody", "Nothing"); got != "" || len(queries) != 2 {
 		t.Fatalf("Lyrics = %q after %q", got, queries)
 	}
 	queries = nil
-	if got, _ := c.Lyrics("Nobody", "Nothing"); got != "" || len(queries) != 0 {
+	if got, _ := c.Lyrics(context.Background(), "Nobody", "Nothing"); got != "" || len(queries) != 0 {
 		t.Errorf("a new not-found entry was looked up again: %q", queries)
 	}
 }

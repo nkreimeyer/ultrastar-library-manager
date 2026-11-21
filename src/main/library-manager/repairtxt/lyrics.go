@@ -1,6 +1,7 @@
 package repairtxt
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -24,9 +25,10 @@ import (
 )
 
 // LyricsSource looks up the plain lyrics of a song. Artist and title may still contain
-// U+FFFD. It returns "" without an error if it does not know the song.
+// U+FFFD. It returns "" without an error if it does not know the song, and ctx.Err() once
+// ctx is done.
 type LyricsSource interface {
-	Lyrics(artist, title string) (string, error)
+	Lyrics(ctx context.Context, artist, title string) (string, error)
 }
 
 // DefaultLRCLibURL is the API of lrclib.net, a free lyrics database that needs no key.
@@ -203,16 +205,28 @@ func (c *LRCLib) cachePath(artist, title string) string {
 	return filepath.Join(c.CacheDir, hex.EncodeToString(h[:])+".json")
 }
 
+// sleep waits d or until ctx is done (a Retry-After may be minutes).
+func sleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // search sends the query, waiting Delay since the previous request, and retries on a
 // rate limit (HTTP 429) or an unavailable server (503).
-func (c *LRCLib) search(q string) ([]byte, error) {
+func (c *LRCLib) search(ctx context.Context, q string) ([]byte, error) {
 	wait := c.RetryWait
 	for attempt := 1; ; attempt++ {
-		if d := c.Delay - time.Since(c.last); d > 0 {
-			time.Sleep(d)
+		if err := sleep(ctx, c.Delay-time.Since(c.last)); err != nil {
+			return nil, err
 		}
 		c.last = time.Now()
-		req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/search?q="+url.QueryEscape(q), nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/search?q="+url.QueryEscape(q), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -228,7 +242,9 @@ func (c *LRCLib) search(q string) ([]byte, error) {
 			if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && s > 0 && s <= 300 {
 				d = time.Duration(s) * time.Second
 			}
-			time.Sleep(d)
+			if err := sleep(ctx, d); err != nil {
+				return nil, err
+			}
 			wait *= 2
 			continue
 		}
@@ -239,8 +255,8 @@ func (c *LRCLib) search(q string) ([]byte, error) {
 	}
 }
 
-// Lyrics implements LyricsSource.
-func (c *LRCLib) Lyrics(artist, title string) (string, error) {
+// Lyrics implements LyricsSource. A failed or cancelled search is not cached.
+func (c *LRCLib) Lyrics(ctx context.Context, artist, title string) (string, error) {
 	cp := c.cachePath(artist, title)
 	if data, err := os.ReadFile(cp); err == nil {
 		var e cacheEntry
@@ -254,7 +270,7 @@ func (c *LRCLib) Lyrics(artist, title string) (string, error) {
 	}
 	lyrics := ""
 	for _, q := range qs {
-		body, err := c.search(q)
+		body, err := c.search(ctx, q)
 		if err != nil {
 			return "", err
 		}

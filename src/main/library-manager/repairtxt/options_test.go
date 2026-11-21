@@ -243,4 +243,6 @@ func TestRunCancelled(t *testing.T) {
 
 type lyricsFunc func(artist, title string) (string, error)
 
-func (f lyricsFunc) Lyrics(artist, title string) (string, error) { return f(artist, title) }
+func (f lyricsFunc) Lyrics(_ context.Context, artist, title string) (string, error) {
+	return f(artist, title)
+}

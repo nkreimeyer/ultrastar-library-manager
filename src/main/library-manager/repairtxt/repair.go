@@ -64,9 +64,9 @@ type Options struct {
 	// SkipFiles lists damaged txts (by FileReport.Path) that are planned and reported but
 	// never written (FileReport.Excluded).
 	SkipFiles map[string]bool
-	// Ctx cancels the run (nil = never). It is checked while scanning and planning (then
-	// Run returns Ctx.Err() before anything is written) and before each write (then the
-	// report lists what was written so far).
+	// Ctx cancels the run (nil = never). It is checked while scanning, planning and asking
+	// for lyrics (each lookup gets it; then Run returns Ctx.Err() before anything is
+	// written) and before each write (then the report lists what was written so far).
 	Ctx context.Context
 	// Progress, if set, is called with the phase (PhaseScan, PhasePlan, PhaseLyrics,
 	// PhaseWrite), the number of items done and their total. It may be called from
@@ -366,7 +366,10 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 			if artist == "" || title == "" {
 				continue
 			}
-			text, err := opts.Lyrics.Lyrics(artist, title)
+			text, err := opts.Lyrics.Lyrics(ctx, artist, title)
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
 			if err != nil {
 				log.Warnf("lyrics for %s: %v", d.rel, err)
 				continue
