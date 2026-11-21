@@ -343,7 +343,9 @@ func audioFromProbe(probe mediatools.ProbeInfo) (audioInfo, error) {
 		return audioInfo{}, errors.New("unknown channel count")
 	}
 	info := audioInfo{Codec: s.CodecName, Profile: s.Profile, Channels: s.Channels, SampleFmt: s.SampleFmt,
-		Normalized: probe.HasTag(normalizedTag)}
+		// The marker of the container or of this stream: fixaudio processes only 0:a:0, so a
+		// tagged other stream (one audio file holding two) does not mean this one was done.
+		Normalized: mediatools.HasTagIn(probe.Format.Tags, normalizedTag) || mediatools.HasTagIn(s.Tags, normalizedTag)}
 	for _, br := range []string{s.BitRate, probe.Format.BitRate} {
 		if n, err := strconv.Atoi(br); err == nil && n > 0 {
 			info.Bitrate = n

@@ -244,10 +244,10 @@ func TestParseProbeProfileAndMarker(t *testing.T) {
 			audioInfo{Codec: "vorbis", Channels: 2, Normalized: true}},
 		{"marker in format tags", `{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":2}],"format":{"tags":{"SANITIZER_NORMALIZED":"-3.0dB"}}}`,
 			audioInfo{Codec: "mp3", Channels: 2, Normalized: true}},
-		// The marker counts wherever the probe shows it, as for fixvideos' marker
-		// (mediatools.ProbeInfo.HasTag); it used to count only on the first audio stream.
+		// Only the container and the processed (first audio) stream count: a marker on
+		// another stream says nothing about 0:a:0 (TestNormalizedMarkerOfProcessedStream).
 		{"marker in the tags of another stream", `{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":2},{"codec_type":"video","tags":{"SANITIZER_NORMALIZED":"-3.0dB"}}]}`,
-			audioInfo{Codec: "mp3", Channels: 2, Normalized: true}},
+			audioInfo{Codec: "mp3", Channels: 2}},
 		{"unrelated tags", `{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":2,"tags":{"title":"x"}}],"format":{"tags":{"SANITIZER_VIDEO":"1","artist":"y"}}}`,
 			audioInfo{Codec: "mp3", Channels: 2}},
 		{"negative and garbage bitrates ignored", `{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":1,"bit_rate":"-5"}],"format":{"bit_rate":"x"}}`,

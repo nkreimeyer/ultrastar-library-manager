@@ -212,18 +212,21 @@ func StreamBitrate(s Stream) int64 {
 // stores the global "-metadata" in the container or, for formats with per-stream
 // comments (Ogg), in the stream, and nothing but these modules writes the names.
 func (p ProbeInfo) HasTag(name string) bool {
-	if hasKey(p.Format.Tags, name) {
+	if HasTagIn(p.Format.Tags, name) {
 		return true
 	}
 	for _, s := range p.Streams {
-		if hasKey(s.Tags, name) {
+		if HasTagIn(s.Tags, name) {
 			return true
 		}
 	}
 	return false
 }
 
-func hasKey(tags map[string]string, name string) bool {
+// HasTagIn reports whether tags (of the container or of one stream) has the tag name,
+// matched case-insensitively. A module that processes one stream uses it on the
+// container and that stream: a marker on another stream says nothing about this one.
+func HasTagIn(tags map[string]string, name string) bool {
 	for k := range tags {
 		if strings.EqualFold(k, name) {
 			return true
