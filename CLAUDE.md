@@ -32,7 +32,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   utils/utils.go              media type checks, non-UTF-8 media names
   utils/songname.go           TagsFromFolderName: obvious #ARTIST/#TITLE fills from "Artist - Title" folder names
   utils/image.go              image headers (JPEG/PNG/GIF via stdlib, own BMP/WebP readers), cover/background choice
-  songtxt/                    UltraStar txt parser (tags, notes, breaks, duets, RELATIVE, B lines, BeatToMs); pure
+  songtxt/                    UltraStar txt parser (tags, notes, breaks, duets, RELATIVE, B lines, BeatToMs); pure;
+                              the shared rules: IsBodyLine (end of header), LineSpans (line numbering), IsDuet
   fixtxt/                     dedupe song txts, decode → UTF-8, fix #MP3/#AUDIO/#VIDEO/#COVER/#BACKGROUND, fill #ARTIST/#TITLE from the folder name
   cleanup/                    move unreferenced files to extra-files/, near-empty folders to invalid/
   check/                      broken-song detection: analyze.go (pure), probe.go (ffprobe/ffmpeg), report.go;
@@ -160,9 +161,13 @@ Same exit codes and leftover-argument rule.
     its parent is never returned as a broken song.
   - Symlinks to regular txt files are song txts (`ListTxtFiles`/`FindSongTxt` and discovery
     agree). fixtxt never rewrites a symlinked txt; it lists it in `missing_files.txt` instead.
-- Header tags (`utils.HeaderTags`, `songtxt.Parse`) are read up to the first body line
-  (note, `-`, `B`, `P`); tags after it are ignored (`IssueTagAfterNotes`). A repeated tag
-  resolves to its last header occurrence, as in UltraStar. A lone `\r` is a line break.
+- Header tags (`utils.HeaderTags`, `songtxt.Parse`, fixtxt's `headerLen`,
+  `ReplaceFileReference`, the `#ENCODING` hint) are read up to the first body line
+  (`songtxt.IsBodyLine`: note, `-`, `B`, `P`, `E`); junk lines inside the header are
+  skipped, tags after it are ignored (`IssueTagAfterNotes`). `utils.IsSongTxt` also needs
+  the first non-blank line to be a tag (a `License.txt` with `#TITLE:` further down is no
+  song). A repeated tag resolves to its last header occurrence, as in UltraStar (also
+  `songtxt.Song.Tag` and its accessors). A lone `\r` is a line break.
 - `utils.DecodeTxt`: any NUL byte is a Problem (BOM-less UTF-16 is still decoded, so the
   header stays readable). With an `#ENCODING` tag, only "clean" UTF-8 sequences count as
   mixed-encoding evidence, and in non-Latin codepages an isolated 2-byte sequence never does.
@@ -193,7 +198,7 @@ Same exit codes and leftover-argument rule.
   errors wrap `ErrUnsupportedImage` (TIFF, HEIF, …) or `ErrInvalidImage`.
 - organize: discovery per source, `check.Inspector` in a worker pool (min(16, NumCPU)), then
   `MakePlan` (pure, table-tested): encoding problems and unreadable folders stay, broken songs
-  go to invalid/, working songs are grouped by `SongKey` (duet flag from P1/P2 or a `[DUET]`
+  go to invalid/, working songs are grouped by `SongKey` (duet flag from `songtxt.IsDuet`, notes of two singers, or a `[DUET]`
   title), groups sharing a `contentKey` (`ContentHash` + duet flag) are joined by union-find
   (group key = smallest SongKey; a loser whose SongKey differs from the keeper's gets
   `joinedByContent` appended to its reason; a broken song without a SongKey match finds its
