@@ -231,7 +231,7 @@ async function loadSystem() {
     if (e.status === 403) {
       app.replaceChildren(
         h("h1", null, "Open the link from the terminal"),
-        h("p", null, "This page only works through the address library-manager printed when it started. It contains a one-time key."),
+        h("p", null, "This page only works through the address library-manager printed when it started. The address works once: if this browser lost its sign-in (it was closed, or another browser used the address first), restart library-manager and open the new address."),
       );
       return false;
     }

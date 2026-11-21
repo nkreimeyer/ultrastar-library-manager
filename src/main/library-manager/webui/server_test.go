@@ -108,6 +108,40 @@ func (s *testServer) wait() Job {
 	return Job{}
 }
 
+// The first use of the token sets the session cookie, named after the port, and redirects
+// to the plain address.
+func TestSignIn(t *testing.T) {
+	srv, err := New("127.0.0.1:4711", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signIn := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", srv.StartURL(), nil)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec
+	}
+	rec := signIn()
+	cookies := rec.Result().Cookies()
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" || len(cookies) != 1 {
+		t.Fatalf("token: %d %q %v", rec.Code, rec.Header().Get("Location"), cookies)
+	}
+	if c := cookies[0]; c.Name != "lm_session_4711" || !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Value != srv.session {
+		t.Errorf("cookie = %+v", c)
+	}
+	if rec := signIn(); rec.Code != http.StatusForbidden || len(rec.Result().Cookies()) != 0 {
+		t.Errorf("second use: %d %v", rec.Code, rec.Result().Cookies())
+	}
+	// Another instance's cookie (another port) does not sign in.
+	req := httptest.NewRequest("GET", "http://127.0.0.1:4711/api/system", nil)
+	req.AddCookie(&http.Cookie{Name: "lm_session_4712", Value: srv.session})
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("cookie of another port: %d", rec.Code)
+	}
+}
+
 func TestNewLoopbackOnly(t *testing.T) {
 	for _, addr := range []string{"0.0.0.0:80", "192.168.1.2:80", "example.com:80", "nonsense"} {
 		if _, err := New(addr, ""); err == nil {
@@ -141,29 +175,37 @@ func TestSecurity(t *testing.T) {
 			t.Errorf("anonymous GET %s = %d, want 403", p, got)
 		}
 	}
-	// The right token sets the cookie and redirects to the plain address.
+	// The token works once: newTestServer signed its client in with it.
 	resp, err := anon.Get(s.srv.StartURL())
 	if err != nil {
 		t.Fatal(err)
 	}
+	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" || len(resp.Cookies()) != 1 {
-		t.Errorf("token: %d %q %v", resp.StatusCode, resp.Header.Get("Location"), resp.Cookies())
-	} else if c := resp.Cookies()[0]; !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Value == s.srv.token {
-		t.Errorf("cookie = %+v", c)
+	if resp.StatusCode != http.StatusForbidden || len(resp.Cookies()) != 0 || !strings.Contains(string(body), "only once") {
+		t.Errorf("used token: %d %v %s", resp.StatusCode, resp.Cookies(), body)
+	}
+	// A signed-in browser opening the link again is only redirected.
+	resp, err = s.client.Get(s.srv.StartURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Request.URL.RawQuery != "" {
+		t.Errorf("signed-in browser with the link: %d %s", resp.StatusCode, resp.Request.URL)
 	}
 
 	// DNS rebinding: another host name is refused even with the cookie.
 	req := get("/api/system")
 	req.Host = "evil.example:" + strings.Split(s.srv.addr, ":")[1]
-	req.AddCookie(&http.Cookie{Name: cookieName, Value: s.srv.session})
+	req.AddCookie(&http.Cookie{Name: s.srv.cookie, Value: s.srv.session})
 	if got := status(anon, req); got != http.StatusForbidden {
 		t.Errorf("wrong Host = %d", got)
 	}
 	// "localhost" is the same server (a browser keeps its cookie apart from 127.0.0.1's).
 	req = get("/api/system")
 	req.Host = "localhost:" + strings.Split(s.srv.addr, ":")[1]
-	req.AddCookie(&http.Cookie{Name: cookieName, Value: s.srv.session})
+	req.AddCookie(&http.Cookie{Name: s.srv.cookie, Value: s.srv.session})
 	if got := status(anon, req); got != http.StatusOK {
 		t.Errorf("localhost Host = %d", got)
 	}
@@ -196,7 +238,7 @@ func TestSecurity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "<html") ||
 		resp.Header.Get("X-Frame-Options") != "DENY" || !strings.Contains(resp.Header.Get("Content-Security-Policy"), "default-src 'self'") {

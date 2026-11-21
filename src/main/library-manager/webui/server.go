@@ -2,7 +2,7 @@
 //
 // The UI can move and rewrite files, so every request is checked: the Host must be the
 // address the server listens on (no DNS rebinding), the session cookie must be set (it is
-// handed out once for the secret token in the start URL), and a request that changes
+// handed out for the secret token in the start URL, which works once), and a request that changes
 // anything must be a same-origin JSON POST (no cross-site forms).
 //
 // Only one job (an analysis, an apply or an undo) runs at a time: the modules log through
@@ -30,25 +30,26 @@ import (
 //go:embed static
 var staticFiles embed.FS
 
-const (
-	cookieName = "lm_session"
-	// maxBody limits JSON request bodies.
-	maxBody = 4 << 20
-)
+// maxBody limits JSON request bodies.
+const maxBody = 4 << 20
 
 // Server is the UI server for one listening address.
 type Server struct {
 	addr    string // host:port the server listens on
 	token   string // secret of the start URL
 	session string // value of the session cookie
+	// cookie is the name of the session cookie: "lm_session_<port>". Browsers keep cookies
+	// per host, not per port, so a second UI on another port would replace a shared one.
+	cookie  string
 	version string
 	mux     *http.ServeMux
 	jobs    *jobRunner
 
-	mu       sync.Mutex
-	organize map[string]*organizeAnalysis
-	repair   map[string]*repairAnalysis
-	nextID   int
+	mu        sync.Mutex
+	tokenUsed bool // the start URL signed a browser in already
+	organize  map[string]*organizeAnalysis
+	repair    map[string]*repairAnalysis
+	nextID    int
 }
 
 // New returns a server for the loopback address addr ("127.0.0.1:8080"). version is shown
@@ -61,8 +62,9 @@ func New(addr, version string) (*Server, error) {
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		return nil, fmt.Errorf("the UI only listens on a loopback address (127.0.0.1 or ::1), not %q", host)
 	}
+	_, port, _ := net.SplitHostPort(addr)
 	s := &Server{
-		addr: addr, token: randomHex(16), session: randomHex(32), version: version,
+		addr: addr, token: randomHex(16), session: randomHex(32), cookie: "lm_session_" + port, version: version,
 		mux: http.NewServeMux(), jobs: newJobRunner(),
 		organize: map[string]*organizeAnalysis{}, repair: map[string]*repairAnalysis{},
 	}
@@ -70,7 +72,9 @@ func New(addr, version string) (*Server, error) {
 	return s, nil
 }
 
-// StartURL is the URL to open: it carries the token that sets the session cookie.
+// StartURL is the URL to open: it carries the token that sets the session cookie. The
+// token works once: a link that leaked (browser history, the command line of the browser
+// start) signs no one else in.
 func (s *Server) StartURL() string {
 	return "http://" + s.addr + "/?token=" + s.token
 }
@@ -115,16 +119,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/" && r.URL.Query().Has("token") {
-		if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(s.token)) != 1 {
-			http.Error(w, "wrong token: open the link that library-manager printed", http.StatusForbidden)
-			return
+		if !s.signedIn(r) { // a signed-in browser opening the link again is only redirected
+			if err := s.useToken(r.URL.Query().Get("token")); err != nil {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+			http.SetCookie(w, &http.Cookie{Name: s.cookie, Value: s.session, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
 		}
-		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: s.session, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
 		http.Redirect(w, r, "/", http.StatusSeeOther) // the token leaves the address bar
 		return
 	}
-	c, err := r.Cookie(cookieName)
-	if err != nil || subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.session)) != 1 {
+	if !s.signedIn(r) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusForbidden)
 		io.WriteString(w, "Not signed in. Open the link that library-manager printed when it started (it contains ?token=…).\n")
@@ -145,6 +150,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
 	w.Header().Set("Cache-Control", "no-store")
 	s.mux.ServeHTTP(w, r)
+}
+
+// signedIn reports whether r carries the session cookie.
+func (s *Server) signedIn(r *http.Request) bool {
+	c, err := r.Cookie(s.cookie)
+	return err == nil && subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.session)) == 1
+}
+
+// useToken accepts the start URL's token once.
+func (s *Server) useToken(token string) error {
+	if subtle.ConstantTimeCompare([]byte(token), []byte(s.token)) != 1 {
+		return errors.New("wrong token: open the link that library-manager printed")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tokenUsed {
+		return errors.New("this link signed a browser in already and works only once: restart library-manager for a new one")
+	}
+	s.tokenUsed = true
+	return nil
 }
 
 // hostOK accepts the listening address and its "localhost" spelling.
