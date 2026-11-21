@@ -891,7 +891,12 @@ func Undo(cfg config.OrganizeConfig, ops *fsops.Ops, opts UndoOptions) error {
 			if isTemp(e.Src) && ops.Exists(e.Src) {
 				parked[e.Src] = true
 			}
-			if isTemp(e.Dst) && !ops.Exists(e.Dst) {
+			if isTemp(e.Dst) {
+				// The only entry that brings the song out: if it failed, the song stays at
+				// the temporary name until the next undo, and the stop applies again.
+				if parked[e.Dst] && ops.Exists(e.Dst) {
+					log.Warnf("Undo: %s stays at the temporary name %s; run the undo again once %s is free", e.Src, e.Dst, e.Src)
+				}
 				delete(parked, e.Dst)
 			}
 		}

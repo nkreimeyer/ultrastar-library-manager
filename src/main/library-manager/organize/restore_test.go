@@ -376,3 +376,34 @@ func TestUndoStopped(t *testing.T) {
 		t.Errorf("of %d stop points: stopped %v, kept going while parked %v", total-1, stoppedOnce, keptGoing)
 	}
 }
+
+// A song whose move out of the temporary name fails stays there, and a stop asked for
+// while it was parked applies after that entry: the rest of the run is not undone.
+func TestUndoStopAfterFailedUnpark(t *testing.T) {
+	noFFprobe(t)
+	base := t.TempDir()
+	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
+	writeFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A"), songFiles("Pop/Cee - C", "Cee", "C")))
+	runOrganize(t, organizeCfg(t, [][]string{{lib}}, lib, out, false), Options{})
+	cfg := organizeCfg(t, nil, lib, out, false)
+	runs, _ := readJournal(cfg.JournalPath())
+	if e := runs[0].Entries; len(e) < 4 || e[len(e)-1].Op != opMove || !strings.Contains(e[len(e)-1].Src, tempPrefix) || !strings.Contains(e[len(e)-1].Dst, "Abba - A") {
+		t.Fatalf("want the swap journaled after the move of C: %+v", e)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := Undo(cfg, fsops.New(false), UndoOptions{Ctx: ctx, Progress: func(_ string, done, _ int) {
+		if done == 1 { // Abba - A is parked: block its way back, and stop
+			cancel()
+			if err := os.MkdirAll(filepath.Join(lib, "A", "Abba - A"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Undo = %v, want it stopped", err)
+	}
+	if _, err := os.Stat(filepath.Join(lib, "C", "Cee - C")); err != nil {
+		t.Errorf("the move of C was undone after the stop: %v", err)
+	}
+}
