@@ -5,7 +5,6 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +18,7 @@ import (
 	"time"
 	"unicode"
 
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/nkreimeyer/library-manager/fsops"
@@ -26,7 +26,8 @@ import (
 
 // LyricsSource looks up the plain lyrics of a song. Artist and title may still contain
 // U+FFFD. It returns "" without an error if it does not know the song, and ctx.Err() once
-// ctx is done.
+// ctx is done. An error means there is no answer: found lyrics come with a nil error, even
+// if keeping them for later (a cache) failed.
 type LyricsSource interface {
 	Lyrics(ctx context.Context, artist, title string) (string, error)
 }
@@ -35,7 +36,8 @@ type LyricsSource interface {
 const DefaultLRCLibURL = "https://lrclib.net/api"
 
 // LRCLib looks lyrics up at lrclib.net. Answers (also "not found") are cached as JSON
-// files in CacheDir, so a second run sends no request for the same song.
+// files in CacheDir, so a second run sends no request for the same song. A cache file that
+// cannot be written is logged and counted by Ops; the answer is still returned.
 type LRCLib struct {
 	BaseURL  string
 	Client   *http.Client
@@ -285,8 +287,9 @@ func (c *LRCLib) Lyrics(ctx context.Context, artist, title string) (string, erro
 	e := cacheEntry{Version: lyricsCacheVersion, Artist: artist, Title: title, Found: lyrics != "", Lyrics: lyrics}
 	data, err := json.MarshalIndent(e, "", "  ")
 	if err == nil && c.Ops != nil {
+		// The answer is still good; WriteReport counts the failure.
 		if werr := c.Ops.WriteReport(cp, data); werr != nil {
-			return lyrics, errors.Join(errors.New("caching lyrics"), werr)
+			log.Warnf("caching lyrics of %s - %s: %v", artist, title, werr)
 		}
 	}
 	return lyrics, nil

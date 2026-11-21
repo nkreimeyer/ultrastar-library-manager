@@ -2,11 +2,13 @@ package repairtxt
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,4 +111,33 @@ func TestLRCLibCancelled(t *testing.T) {
 		c.Delay, c.last = time.Hour, time.Now()
 		lookup(t, ctx, c)
 	})
+}
+
+func TestRunUsesLyricsItCannotCache(t *testing.T) {
+	cfg, paths, _ := twoDamaged(t)
+	damaged := songText("#TITLE:Eins\n#ARTIST:A\n#MP3:a.mp3\n#BPM:300\n#LANGUAGE:German\n", "s"+R+"rprise")
+	if err := os.WriteFile(paths[0], []byte(damaged), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]lrclibRecord{{TrackName: "Eins", ArtistName: "A", PlainLyrics: "Sürprise"}})
+	}))
+	defer srv.Close()
+	// A file where the cache folder should be: no cache entry can be written.
+	cache := filepath.Join(t.TempDir(), "cache")
+	if err := os.WriteFile(cache, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ops := fsops.New(false)
+	c := NewLRCLib(cache, ops)
+	c.BaseURL, c.Delay = srv.URL, 0
+	if err := Run(cfg, ops, Options{Lyrics: c}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(paths[0]); !strings.Contains(string(b), "sürprise") {
+		t.Errorf("the fetched lyrics were not used:\n%s", b)
+	}
+	if st := ops.Stats(); st.Failed != 1 {
+		t.Errorf("%d failed operations, want 1 (the cache write)", st.Failed)
+	}
 }
