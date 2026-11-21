@@ -153,6 +153,8 @@ func (c Config) RelPath(path string) string {
 // there "-s ~/Karaoke/Songs -o ~/karaoke/songs/out" puts the output dir inside the song dir.
 // On darwin the Unicode normalization is ignored too, as APFS and HFS+ do: "Ärzte" typed as NFD
 // (A + U+0308) is the same folder as NFC "Ärzte".
+// On windows filepath.Rel already compares path elements case-insensitively; the lowering
+// keeps the rule explicit and testable on other hosts.
 func IsWithin(path, root string) bool {
 	return isWithin(path, root, runtime.GOOS)
 }
