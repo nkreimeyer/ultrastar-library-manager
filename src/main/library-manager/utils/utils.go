@@ -70,9 +70,6 @@ func AudioFiles(dir string) []string { return mediaEntries(dir, IsAudioFile) }
 // VideoFiles returns the visible video files directly inside dir, sorted by name.
 func VideoFiles(dir string) []string { return mediaEntries(dir, IsVideoFile) }
 
-// AudioFileExists reports whether dir contains a visible audio file.
-func AudioFileExists(dir string) bool { return len(AudioFiles(dir)) > 0 }
-
 // IsAudioFile reports whether filename has an audio file extension (".mka" is Matroska
 // audio; ".mkv" is a video).
 func IsAudioFile(filename string) bool {

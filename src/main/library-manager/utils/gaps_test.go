@@ -238,8 +238,8 @@ func TestIsFileReferencedAndReadSongTagsDetails(t *testing.T) {
 	}
 }
 
-// TestMediaFileHelpers covers IsRegularFile, mediaEntries (AudioFiles, VideoFiles,
-// AudioFileExists) and NonUTF8MediaNames.
+// TestMediaFileHelpers covers IsRegularFile, mediaEntries (AudioFiles, VideoFiles) and
+// NonUTF8MediaNames.
 func TestMediaFileHelpers(t *testing.T) {
 	dir := t.TempDir()
 	for _, n := range []string{"b.mp3", "a.ogg", "._b.mp3", ".hidden.mp4", "v.mp4", "notes.txt", "M\xe4dchen.mp3", "C\xf6ver.jpg", "R\xe9adme.txt"} {
@@ -281,14 +281,14 @@ func TestMediaFileHelpers(t *testing.T) {
 	if got, want := VideoFiles(dir), []string{"v.mp4"}; !slices.Equal(got, want) {
 		t.Errorf("VideoFiles = %q, want %q", got, want)
 	}
-	if !AudioFileExists(dir) {
-		t.Error("AudioFileExists = false")
-	}
 	empty := t.TempDir()
 	writeFile(t, filepath.Join(empty, "._a.mp3"), "x")
 	writeFile(t, filepath.Join(empty, "v.mp4"), "x")
-	if AudioFileExists(empty) || AudioFiles(filepath.Join(empty, "missing")) != nil {
-		t.Error("AudioFileExists with only a hidden audio file = true")
+	if got := AudioFiles(empty); got != nil {
+		t.Errorf("AudioFiles with only a hidden audio file = %q, want nil", got)
+	}
+	if got := AudioFiles(filepath.Join(empty, "missing")); got != nil {
+		t.Errorf("AudioFiles of a missing folder = %q, want nil", got)
 	}
 
 	if got, want := NonUTF8MediaNames(entries), []string{"C\xf6ver.jpg", "M\xe4dchen.mp3"}; !slices.Equal(got, want) {
