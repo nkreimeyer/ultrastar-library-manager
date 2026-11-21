@@ -96,10 +96,11 @@ func (s *Server) StartURL() string {
 	return "http://" + s.addr + "/?token=" + s.token
 }
 
-// Close ends the event streams, cancels a running job and waits for it to end.
+// Close cancels a running job, waits for it to end, then ends the event streams (each sends
+// the job's final state first, so an open page shows that it stopped).
 func (s *Server) Close() {
-	s.closeOnce.Do(func() { close(s.closed) })
 	s.jobs.close()
+	s.closeOnce.Do(func() { close(s.closed) })
 }
 
 func randomHex(n int) string {

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -325,9 +324,15 @@ func TestJobEventsResumeAfterReconnect(t *testing.T) {
 	}
 }
 
-// Close ends the open event streams, so the HTTP server's Shutdown does not wait for them.
+// Close ends the open event streams, so the HTTP server's Shutdown does not wait for them,
+// but only after the stopped job's final state went out on them.
 func TestCloseEndsEventStreams(t *testing.T) {
 	s := newTestServer(t)
+	s.srv.jobs.start("long", "test", fsops.New(true), func(ctx context.Context, _ jobControl) (any, error) {
+		<-ctx.Done()
+		time.Sleep(50 * time.Millisecond) // finishing the current step
+		return nil, ctx.Err()
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", s.base+"/api/job/events", nil)
@@ -336,16 +341,23 @@ func TestCloseEndsEventStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	ended := make(chan error, 1)
+	sc := bufio.NewScanner(resp.Body)
+	scanEvents(t, sc, func(evs []event) bool { return evs[len(evs)-1].name == "job" })
+	ended := make(chan string, 1)
 	go func() {
-		_, err := io.Copy(io.Discard, resp.Body)
-		ended <- err
+		last := ""
+		for sc.Scan() {
+			if line := sc.Text(); strings.HasPrefix(line, "data: {") {
+				last = line
+			}
+		}
+		ended <- last
 	}()
 	s.srv.Close()
 	select {
-	case err := <-ended:
-		if err != nil {
-			t.Errorf("stream: %v", err)
+	case last := <-ended:
+		if !strings.Contains(last, `"state":"cancelled"`) {
+			t.Errorf("last job event %s, want the cancelled state", last)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("the event stream is still open after Close")

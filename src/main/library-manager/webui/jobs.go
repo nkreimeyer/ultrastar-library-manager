@@ -266,6 +266,7 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 	tick := time.NewTicker(eventInterval)
 	defer tick.Stop()
 	lastSent := time.Now()
+	closing := false
 	for {
 		j, version, lines, ok := s.jobs.current(next)
 		if ok && (j.ID != lastID || version != lastVersion) {
@@ -292,11 +293,14 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 			fl.Flush()
 			lastSent = time.Now()
 		}
+		if closing {
+			return // the final state went out above
+		}
 		select {
 		case <-r.Context().Done():
 			return
 		case <-s.closed:
-			return
+			closing = true // one more pass sends the stopped job's final state
 		case <-tick.C:
 		}
 	}
