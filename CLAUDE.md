@@ -218,7 +218,8 @@ Same exit codes and leftover-argument rule.
   runs: modules log the song and call `ops.Fail()`, and the other songs still run, so fn must
   release locks with defer. Fatal runtime errors (concurrent map writes, OOM) are not
   recoverable. A song whose organize inspection panics stays in place as unreadable (in
-  remove it never matches); a repair txt whose planning panics is not written. Per-run state
+  remove it never matches); a repair txt whose first planning panics is not written; a panic
+  in the re-plan with fetched lyrics keeps its first plan. Per-run state
   lives in a collector or processor struct with a mutex (no globals). `fsops` serializes
   target-name reservation.
 - Moving a folder onto an existing target merges it in two cases: this run already moved
@@ -337,10 +338,18 @@ Same exit codes and leftover-argument rule.
   (organize compares it with `fixvideos.BitrateThreshold`): the stream `bit_rate`, else its
   BPS statistics tag (a plain `BPS` in any case first, then `BPS-<lang>` tags in sorted
   order), else the container `bit_rate` of a file without an audio stream; 0 = unknown.
-  fixvideos measures packet sizes (an extra ffprobe run) only when the rule gives 0. Media
+  fixvideos uses only the stream part (`mediatools.StreamBitrate`) and then measures packet
+  sizes (an extra ffprobe run), never the container rate: it also counts CBR padding (a
+  300 kbit/s video in an 8 Mbit/s MPEG-TS) and would trigger a re-encode that cannot be
+  undone. So for a video-only file without stream rate check and fixvideos can differ. Media
   are probed once per file (`mediatools.Probe`, one ffprobe JSON call); separate runs remain
   only for measurements (packet sizes, astats, check's duration measuring and decode). Marker
-  tags (`SANITIZER_*`) count on the container or any stream (`ProbeInfo.HasTag`). Captured
+  tags (`SANITIZER_*`): fixvideos counts them on the container or any stream
+  (`ProbeInfo.HasTag`), fixaudio only on the container and the processed first audio stream
+  (`mediatools.HasTagIn`). The `Inspector` takes a ctx (`NewInspector(ctx, …)`; organize
+  passes `Options.Ctx`): a stop kills running probes and decodes (`exec.CommandContext`,
+  `mediatools.WaitDelay`), `Probe` then returns `ctx.Err()`, and the inspection records no
+  media result and no failure. Captured
   ffmpeg output that is only logged or searched keeps its first 16 KiB and last 48 KiB
   (`mediatools.CombinedOutput`; check quotes the first 64 KiB).
 - webui: one job at a time, because the modules log through the global logrus logger and the
@@ -363,7 +372,9 @@ Same exit codes and leftover-argument rule.
   before listening (exit 2), a listen failure exits 1. The UI's words file is rewritten
   (`writeChoices`): an earlier spelling that fits the same damaged word in that folder's
   section is dropped. Tests: `webui/*_test.go` run the real server with `httptest` against temp libraries;
-  `ui_cmd_test.go` stubs `openBrowser` in `init` (no test may open a browser). `runSafely`
+  `ui_cmd_test.go` stubs `openBrowser` in `init` (no test may open a browser); `stopSignals`
+  reads `signal.Ignored` through `signalIgnored`, because a test's `signal.Ignore` stays
+  visible there after `signal.Reset`. `runSafely`
   turns a panic in the job goroutine into a job error, and a panic in a module's pool counts
   in the job's `Stats.Failed`; a panic in any other goroutine still ends the program.
 - organize: when a keeper from another source cannot reach the library, the library's own
