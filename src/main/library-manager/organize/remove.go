@@ -3,6 +3,7 @@ package organize
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -198,12 +199,17 @@ func planRemove(songs []removeSong, patterns []Pattern) (ds []removeDecision, co
 	return ds, counts
 }
 
+// noTagsSong is the folder below lib as a song that is never matched (NoTags).
+func noTagsSong(lib, folder string) removeSong {
+	rel, _ := filepath.Rel(lib, folder)
+	return removeSong{Folder: folder, Rel: filepath.ToSlash(rel), NoTags: true}
+}
+
 // readRemoveSong reads the tags of one song folder. A missing #ARTIST or #TITLE is taken
 // from an obvious "Artist - Title" folder name, so a library that was not sanitized yet
 // can be cleaned too.
 func readRemoveSong(ops *fsops.Ops, lib, folder string) removeSong {
-	rel, _ := filepath.Rel(lib, folder)
-	s := removeSong{Folder: folder, Rel: filepath.ToSlash(rel), NoTags: true}
+	s := noTagsSong(lib, folder)
 	txt, err := utils.FindSongTxt(ops, folder)
 	if errors.Is(err, fs.ErrNotExist) {
 		return s
@@ -256,7 +262,15 @@ func Remove(cfg config.OrganizeConfig, ops *fsops.Ops, patterns []Pattern) error
 		return fmt.Errorf("finding song folders in %q: %w", cfg.Library, err)
 	}
 	songs := make([]removeSong, len(folders))
-	forEachParallel(len(folders), workers, func(i int) { songs[i] = readRemoveSong(ops, cfg.Library, folders[i]) })
+	_ = utils.ForEachParallel(context.Background(), folders, utils.Parallel{
+		Workers: workers,
+		OnPanic: func(i int, _ any) {
+			// Never matched, like a folder whose txt cannot be read: it stays.
+			log.Errorf("Remove: %s not read: internal error (logged above); it stays in place", folders[i])
+			ops.Fail()
+			songs[i] = noTagsSong(cfg.Library, folders[i])
+		},
+	}, func(i int, folder string) { songs[i] = readRemoveSong(ops, cfg.Library, folder) })
 	sort.Slice(songs, func(a, b int) bool { return songs[a].Rel < songs[b].Rel })
 	ds, counts := planRemove(songs, patterns)
 

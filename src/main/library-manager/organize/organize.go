@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	log "github.com/sirupsen/logrus"
 
@@ -117,6 +116,13 @@ func (o Options) progress(phase string, done, total int) {
 // tests can force concurrency on machines with a single CPU.
 var workers = min(16, runtime.NumCPU())
 
+// inspectFolder inspects one song folder; a variable so tests can make it panic.
+var inspectFolder = (*check.Inspector).Inspect
+
+// errInspectPanic marks a candidate whose inspection panicked: it is left in place like an
+// unreadable folder.
+var errInspectPanic = errors.New("inspection panicked")
+
 // noteNoMediaQuality is added to the report when ffprobe is missing.
 const noteNoMediaQuality = "without ffprobe the video and audio bitrate of duplicates are unknown; the keeper is chosen by priority, txt warnings, cover, background and #VERSION only"
 
@@ -160,16 +166,21 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 	}
 	ctx := opts.ctx()
 	cands := make([]Candidate, len(items))
-	var inspected atomic.Int64
 	opts.progress(PhaseInspect, 0, len(items))
-	forEachParallel(len(items), workers, func(i int) {
-		if ctx.Err() != nil {
-			return
-		}
-		in, err := insp.Inspect(items[i].folder) // an error is logged and counted by Inspect
-		cands[i] = newCandidate(cfg, items[i].src, items[i].folder, in, err)
-		opts.progress(PhaseInspect, int(inspected.Add(1)), len(items))
+	_ = utils.ForEachParallel(ctx, items, utils.Parallel{
+		Workers:  workers,
+		Progress: func(done, total int) { opts.progress(PhaseInspect, done, total) },
+		OnPanic: func(i int, _ any) {
+			// Like an unreadable folder, the song stays where it is.
+			log.Errorf("Organize: %s not inspected: internal error (logged above); it stays in place", items[i].folder)
+			ops.Fail()
+			cands[i] = newCandidate(cfg, items[i].src, items[i].folder, check.Inspection{}, errInspectPanic)
+		},
+	}, func(i int, it item) {
+		in, err := inspectFolder(insp, it.folder) // an error is logged and counted by Inspect
+		cands[i] = newCandidate(cfg, it.src, it.folder, in, err)
 	})
+	// Also after a cancel during the last inspections: nothing is moved.
 	if err := ctx.Err(); err != nil {
 		log.Warnf("Organize: stopped while inspecting the songs; nothing was moved")
 		return err
@@ -795,27 +806,6 @@ func isBucketDir(lib, dir string) bool {
 	}
 	b := filepath.Base(dir)
 	return b == BucketDigits || b == BucketOther || (len(b) == 1 && b[0] >= 'A' && b[0] <= 'Z')
-}
-
-// forEachParallel calls fn(0..n-1) using up to w goroutines.
-func forEachParallel(n, w int, fn func(int)) {
-	w = max(1, min(w, n))
-	queue := make(chan int)
-	var wg sync.WaitGroup
-	wg.Add(w)
-	for range w {
-		go func() {
-			defer wg.Done()
-			for i := range queue {
-				fn(i)
-			}
-		}()
-	}
-	for i := range n {
-		queue <- i
-	}
-	close(queue)
-	wg.Wait()
 }
 
 // Undo reverts the most recent run of the journal (organize, dedupe, add or remove) that
