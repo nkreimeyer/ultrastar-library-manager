@@ -57,6 +57,34 @@ func TestNewRejectsOutDirSymlinkedIntoSongDir(t *testing.T) {
 	}
 }
 
+func TestOutsideSongDir(t *testing.T) {
+	root := mkdirs(t, "songs/Cat", "other")
+	cfg, err := New(filepath.Join(root, "songs"), "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{filepath.Join(root, "songs"), filepath.Join(root, "songs", "Cat", "new", "cache")} {
+		if got, err := cfg.OutsideSongDir(p); err == nil {
+			t.Errorf("OutsideSongDir(%q) = %q, want an error", p, got)
+		}
+	}
+	other, err := filepath.EvalSymlinks(filepath.Join(root, "other"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(other, "cache")
+	if got, err := cfg.OutsideSongDir(want); err != nil || got != want {
+		t.Errorf("OutsideSongDir(%q) = %q, %v", want, got, err)
+	}
+	link := filepath.Join(root, "other", "link")
+	if err := os.Symlink(filepath.Join(root, "songs", "Cat"), link); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	if got, err := cfg.OutsideSongDir(filepath.Join(link, "cache")); err == nil {
+		t.Errorf("a path linked into the song dir is accepted: %q", got)
+	}
+}
+
 func TestPrepareOutDir(t *testing.T) {
 	root := mkdirs(t, "songs")
 	cfg, err := New(filepath.Join(root, "songs"), "", false)

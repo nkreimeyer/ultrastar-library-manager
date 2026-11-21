@@ -85,6 +85,23 @@ func resolveExisting(p string) (string, error) {
 	}
 }
 
+// OutsideSongDir returns p made absolute, with the symlinks of its existing part resolved
+// (as for the output dir), and refuses a path inside the song dir: the tool's own files
+// there (a cache) would change the library, also in dry runs.
+func (c Config) OutsideSongDir(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("invalid path %q: %w", p, err)
+	}
+	if abs, err = resolveExisting(abs); err != nil {
+		return "", fmt.Errorf("resolving %q: %w", p, err)
+	}
+	if IsWithin(abs, c.SongDir) {
+		return "", fmt.Errorf("%q must not be inside the song dir %q", abs, c.SongDir)
+	}
+	return abs, nil
+}
+
 // PrepareOutDir creates the output dir and its OutputMarker file. This happens in dry-run
 // mode too, because reports are written there.
 func (c Config) PrepareOutDir() error {

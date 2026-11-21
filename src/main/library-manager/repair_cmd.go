@@ -26,7 +26,7 @@ func runRepair(args []string, output io.Writer) int {
 	fs.Var(&wordlists, "wordlist", "Word list file, \"path\" or \"lang=path\" (de=/usr/share/hunspell/de_DE.dic): one word per line, hunspell .dic and frequency lists work too; repeatable")
 	fs.Var(&words, "words", "File of reviewed spellings (Täterätätä): they win over all other evidence, in every song; words below a line \"[Artist - Title]\" apply to that song only, \"[*]\" goes back to all songs; repeatable")
 	lyrics := fs.Bool("lyrics", false, "Look up the lyrics of songs that still have unrepaired words at lrclib.net (sends artist and title) and use them as a reference")
-	lyricsCache := fs.String("lyrics-cache", "", "Folder for cached lyrics answers (default: <out>/lyrics-cache)")
+	lyricsCache := fs.String("lyrics-cache", "", "Folder for cached lyrics answers, not inside -s (default: <out>/lyrics-cache)")
 	strict := fs.Bool("strict", false, "Leave the weak repairs (little evidence) undone; the report lists them with their suggestion")
 	logLevel := fs.String("v", "info", "Log level (debug, info, warn, error)")
 	fs.Usage = func() {
@@ -88,17 +88,22 @@ func runRepair(args []string, output io.Writer) int {
 		log.Error(err)
 		return exitUsage
 	}
-	if err := cfg.PrepareOutDir(); err != nil {
-		log.Error(err)
-		return exitFailures
-	}
 	ops := fsops.New(cfg.DryRun)
 	if *lyrics {
 		cache := *lyricsCache
 		if cache == "" {
 			cache = filepath.Join(cfg.OutDir, "lyrics-cache")
 		}
+		// The cache is written in dry runs too.
+		if cache, err = cfg.OutsideSongDir(cache); err != nil {
+			log.Errorf("-lyrics-cache: %v", err)
+			return exitUsage
+		}
 		opts.Lyrics = repairtxt.NewLRCLib(cache, ops)
+	}
+	if err := cfg.PrepareOutDir(); err != nil {
+		log.Error(err)
+		return exitFailures
 	}
 	if cfg.DryRun {
 		log.Infof("Dry run: no txt is changed (the report is written to the output dir)")

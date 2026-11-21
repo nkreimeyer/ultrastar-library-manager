@@ -285,6 +285,13 @@ func TestRepairFlow(t *testing.T) {
 	if got := s.do("POST", "/api/repair/validate", repairRequest{SongDir: lib, LyricsCache: "x"}, &e); got != http.StatusBadRequest {
 		t.Errorf("cache without lyrics: %d", got)
 	}
+	// The cache is written in the analysis (a dry run) too.
+	if got := s.do("POST", "/api/repair/validate", repairRequest{SongDir: lib, Lyrics: true, LyricsCache: filepath.Join(lib, "cache")}, &e); got != http.StatusBadRequest || !strings.Contains(e.Error, "lyrics cache") {
+		t.Errorf("cache in the song folder: %d %q", got, e.Error)
+	}
+	if got := s.do("POST", "/api/repair/analyse", repairRequest{SongDir: lib, Out: out, Lyrics: true, LyricsCache: filepath.Join(lib, "cache")}, &e); got != http.StatusBadRequest {
+		t.Errorf("analysis with the cache in the song folder: %d", got)
+	}
 	if got := s.do("POST", "/api/repair/validate", repairRequest{SongDir: lib, WordLists: []string{"de=/missing"}}, &e); got != http.StatusBadRequest {
 		t.Errorf("missing word list: %d", got)
 	}

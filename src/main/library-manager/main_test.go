@@ -507,6 +507,8 @@ func TestRunRepairCommand(t *testing.T) {
 		{"no song dir", []string{"repair"}, exitUsage},
 		{"leftover argument", []string{"repair", "-s", lib, "-n", "false"}, exitUsage},
 		{"cache without lyrics", []string{"repair", "-s", lib, "-lyrics-cache", base}, exitUsage},
+		// The cache is written in dry runs too.
+		{"cache in the song dir", []string{"repair", "-s", lib, "-n", "-lyrics", "-lyrics-cache", filepath.Join(lib, "cache")}, exitUsage},
 		{"missing word list", []string{"repair", "-s", lib, "-wordlist", filepath.Join(base, "nope.dic")}, exitUsage},
 		{"missing words file", []string{"repair", "-s", lib, "-words", filepath.Join(base, "nope.txt")}, exitUsage},
 		{"unknown word list language", []string{"repair", "-s", lib, "-wordlist", "Klingon=" + wl}, exitUsage},

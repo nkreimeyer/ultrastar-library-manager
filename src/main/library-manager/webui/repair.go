@@ -73,6 +73,11 @@ func (q repairRequest) options(cfg config.Config, ops *fsops.Ops) (repairtxt.Opt
 		if cache == "" {
 			cache = filepath.Join(cfg.OutDir, "lyrics-cache")
 		}
+		// The cache is written in the analysis (a dry run) too.
+		cache, err := cfg.OutsideSongDir(cache)
+		if err != nil {
+			return opts, fmt.Errorf("lyrics cache: %w", err)
+		}
 		opts.Lyrics = repairtxt.NewLRCLib(cache, ops)
 	} else if q.LyricsCache != "" {
 		return opts, errors.New("a lyrics cache needs the online lyrics lookup")
