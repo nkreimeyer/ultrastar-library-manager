@@ -49,6 +49,11 @@ type Options struct {
 	IgnoreThe bool
 	// Deep: fully decode the media files while checking (check -deep).
 	Deep bool
+	// Broken says what happens to broken songs (PlanOptions.Broken).
+	Broken BrokenRule
+	// KeepDuplicates: no song is set aside as a duplicate (PlanOptions.KeepDuplicates).
+	// Only ModeDedupe allows it: elsewhere a kept duplicate would have no place to go.
+	KeepDuplicates bool
 
 	// Ctx cancels the run (nil = never). It is checked before each song folder is
 	// inspected (nothing has moved then) and before each move; a run stopped during the
@@ -139,6 +144,9 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 	if len(cfg.Sources) == 0 || cfg.Library == "" {
 		return errors.New("organize needs at least one source and a library")
 	}
+	if opts.KeepDuplicates && opts.mode() != ModeDedupe {
+		return fmt.Errorf("keeping duplicates is only possible in dedupe, not in %s", opts.mode())
+	}
 	type item struct {
 		src    config.Source
 		folder string
@@ -190,6 +198,7 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 	planOpts := PlanOptions{
 		Priority: opts.Priority, IgnoreThe: opts.IgnoreThe, Occupied: libraryOccupant(ops, cfg.Library),
 		LibraryInPlace: opts.mode() != ModeOrganize, Exclude: opts.Exclude,
+		Broken: opts.Broken, KeepDuplicates: opts.KeepDuplicates,
 	}
 	for _, src := range cfg.Sources {
 		if src.Path == cfg.Library {
@@ -224,6 +233,7 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 
 	a := newApplier(cfg, ops, cands, in.outcomes)
 	a.ctx, a.progress, a.libraryInPlace = ctx, opts.progress, planOpts.LibraryInPlace
+	a.brokenSetAside = opts.Broken == BrokenSetAside
 	a.apply(plan)
 	if !cfg.DryRun {
 		in.emptyLeft = emptiedCategories(cfg, cands, in.outcomes)
@@ -490,6 +500,9 @@ type applier struct {
 	progress func(phase string, done, total int)
 	// libraryInPlace is PlanOptions.LibraryInPlace (dedupe, add): see restoreLibraryLosers.
 	libraryInPlace bool
+	// brokenSetAside: Options.Broken is BrokenSetAside, so a broken song stays in invalid/
+	// whatever happens to its replacement.
+	brokenSetAside bool
 }
 
 func newApplier(cfg config.OrganizeConfig, ops *fsops.Ops, cands []Candidate, outcomes map[int]moveOutcome) *applier {
@@ -628,7 +641,7 @@ func (a *applier) apply(p Plan) {
 // its move failed, was refused (bucketTaken) or not attempted (stop, journal failure).
 // Otherwise the library would be left without the song. In dedupe and add (a library
 // that stays in place) the same goes for a broken library song whose replacement did not
-// get there. It is the counterpart of keepLibraryLosers for what only the moves show, and
+// get there, unless broken songs are always set aside (BrokenSetAside). It is the counterpart of keepLibraryLosers for what only the moves show, and
 // it also runs after a stop (as unpark does). The moves back are journaled, so -undo
 // still reverts the whole run; after a journal failure nothing is moved and the songs are
 // named instead. A dry run plans the same moves back.
@@ -643,7 +656,7 @@ func (a *applier) restoreLibraryLosers(p Plan) {
 		switch {
 		case !c.InLibrary || k < 0 || !reached(i):
 			continue
-		case d.Action != ActDuplicate && !(d.Action == ActInvalid && a.libraryInPlace):
+		case d.Action != ActDuplicate && !(d.Action == ActInvalid && a.libraryInPlace && !a.brokenSetAside):
 			continue
 		case p.Decisions[k].Action != ActMove || a.cands[k].InLibrary || reached(k):
 			continue // the keeper is in the library (a library keeper stays there if its move fails)

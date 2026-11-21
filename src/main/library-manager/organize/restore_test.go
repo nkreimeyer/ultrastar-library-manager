@@ -123,9 +123,11 @@ func TestApplyRestoresLibrarySongAfterStop(t *testing.T) {
 // broken library songs only when the library stays in place (dedupe, add; organize sends
 // broken songs to invalid/ whatever happens to their replacement), never songs from
 // other sources, and nothing whose keeper is a library song (it is still in the library).
+// With BrokenSetAside a broken song stays in invalid/ in every mode.
 func TestRestoreLibraryLosersSelection(t *testing.T) {
-	for _, inPlace := range []bool{false, true} {
-		t.Run(fmt.Sprintf("inPlace=%v", inPlace), func(t *testing.T) {
+	for _, tc := range []struct{ inPlace, setAside bool }{{false, false}, {true, false}, {true, true}} {
+		inPlace := tc.inPlace
+		t.Run(fmt.Sprintf("inPlace=%v,setAside=%v", inPlace, tc.setAside), func(t *testing.T) {
 			noFFprobe(t)
 			base := t.TempDir()
 			lib, src, out := filepath.Join(base, "lib"), filepath.Join(base, "src"), filepath.Join(base, "out")
@@ -156,7 +158,7 @@ func TestRestoreLibraryLosersSelection(t *testing.T) {
 			}}
 			ops := fsops.New(false)
 			a := newApplier(cfg, ops, cands, map[int]moveOutcome{})
-			a.libraryInPlace = inPlace
+			a.libraryInPlace, a.brokenSetAside = inPlace, tc.setAside
 			a.moveTo = func(s, d string) error {
 				if strings.HasPrefix(d, lib) && (s == cands[2].Folder || s == cands[4].Folder || s == cands[5].Folder) {
 					ops.Fail()
@@ -166,7 +168,7 @@ func TestRestoreLibraryLosersSelection(t *testing.T) {
 			}
 			a.apply(plan)
 			want := map[int]string{0: outcomeRestored, 1: outcomeMoved, 3: outcomeMoved, 6: outcomeMoved}
-			if inPlace {
+			if inPlace && !tc.setAside {
 				want[1] = outcomeRestored
 			}
 			for i, w := range want {

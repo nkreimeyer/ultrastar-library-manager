@@ -83,6 +83,26 @@ const (
 	reasonNotASong       = "target %s exists in the library and is not a song folder (an empty or category folder, or a file); it is never overwritten"
 	reasonBrokenStays    = "broken (errors: %s), but no working version replaces it, so it stays; check -k -move-broken moves broken songs"
 	reasonExcluded       = "excluded in review"
+	reasonBrokenKept     = "broken (errors: %s); setting broken songs aside is turned off"
+)
+
+// reasonBrokenDuplicate is the Reason of a broken song that is a duplicate of its working
+// version (BrokenKeep).
+const reasonBrokenDuplicate = "broken (errors: %s); the working version is kept"
+
+// BrokenRule says what happens to broken songs (songs with check errors).
+type BrokenRule int
+
+const (
+	// BrokenByMode is today's rule: organize and add move them to invalid/; dedupe keeps a
+	// broken library song that has no working version.
+	BrokenByMode BrokenRule = iota
+	// BrokenKeep: never to invalid/. A broken song with a working version is a duplicate of
+	// it (unless KeepDuplicates), else it stays.
+	BrokenKeep
+	// BrokenSetAside: always to invalid/, also a broken library song without a working
+	// version in dedupe, and even when its working version stays outside the library.
+	BrokenSetAside
 )
 
 // ReasonExcluded is the Decision.Reason of a candidate in PlanOptions.Exclude.
@@ -117,6 +137,13 @@ type PlanOptions struct {
 	// song are planned without it (one of them may become the keeper); to leave a whole
 	// song alone, exclude all of its versions.
 	Exclude map[string]bool
+	// Broken says what happens to broken songs.
+	Broken BrokenRule
+	// KeepDuplicates (dedupe only: every candidate must be InLibrary, with LibraryInPlace):
+	// no song is set aside as a duplicate. Each version that would be one stays in place,
+	// and nothing is listed for review (PossibleDuplicates, Similar). Broken songs follow
+	// Broken.
+	KeepDuplicates bool
 }
 
 // Decision is the plan for one candidate.
@@ -169,7 +196,7 @@ type group struct {
 //
 //   - Unreadable candidates and those with an encoding problem are left in place.
 //   - Broken candidates go to invalid/; the working version of the same song (if any) is
-//     named as the replacement.
+//     named as the replacement. opts.Broken changes that (BrokenRule).
 //   - Working candidates are grouped by SongKey, and groups whose members share a content
 //     hash (same notes, timing and lyrics; duets and solo versions apart) are joined. The
 //     best one (see chooseKeeper) is the keeper, the others go to duplicates/ with the
@@ -294,6 +321,10 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 					}
 				}
 				p.Decisions[m] = Decision{Action: ActDuplicate, Reason: reason, Other: g.keeper}
+				if opts.KeepDuplicates {
+					// The grouping still runs, so broken songs find their working version.
+					p.Decisions[m] = Decision{Action: ActInPlace, Target: cands[m].Rel, Other: -1}
+				}
 			}
 		}
 	}
@@ -307,8 +338,14 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 		} else if first, ok := byContent[contentKey(c)]; ok {
 			d.Other = groups[uf.find(songKey[first])].keeper
 		}
-		if opts.LibraryInPlace && c.InLibrary && d.Other < 0 {
-			d = Decision{Action: ActLeft, Reason: fmt.Sprintf(reasonBrokenStays, strings.Join(c.Errors, ", ")), Other: -1}
+		errs := strings.Join(c.Errors, ", ")
+		switch {
+		case opts.Broken == BrokenKeep && d.Other >= 0 && !opts.KeepDuplicates:
+			d = Decision{Action: ActDuplicate, Reason: fmt.Sprintf(reasonBrokenDuplicate, errs), Other: d.Other}
+		case opts.Broken == BrokenKeep:
+			d = Decision{Action: ActLeft, Reason: fmt.Sprintf(reasonBrokenKept, errs), Other: -1}
+		case opts.Broken == BrokenByMode && opts.LibraryInPlace && c.InLibrary && d.Other < 0:
+			d = Decision{Action: ActLeft, Reason: fmt.Sprintf(reasonBrokenStays, errs), Other: -1}
 		}
 		p.Decisions[i] = d
 	}
@@ -326,8 +363,12 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 	// A keeper left outside the library must not cost the library its own copies: they
 	// stay, which may in turn block other targets.
 	librarySource := opts.LibraryInPlace || opts.LibrarySource
-	for resolveOccupied(cands, p.Decisions, opts.Occupied, librarySource); keepLibraryLosers(cands, p.Decisions, groups, groupKeys, opts.LibraryInPlace); {
+	keepInvalid := opts.LibraryInPlace && opts.Broken != BrokenSetAside
+	for resolveOccupied(cands, p.Decisions, opts.Occupied, librarySource); keepLibraryLosers(cands, p.Decisions, keepInvalid); {
 		resolveOccupied(cands, p.Decisions, opts.Occupied, librarySource)
+	}
+	if opts.KeepDuplicates {
+		return p // every version stays: there is nothing to review
 	}
 	p.PossibleDuplicates = possibleDuplicates(cands, groups, groupKeys)
 	keepers := map[int]bool{}
@@ -504,32 +545,24 @@ func resolveOccupied(cands []Candidate, ds []Decision, occupied func(string) (st
 	}
 }
 
-// keepLibraryLosers leaves the library members of a group in place when the group's
-// keeper comes from another source and is left there (its target cannot be used): moving
-// them to duplicates/ would leave the library without the song. With libraryInPlace, a
-// broken library song whose replacement is left outside stays as well (a library keeper
-// is never left in that mode, so the replacement is from another source). It reports whether
-// it changed a decision.
-func keepLibraryLosers(cands []Candidate, ds []Decision, groups map[string]*group, keys []string, libraryInPlace bool) bool {
+// keepLibraryLosers leaves the library duplicates in place when their keeper comes from
+// another source and is left there (its target cannot be used): moving them to
+// duplicates/ would leave the library without the song. This covers the members of the
+// keeper's group and broken songs planned as its duplicates (BrokenKeep) alike. With
+// keepInvalid (dedupe and add, unless broken songs are always set aside), a broken library
+// song whose replacement is left outside stays as well (a library keeper is never left in
+// that mode, so the replacement is from another source). It reports whether it changed a
+// decision.
+func keepLibraryLosers(cands []Candidate, ds []Decision, keepInvalid bool) bool {
 	changed := false
-	if libraryInPlace {
-		for i := range ds {
-			if o := ds[i].Other; ds[i].Action == ActInvalid && cands[i].InLibrary && o >= 0 && ds[o].Action == ActLeft {
-				ds[i] = Decision{Action: ActLeft, Reason: fmt.Sprintf(reasonKeeperLeft, cands[o].Ref()), Other: -1}
-				changed = true
-			}
-		}
-	}
-	for _, k := range keys {
-		g := groups[k]
-		if ds[g.keeper].Action != ActLeft || cands[g.keeper].InLibrary {
+	for i := range ds {
+		o := ds[i].Other
+		if o < 0 || !cands[i].InLibrary || ds[o].Action != ActLeft {
 			continue
 		}
-		for _, m := range g.members {
-			if m != g.keeper && cands[m].InLibrary && ds[m].Action == ActDuplicate {
-				ds[m] = Decision{Action: ActLeft, Reason: fmt.Sprintf(reasonKeeperLeft, cands[g.keeper].Ref()), Other: -1}
-				changed = true
-			}
+		if (ds[i].Action == ActInvalid && keepInvalid) || (ds[i].Action == ActDuplicate && !cands[o].InLibrary) {
+			ds[i] = Decision{Action: ActLeft, Reason: fmt.Sprintf(reasonKeeperLeft, cands[o].Ref()), Other: -1}
+			changed = true
 		}
 	}
 	return changed
