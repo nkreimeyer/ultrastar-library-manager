@@ -25,9 +25,11 @@ import (
 )
 
 // LyricsSource looks up the plain lyrics of a song. Artist and title may still contain
-// U+FFFD. It returns "" without an error if it does not know the song, and ctx.Err() once
-// ctx is done. An error means there is no answer: found lyrics come with a nil error, even
-// if keeping them for later (a cache) failed.
+// U+FFFD. It returns "" without an error if it does not know the song. Once ctx is done, a
+// lookup that still needs the network stops with an error that wraps ctx.Err() (an
+// answer already at hand, such as a cached one, may still be returned). An error means
+// there is no answer: found lyrics come with a nil error, even if keeping them for later
+// (a cache) failed.
 type LyricsSource interface {
 	Lyrics(ctx context.Context, artist, title string) (string, error)
 }

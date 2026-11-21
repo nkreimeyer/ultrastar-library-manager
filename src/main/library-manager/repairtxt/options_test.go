@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+
+	logtest "github.com/sirupsen/logrus/hooks/test"
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
@@ -214,6 +218,37 @@ func TestRunCancelled(t *testing.T) {
 		}
 		if asked != 1 {
 			t.Errorf("asked %d times, want 1", asked)
+		}
+		if !unchanged(t, paths[0], orig[0]) || !unchanged(t, paths[1], orig[1]) {
+			t.Error("a txt was written")
+		}
+	})
+	t.Run("lookup stopped by the cancel", func(t *testing.T) {
+		cfg, paths, orig := twoDamaged(t)
+		for i, p := range paths {
+			orig[i] = songText("#TITLE:"+[]string{"Eins", "Zwei"}[i]+"\n#ARTIST:A\n#MP3:a.mp3\n#BPM:300\n#LANGUAGE:German\n", "s"+R+"rprise")
+			if err := os.WriteFile(p, []byte(orig[i]), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		hook := logtest.NewGlobal()
+		t.Cleanup(hook.Reset)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		// A lookup the cancel interrupts fails with the ctx error: that is the stop, not a
+		// lyrics problem worth a warning.
+		lyrics := lyricsFunc(func(string, string) (string, error) {
+			cancel()
+			return "", fmt.Errorf("lrclib: %w", context.Canceled)
+		})
+		err := Run(cfg, fsops.New(false), Options{Ctx: ctx, Lyrics: lyrics})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run = %v", err)
+		}
+		for _, e := range hook.AllEntries() {
+			if strings.HasPrefix(e.Message, "lyrics for") {
+				t.Errorf("logged %q", e.Message)
+			}
 		}
 		if !unchanged(t, paths[0], orig[0]) || !unchanged(t, paths[1], orig[1]) {
 			t.Error("a txt was written")

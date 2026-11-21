@@ -243,7 +243,7 @@ var fileTags = map[string]bool{
 var ErrTxtNotUTF8 = errors.New("song txt is not UTF-8 (run the fixtxt module first)")
 
 // ErrTxtProblem is returned by ReplaceFileReference for song txts with a decode Problem.
-var ErrTxtProblem = errors.New("song txt has an encoding problem and is never rewritten (see encoding_issues.txt)")
+var ErrTxtProblem = errors.New("song txt has an encoding problem and is never rewritten (fixtxt lists such txts in encoding_issues.txt)")
 
 // ReplaceFileReference changes every file tag (#MP3, #AUDIO, #VIDEO, #COVER, ...) of the
 // song txt in dir whose value is oldName (also matching case- and NFC-insensitively) to
