@@ -145,3 +145,18 @@ func TestTagsFromFolderNameReasons(t *testing.T) {
 		}
 	}
 }
+
+// matchKey folds every apostrophe and typographic double quote the folder names may use
+// to ASCII (the set of IsApostrophe).
+func TestMatchKeyQuotes(t *testing.T) {
+	for _, r := range "'`’‘´ʼ" {
+		if got := matchKey("don"+string(r)+"t", ""); got != "don't" {
+			t.Errorf("matchKey(%q) = %q", "don"+string(r)+"t", got)
+		}
+	}
+	for _, r := range "“”„" {
+		if got := matchKey(string(r)+"x", "_"); got != "_x" {
+			t.Errorf("matchKey(%q) = %q", string(r)+"x", got)
+		}
+	}
+}

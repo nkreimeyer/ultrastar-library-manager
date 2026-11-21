@@ -228,15 +228,23 @@ func stripQualifier(s string) (string, bool) {
 // fileNameUnsafe are the characters file names cannot contain on Windows or macOS.
 const fileNameUnsafe = `<>:"/\|?*`
 
-// typographic maps typographic apostrophes and quotes to their ASCII form.
-var typographic = strings.NewReplacer("\u2019", "'", "\u2018", "'", "\u02bc", "'", "\u00b4", "'", "`", "'",
-	"\u201c", `"`, "\u201d", `"`, "\u201e", `"`)
+// asciiQuote maps an apostrophe (IsApostrophe) to "'" and a typographic double quote to
+// '"'.
+func asciiQuote(r rune) rune {
+	switch {
+	case IsApostrophe(r):
+		return '\''
+	case r == '“' || r == '”' || r == '„':
+		return '"'
+	}
+	return r
+}
 
 // matchKey normalizes s for folderPartMatches: NFC, case folding, typographic apostrophes
 // and quotes folded to ASCII, the characters that are invalid in file names replaced by
 // repl ("" removes them), whitespace collapsed and trailing dots removed.
 func matchKey(s, repl string) string {
-	s = typographic.Replace(norm.NFC.String(s))
+	s = strings.Map(asciiQuote, norm.NFC.String(s))
 	var b strings.Builder
 	for _, r := range s {
 		if strings.ContainsRune(fileNameUnsafe, r) {
