@@ -20,20 +20,28 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   organize_cmd.go             the organize, dedupe and add subcommands (organize.Mode): own FlagSet, -s tier lists, -undo, validation
   remove_cmd.go               the remove subcommand: -artist/-song/-from patterns, -undo
   repair_cmd.go               the repair subcommand: -s, -wordlist [lang=]file, -words file, -lyrics, -strict
+  cmd_common.go               the steps all commands share: usageError/leftoverError, setLogLevel (-v), subcommand
+                              (FlagSet + -v: parse, undoFlag, checkUndoFolder), journaledRun (organize/dedupe/add/remove:
+                              config or undo config, organize.Undo or PrepareOutDir + run, "<name> failed", summary line)
   main_test.go                flag validation (-deep/-move-broken need -k), module order, organize usage
   pipeline_test.go            fixtxt → cleanup (→ check) integration tests (real run, dry-run = real-run plan, idempotence)
   config/                     Config{SongDir, OutDir, DryRun}: path validation, output layout, marker file;
                               organize.go: OrganizeConfig{Sources (tier, label), Library, OutDir}; NewDedupe, NewAdd
   fsops/                      the ONLY place that modifies files: dry-run (planned writes/moves visible via ReadFile), atomic writes, moves, stats;
                               MoveTo (exact target, ordered dry-run moves), AppendJournal, RemoveEmptyDir (undo),
-                              WriteJSONReport/MarshalReport (the one JSON report encoding)
+                              WriteJSONReport/MarshalReport (the one JSON report encoding), FailUnreadable (the
+                              "unreadable:<path>" FailOnce key), SkipUnreadable ("Skipping <folder>: <err>")
   utils/decode.go             txt decoding (DecodeTxt): UTF-16/UTF-8/#ENCODING/CP1250/CP1252, "when in doubt, Problem"
   utils/txt.go                header tags, song-txt lookup, file references
   utils/folders.go            song folder discovery (GetAllSongFolders)
-  utils/utils.go              media type checks, non-UTF-8 media names
+  utils/utils.go              media type checks, non-UTF-8 media names, FileTags/IsFileTag (the seven tags naming files),
+                              IsNoiseEntry (hidden, @eaDir, planned dry-run move: no song content)
   utils/language.go           #LANGUAGE names -> codes: LanguageCodes (prefix table languagePrefixes, first match
                               wins, empty code = stop; whole words notLanguageNames), KnownLanguageCode;
                               shared by repairtxt and DecodeTxt's CP1250 choice
+  utils/fold.go               FoldString (NFC, case folding, marks dropped on Latin/Greek letters and non-letters,
+                              letterFolds for ø æ œ ł đ ð þ ß ı ħ ŧ ŋ ĸ ɨ ƶ and hooked letters), IsApostrophe (' ` ’ ‘ ´ ʼ);
+                              used by organize keys/Bucket, LanguageCodes, repair's lrclib matching
   utils/parallel.go           ForEachParallel: the one worker pool (Parallel{Workers, Progress, OnPanic}),
                               ctx stops new items, a panic is recovered per item
   utils/songname.go           TagsFromFolderName: obvious #ARTIST/#TITLE fills from "Artist - Title" folder names
@@ -59,13 +67,15 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   repairtxt/                  repair of U+FFFD-damaged txts: lexicon.go (corpus per language: words, edge forms,
                               bigrams, char 4/5-grams, punctuation classes), language.go (naive Bayes language
                               detection; the #LANGUAGE codes come from utils.LanguageCodes), text.go (tag/lyric segments with byte offsets), resolve.go (evidence
-                              levels, case), plan.go + words.go (per-file planning), wordlist.go, lyrics.go (lrclib.net
+                              levels, case), plan.go + words.go (per-file planning), wordlist.go, inputs.go (ResolveWordFiles,
+                              LyricsCacheDir: shared by the CLI and the UI, error prefixes from InputNames), lyrics.go (lrclib.net
                               client with cache), repair.go (Run, fffd_repair.txt/.json)
   organize/                   organize/dedupe/add: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey, StripCopySuffix),
                               content.go (ContentHash, union-find joining of groups by content),
                               remove.go (Pattern, ParsePatternFile, planRemove (pure), Remove, remove_plan.json/.txt),
                               similar.go (Profile, findSimilar, similarJoin, review evidence),
-                              quality.go (keeper order), plan.go (MakePlan, orderMoves; pure), organize.go (Run, Undo),
+                              setup.go (NewConfig per Mode, NewUndoConfig, NewOptions: shared by the CLI and the UI;
+                              dedupe drops -priority/-ignore-the), quality.go (keeper order), plan.go (MakePlan, orderMoves; pure), organize.go (Run, Undo),
                               journal.go (organize-journal.jsonl), report.go (organize_plan.json/.txt;
                               writeReportFiles also writes remove_plan.*)
 old/                          legacy Python/shell (duplicate detection by folder name, fuzzy txt compare)
@@ -207,7 +217,10 @@ Same exit codes and leftover-argument rule.
   logged at Info, `Replace` at Debug (fixaudio/fixvideos log their own result); writes are
   logged by the modules. In a dry run, the targets of `MoveInto`/`CopyInto` count as taken
   (a second move to the same name gets ` (2)`, as in a real run), and the merge decision
-  sees folders emptied or put in place by planned moves (`plannedDirs`).
+  sees folders emptied or put in place by planned moves (`plannedDirs`). `Rename` (only
+  fixvideos' extension-changing conversion) is not `MoveTo`: it fsyncs the new file and the
+  folder and, in a dry run, needs no existing src. fixaudio and fixvideos call `journal.Add`
+  then `Save` per file: a failing Add is counted by the caller, a failing Save by ops.
 - Concurrency: every module pool is `utils.ForEachParallel(ctx, items, utils.Parallel{Workers,
   Progress, OnPanic}, fn)`. Workers: fixtxt and cleanup 100 over folders (the size of the old
   batches, now a pool), fixaudio, check and organize (inspection, remove's tag reading)
@@ -247,7 +260,7 @@ Same exit codes and leftover-argument rule.
   background, `#VERSION`, source order, path) are filters over the whole group, never pairwise
   comparisons, because the bitrate tolerance is not transitive. Each loser's reason is the
   filter that dropped it. Without ffprobe, `MediaSummary.HasVideo` only means `#VIDEO`
-  names an existing, non-empty file (height and bitrate unknown = 0). `SongKey` folds diacritics only on Latin/Greek letters (marks of
+  names an existing, non-empty file (height and bitrate unknown = 0). `SongKey` folds with `utils.FoldString`: diacritics only on Latin/Greek letters (marks of
   other scripts make different letters), drops invisible format characters like FolderName,
   and never lets a `feat.` part or a duet qualifier swallow a version word (`Live`, `Remix`,
   …). Keys ignore spaces (words joined without them), treat a collaboration as a sorted
@@ -309,7 +322,9 @@ Same exit codes and leftover-argument rule.
   naive Bayes with Jelinek-Mercer smoothing against the whole corpus (add-one or Dirichlet
   smoothing let a word missing from both corpora cost a big corpus more, so songs drifted
   to the small Dutch corpus). lrclib lookups fall back to first artist + title without
-  `(…)`/`[…]`, then the title alone; titles and artists match accent-insensitively; old
+  `(…)`/`[…]`, then the title alone; titles and artists match with `utils.FoldString`, rune by rune (a U+FFFD
+  stands for one non-ASCII rune) and, without U+FFFD, also as whole folded keys (`Mø` = `Mo`,
+  `Straße` = `Strasse`; `й` ≠ `и`); old
   "not found" cache entries (no `version` 2) are looked up again. Lookups take the run's ctx
   (a cancel stops a request or a rate-limit wait; Run returns the ctx error right after the
   lookup); an answer whose cache entry cannot be written is still used; a `-lyrics-cache`
@@ -365,7 +380,9 @@ Same exit codes and leftover-argument rule.
   song folder (`forSong` matches the folder name). `fsops.Stats` has JSON names (the UI reads
   them). The start URL's token works once (a signed-in browser opening it again is only
   redirected); the cookie is `lm_session_<port>`, as browsers share cookies across ports.
-  Only the newest analysis of each kind is kept. Event streams send `id: <job>/<next line>`
+  Only the newest analysis of each kind is kept. Every job handler starts its job with
+  `Server.startJob` (202 with the job, 409 while one runs); a dedupe ignores the request's
+  priority/ignoreThe (the dedupe CLI has no such flags). Event streams send `id: <job>/<next line>`
   with each log event and resume from `Last-Event-ID`; `Server.Close` ends them (before
   `http.Server.Shutdown`; each sends the final job state first). `ui` stops on SIGINT, SIGTERM
   and SIGHUP, unless the signal was ignored at the start (`nohup`; `stopSignals`); `-addr` is checked
