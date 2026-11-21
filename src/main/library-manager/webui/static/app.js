@@ -66,6 +66,10 @@ const TASKS = {
     title: "Add new songs to my library",
     desc: "Bring songs from other folders into the library. Songs it already has are compared, and only the best version is kept.",
   },
+  reports: {
+    title: "Read the reports of earlier runs",
+    desc: "Open the lists the tools wrote: what was planned or moved, songs with encoding problems, missing files and check results.",
+  },
   restore: {
     title: "Put back set-aside songs",
     desc: "Look at the duplicates, broken songs, removed songs and leftover files that were set aside, and put back the ones you want to keep.",
@@ -195,6 +199,7 @@ const S = {
   org: null, // organize review view
   rem: null, // remove review view
   chk: null, // check report view
+  reports: null, // report viewer: { config, files, shown: { name, text, truncated } }
   aside: null, // set-aside browser: { config, items }
   pick: new Set(), // keys (section/rel) of the items chosen to put back
   open: new Set(), // open review sections
@@ -232,6 +237,9 @@ function render() {
       break;
     case "aside":
       content = viewAside();
+      break;
+    case "reports":
+      content = viewReports();
       break;
     default:
       content = viewSetup();
@@ -502,7 +510,7 @@ function organizeRequest(withTidy) {
   if (S.task === "check") {
     return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "", deep: advanced() && S.f.deep };
   }
-  if (S.task === "restore") return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "" };
+  if (S.task === "restore" || S.task === "reports") return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "" };
   return {
     tidy: withTidy && S.task === "dedupe" ? tidyRequest() : undefined,
     mode: S.task,
@@ -532,7 +540,7 @@ async function validate() {
     return;
   }
   try {
-    const res = await post(`/api/${{ remove: "remove", check: "check", restore: "setaside" }[S.task] || "organize"}/validate`, organizeRequest());
+    const res = await post(`/api/${{ remove: "remove", check: "check", restore: "setaside", reports: "setaside" }[S.task] || "organize"}/validate`, organizeRequest());
     if (seq !== validateSeq) return;
     S.resolved = res;
     S.resolveError = null;
@@ -566,7 +574,7 @@ function updateResolved() {
   } else if (S.resolved) {
     const out = S.resolved.outDir;
     el.replaceChildren(
-      S.task === "check" ? "The reports go to " : S.task === "restore" ? "Looking in " : "Set-aside songs, reports and the record for undoing go to ",
+      S.task === "check" ? "The reports go to " : S.task === "restore" || S.task === "reports" ? "Looking in " : "Set-aside songs, reports and the record for undoing go to ",
       h("span", { class: "path" }, out),
       ".",
     );
@@ -613,6 +621,9 @@ function viewSetup() {
     case "restore":
       fields.append(folderField("Your library", "library", "The library the songs were set aside from. Its output folder is where they are now."));
       break;
+    case "reports":
+      fields.append(folderField("Your library", "library", "The reports are in its output folder."));
+      break;
     case "remove":
       fields.append(folderField("Your library", "library", "The folder that holds your songs. The songs you name are moved out of it."));
       fields.append(patternsField());
@@ -643,11 +654,12 @@ function viewSetup() {
       render();
       window.scrollTo(0, 0);
     } }, "Next")
-    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: S.task === "restore" ? loadAside : startAnalysis },
-      S.task === "check" ? "Check songs" : S.task === "restore" ? "Look" : "Check first"),
+    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: S.task === "restore" ? loadAside : S.task === "reports" ? () => openReports(organizeRequest()) : startAnalysis },
+      S.task === "check" ? "Check songs" : S.task === "restore" ? "Look" : S.task === "reports" ? "Show reports" : "Check first"),
   h("span", { class: "muted small" }, S.task === "dedupe" ? "Next you choose what to tidy up."
     : S.task === "check" ? "Nothing in the library is changed. It can take a while for a big library."
     : S.task === "restore" ? "You choose what to put back on the next page."
+    : S.task === "reports" ? "Nothing is changed."
     : "Nothing is changed yet. You see what would happen and decide then."),
   ));
   if (advanced()) {
@@ -703,6 +715,56 @@ async function loadAside() {
   }
   render();
   window.scrollTo(0, 0);
+}
+
+// openReports lists the reports of the output folder of cfg ({ library, out } or a result's
+// { library, outDir }) and shows the viewer.
+async function openReports(cfg) {
+  try {
+    const res = await post("/api/reports/list", { library: cfg.library, out: cfg.out ?? cfg.outDir });
+    S.reports = { ...res, shown: null };
+    S.view = "reports";
+    S.notice = null;
+  } catch (e) {
+    S.notice = { kind: "bad", title: e.message, details: e.details };
+  }
+  render();
+  window.scrollTo(0, 0);
+}
+
+async function showReport(name) {
+  const r = S.reports;
+  try {
+    r.shown = await post("/api/reports/read", { library: r.config.library, out: r.config.outDir, name });
+  } catch (e) {
+    r.shown = { name, text: e.message, truncated: false };
+  }
+  render();
+}
+
+function viewReports() {
+  const r = S.reports;
+  const frag = h("div");
+  add(frag, h("h1", null, r.files.length ? "Reports" : "No reports yet"));
+  add(frag, noticeBox(S.notice));
+  add(frag, h("p", { class: "muted" }, "In ", h("span", { class: "path" }, r.config.outDir), "."));
+  if (r.files.length) {
+    add(frag, h("ul", { class: "history" }, r.files.map((f) => h("li", null,
+      h("button", { class: "link", type: "button", "aria-pressed": String(r.shown?.name === f.name), onclick: () => showReport(f.name) }, f.name),
+      h("span", { class: "muted small" }, new Date(f.modified).toLocaleString()),
+      h("span", { class: "num" }, `${fmt(Math.max(1, Math.round(f.size / 1024)))} KB`)))));
+  }
+  if (r.shown) {
+    add(frag, h("h2", null, r.shown.name), h("pre", { class: "report-text", tabindex: "0" }, r.shown.text),
+      r.shown.truncated ? h("p", { class: "muted small" }, "Only the first part is shown. Open the file in the output folder to read all of it.") : null);
+  }
+  add(frag, h("div", { class: "actions" }, h("button", { class: "btn", type: "button", onclick: () => {
+    S.view = "setup";
+    S.notice = null;
+    render();
+    validate();
+  } }, "Back")));
+  return frag;
 }
 
 function startAnalysis() {
@@ -1482,6 +1544,7 @@ function viewDone() {
     render();
     validate();
   } }, "Start over");
+  const reports = d.cfg ? h("button", { class: "btn", type: "button", onclick: () => openReports(d.cfg) }, "Read the reports") : null;
   if (d.kind === "organize" && j.result?.tidy) {
     const steps = j.result.steps || [];
     const songsMoved = steps.find((s) => s.step === "songs")?.stats.moved || 0;
@@ -1497,7 +1560,7 @@ function viewDone() {
     if (d.cfg) add(frag, h("p", null, "Set-aside songs and files are in ", h("span", { class: "path" }, d.cfg.outDir), ", together with the reports. Look through them before you delete anything."));
     add(frag, h("div", { class: "actions" },
       songsMoved && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Put back the set-aside songs") : null,
-      again));
+      reports, again));
   } else if (d.restore) {
     add(frag, h("h1", null, d.stopped ? "Stopped part-way" : j.state === "done" && !st.failed ? "Done" : "Not everything could be put back"));
     add(frag, noticeBox(S.notice));
@@ -1515,14 +1578,14 @@ function viewDone() {
           validate();
         }
       } }, "Back to the list"),
-      again));
+      reports, again));
   } else if (d.check) {
     add(frag, h("h1", null, d.stopped ? "Stopped part-way" : "Done"));
     add(frag, noticeBox(S.notice));
     add(frag, h("p", null, `${plural(st.moved, "broken song folder", "broken song folders")} moved to invalid.`));
     if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "move", "moves")} failed`, text: advanced() ? "The log below says why." : "Switch to Advanced to see the log." }));
     if (d.cfg) add(frag, h("p", null, "They are in ", h("span", { class: "path" }, `${d.cfg.outDir}/invalid`), ". This cannot be undone with one click: move a folder back by hand if you want it again."));
-    add(frag, h("div", { class: "actions" }, again));
+    add(frag, h("div", { class: "actions" }, reports, again));
   } else if (d.kind === "organize") {
     add(frag, h("h1", null, d.stopped ? "Stopped part-way" : "Done"));
     add(frag, noticeBox(S.notice));
@@ -1534,7 +1597,7 @@ function viewDone() {
     if (d.cfg) add(frag, h("p", null, d.remove ? "Removed songs are in " : "Set-aside songs are in ", h("span", { class: "path" }, d.remove ? `${d.cfg.outDir}/removed` : d.cfg.outDir), ". Look through them before you delete anything."));
     add(frag, h("div", { class: "actions" },
       st.moved && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Undo this run") : null,
-      again));
+      reports, again));
   } else if (d.kind === "undo") {
     const stopped = j.state === "cancelled";
     add(frag, h("h1", null, j.state === "done" ? "Undone" : stopped ? "Stopped part-way" : "Undo did not finish"));
@@ -1547,7 +1610,7 @@ function viewDone() {
     }
     add(frag, h("div", { class: "actions" },
       (st.failed || stopped) && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, stopped ? "Undo again" : "Try the undo again") : null,
-      again));
+      reports, again));
   }
   return frag;
 }
