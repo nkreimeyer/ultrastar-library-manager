@@ -66,6 +66,10 @@ const TASKS = {
     title: "Add new songs to my library",
     desc: "Bring songs from other folders into the library. Songs it already has are compared, and only the best version is kept.",
   },
+  overview: {
+    title: "See what is in my library",
+    desc: "Count the songs, see how they are spread over the folders, how many have a video or a picture, and how much is set aside.",
+  },
   originals: {
     title: "Free up space from audio backups",
     desc: "Evening out the volume keeps a copy of every changed audio file. Look at how much space they take, and delete them once you are happy with the result.",
@@ -158,6 +162,7 @@ const JOB_TITLES = {
   "organize-undo": "Undoing the last run",
   "setaside-restore": "Putting songs back",
   "originals-delete": "Deleting the backups",
+  overview: "Counting the songs. Nothing is changed.",
   "check-analyse": "Checking the songs. Nothing is changed.",
   "check-apply": "Checking and setting aside broken songs",
   "remove-analyse": "Checking first. Nothing is changed yet.",
@@ -207,6 +212,7 @@ const S = {
   rem: null, // remove review view
   rmKeep: new Set(), // songs (paths) of the remove review the reviewer keeps
   chk: null, // check report view
+  overview: null, // result of the overview job
   originals: null, // the originals/ folder: { config, dir, files, bytes, largest }
   reports: null, // report viewer: { config, files, shown: { name, text, truncated } }
   aside: null, // set-aside browser: { config, items }
@@ -252,6 +258,9 @@ function render() {
       break;
     case "originals":
       content = viewOriginals();
+      break;
+    case "overview":
+      content = viewOverview();
       break;
     default:
       content = viewSetup();
@@ -556,7 +565,7 @@ function organizeRequest(withTidy) {
   if (S.task === "check") {
     return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "", deep: advanced() && S.f.deep };
   }
-  if (S.task === "restore" || S.task === "reports" || S.task === "originals") return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "" };
+  if (S.task === "restore" || S.task === "reports" || S.task === "originals" || S.task === "overview") return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "" };
   return {
     tidy: withTidy && S.task === "dedupe" ? tidyRequest() : undefined,
     mode: S.task,
@@ -586,7 +595,7 @@ async function validate() {
     return;
   }
   try {
-    const res = await post(`/api/${{ remove: "remove", check: "check", restore: "setaside", reports: "setaside", originals: "setaside" }[S.task] || "organize"}/validate`, organizeRequest());
+    const res = await post(`/api/${{ remove: "remove", check: "check", restore: "setaside", reports: "setaside", originals: "setaside", overview: "setaside" }[S.task] || "organize"}/validate`, organizeRequest());
     if (seq !== validateSeq) return;
     S.resolved = res;
     S.resolveError = null;
@@ -620,7 +629,7 @@ function updateResolved() {
   } else if (S.resolved) {
     const out = S.resolved.outDir;
     el.replaceChildren(
-      S.task === "check" ? "The reports go to " : S.task === "restore" || S.task === "reports" || S.task === "originals" ? "Looking in " : "Set-aside songs, reports and the record for undoing go to ",
+      S.task === "check" ? "The reports go to " : S.task === "restore" || S.task === "reports" || S.task === "originals" || S.task === "overview" ? "Looking in " : "Set-aside songs, reports and the record for undoing go to ",
       h("span", { class: "path" }, out),
       ".",
     );
@@ -673,6 +682,9 @@ function viewSetup() {
     case "originals":
       fields.append(folderField("Your library", "library", "The backups are in its output folder."));
       break;
+    case "overview":
+      fields.append(folderField("Your library", "library", "It is only read, never changed."));
+      break;
     case "remove":
       fields.append(folderField("Your library", "library", "The folder that holds your songs. The songs you name are moved out of it."));
       fields.append(patternsField());
@@ -703,12 +715,13 @@ function viewSetup() {
       render();
       window.scrollTo(0, 0);
     } }, "Next")
-    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: S.task === "restore" ? loadAside : S.task === "reports" ? () => openReports(organizeRequest()) : S.task === "originals" ? () => openOriginals(organizeRequest()) : startAnalysis },
-      S.task === "check" ? "Check songs" : S.task === "restore" ? "Look" : S.task === "reports" ? "Show reports" : S.task === "originals" ? "Look" : "Check first"),
+    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: S.task === "restore" ? loadAside : S.task === "reports" ? () => openReports(organizeRequest()) : S.task === "originals" ? () => openOriginals(organizeRequest()) : S.task === "overview" ? () => startJob("/api/overview", organizeRequest()) : startAnalysis },
+      S.task === "check" ? "Check songs" : S.task === "restore" ? "Look" : S.task === "reports" ? "Show reports" : S.task === "originals" ? "Look" : S.task === "overview" ? "Count songs" : "Check first"),
   h("span", { class: "muted small" }, S.task === "dedupe" ? "Next you choose what to tidy up."
     : S.task === "check" ? "Nothing in the library is changed. It can take a while for a big library."
     : S.task === "restore" ? "You choose what to put back on the next page."
     : S.task === "reports" || S.task === "originals" ? "Nothing is changed yet."
+    : S.task === "overview" ? "Nothing in the library is changed. It can take a while for a big library."
     : "Nothing is changed yet. You see what would happen and decide then."),
   ));
   if (advanced()) {
@@ -789,6 +802,46 @@ async function openOriginals(cfg) {
   }
   render();
   window.scrollTo(0, 0);
+}
+
+function viewOverview() {
+  const o = S.overview;
+  const frag = h("div");
+  add(frag, h("h1", null, `${plural(o.songs, "song", "songs")}, ${bytesText(o.bytes)}`));
+  add(frag, h("p", { class: "muted" }, "In ", h("span", { class: "path" }, o.library), "."));
+  const pct = (n) => (o.songs ? ` (${Math.round((n / o.songs) * 100)} %)` : "");
+  add(frag, h("ul", { class: "done-list" },
+    h("li", null, `${fmt(o.withVideo)} with a video${pct(o.withVideo)}`),
+    h("li", null, `${fmt(o.withImage)} with a picture${pct(o.withImage)}`),
+    o.noAudio ? h("li", null, `${fmt(o.noAudio)} without any audio or video file`) : null));
+  if (o.buckets.length) {
+    const max = Math.max(...o.buckets.map((b) => b.songs));
+    add(frag, h("h2", null, "By folder"), h("ul", { class: "buckets" }, o.buckets.map((b) => h("li", null,
+      h("span", { class: "bname" }, b.name),
+      h("span", { class: "bbar", style: { "--w": `${(b.songs / max) * 100}%` }, "aria-hidden": "true" }),
+      h("span", { class: "num" }, fmt(b.songs)),
+      advanced() ? h("span", { class: "muted small" }, bytesText(b.bytes)) : null))));
+  }
+  const labels = { invalid: "broken songs and folders", duplicates: "duplicates", removed: "removed songs", "extra-files": "leftover files" };
+  const aside = Object.entries(o.setAside).filter(([, n]) => n > 0);
+  add(frag, h("h2", null, "Set aside"));
+  add(frag, aside.length
+    ? h("ul", { class: "done-list" }, aside.map(([k, n]) => h("li", null, `${fmt(n)} ${labels[k] || k}`)))
+    : h("p", { class: "muted" }, "Nothing is set aside."));
+  add(frag, h("div", { class: "actions" },
+    aside.length ? h("button", { class: "btn", type: "button", onclick: () => {
+      S.task = "restore";
+      localStorage.setItem("lm-task", "restore");
+      loadAside();
+    } }, "Look at what is set aside") : null,
+    h("button", { class: "btn", type: "button", onclick: () => startJob("/api/overview", { library: o.library, out: o.outDir }) }, "Count again"),
+    h("button", { class: "btn", type: "button", onclick: () => {
+      S.view = "setup";
+      S.notice = null;
+      render();
+      validate();
+    } }, "Back")));
+  return frag;
 }
 
 function viewOriginals() {
@@ -1120,6 +1173,15 @@ async function onJobEnd(j) {
           if (!S.org && j.result?.analysis) S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`);
           S.view = S.org ? "review" : "setup";
           S.notice = failed("Moving did not finish");
+        }
+        break;
+      case "overview":
+        if (j.state === "done") {
+          S.overview = j.result;
+          S.view = "overview";
+        } else {
+          S.view = "setup";
+          S.notice = j.state === "cancelled" ? { kind: "", title: "Stopped." } : failed("Counting did not finish");
         }
         break;
       case "originals-delete":
