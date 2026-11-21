@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 
@@ -243,11 +242,16 @@ var fileTags = map[string]bool{
 // ErrTxtNotUTF8 is returned by ReplaceFileReference for song txts that are not UTF-8 yet.
 var ErrTxtNotUTF8 = errors.New("song txt is not UTF-8 (run the fixtxt module first)")
 
+// ErrTxtProblem is returned by ReplaceFileReference for song txts with a decode Problem.
+var ErrTxtProblem = errors.New("song txt has an encoding problem and is never rewritten (see encoding_issues.txt)")
+
 // ReplaceFileReference changes every file tag (#MP3, #AUDIO, #VIDEO, #COVER, ...) of the
 // song txt in dir whose value is oldName (also matching case- and NFC-insensitively) to
 // newName. Other lines are never touched. The file is written atomically, and only if a
-// reference was replaced, which is reported as replaced. The txt is found and read through
-// ops, so in a dry run the replacement applies to the content earlier modules planned.
+// reference was replaced, which is reported as replaced. A txt that DecodeTxt does not read
+// as UTF-8 without a Problem is left untouched (ErrTxtNotUTF8, ErrTxtProblem). The txt is
+// found and read through ops, so in a dry run the replacement applies to the content
+// earlier modules planned.
 func ReplaceFileReference(ops *fsops.Ops, dir, oldName, newName string) (replaced bool, err error) {
 	txt, err := FindSongTxt(ops, dir)
 	if err != nil {
@@ -257,7 +261,13 @@ func ReplaceFileReference(ops *fsops.Ops, dir, oldName, newName string) (replace
 	if err != nil {
 		return false, err
 	}
-	if !utf8.Valid(raw) {
+	// Valid UTF-8 bytes are not enough: DecodeTxt may read them as CP1252 (accidental
+	// UTF-8) or with a Problem (stale #ENCODING, NUL bytes), and such a file is never
+	// rewritten; fixtxt leaves it alone too.
+	switch d := DecodeTxt(raw); {
+	case d.Problem != "":
+		return false, fmt.Errorf("%s: %w: %s", txt, ErrTxtProblem, d.Problem)
+	case d.Encoding != EncUTF8:
 		return false, fmt.Errorf("%s: %w", txt, ErrTxtNotUTF8)
 	}
 

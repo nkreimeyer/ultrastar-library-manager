@@ -118,7 +118,8 @@ func TestReplaceFileReferenceDetails(t *testing.T) {
 	}{
 		{"bom, several tags, header end", "\ufeff#VIDEO:a.avi\n#MP3:A.AVI\n#TITLE:a.avi\n: 0 1 2 x\n#VIDEO:a.avi\n", "a.avi", "a.mp4",
 			"\ufeff#VIDEO:a.mp4\n#MP3:a.mp4\n#TITLE:a.avi\n: 0 1 2 x\n#VIDEO:a.avi\n"},
-		{"nfd value", "#TITLE:t\n#VIDEO:Mädchen.avi\n", "Mädchen.avi", "Mädchen.mp4", "#TITLE:t\n#VIDEO:Mädchen.mp4\n"},
+		// "Für" is real UTF-8: a file whose only non-ASCII is the NFD mark is a DecodeTxt Problem.
+		{"nfd value", "#TITLE:Für\n#VIDEO:Mädchen.avi\n", "Mädchen.avi", "Mädchen.mp4", "#TITLE:Für\n#VIDEO:Mädchen.mp4\n"},
 		{"blank in the tag name", "#TITLE:t\n#VIDEO :x.avi\n#cover: x.avi \n", "x.avi", "x.mp4", "#TITLE:t\n#VIDEO :x.mp4\n#cover:x.mp4\n"},
 		{"empty lines in the header", "#TITLE:t\n\n  \n#AUDIO:x.ogg\n", "x.ogg", "x.opus", "#TITLE:t\n\n  \n#AUDIO:x.opus\n"},
 		{"all file tags", "#MP3:f\n#AUDIO:f\n#VOCALS:f\n#INSTRUMENTAL:f\n#VIDEO:f\n#COVER:f\n#BACKGROUND:f\n#VIDEOGAP:f\n#NOCOLON f\n",

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"golang.org/x/text/encoding/charmap"
 
@@ -258,5 +259,46 @@ func TestReadImageHeaderArithmeticJPEGNotInvalid(t *testing.T) {
 	}
 	if got := FindBackgroundImage(nil, dir); got != "" {
 		t.Errorf("FindBackgroundImage = %q, want none", got)
+	}
+}
+
+// ReplaceFileReference must not rewrite a txt that DecodeTxt does not read as clean UTF-8,
+// even if its bytes are valid UTF-8: fixtxt leaves such files alone (encoding_issues.txt),
+// and fixvideos deletes the original video once the txt references the new one.
+func TestReplaceFileReferenceRefusesDecodeProblem(t *testing.T) {
+	tests := []struct {
+		name, content string
+		want          error
+	}{
+		{"stale #ENCODING with Cyrillic lyrics", "#TITLE:Песня\n#ARTIST:A\n#ENCODING:CP1252\n#VIDEO:v.avi\n: 0 1 2 Ля\nE\n", ErrTxtProblem},
+		{"NUL bytes", "#TITLE:T\n#ARTIST:A\n#VIDEO:v.avi\n: 0 1 2 x\nE\n\x00\x00", ErrTxtProblem},
+		{"isolated non-Latin character", "#TITLE:Caf \xe9\xa0\xbb\n#ARTIST:A\n#VIDEO:v.avi\n", ErrTxtProblem},
+		{"CP1252 that is valid UTF-8 by accident", "#TITLE:Stra\xdf\x85\n#ARTIST:A\n#VIDEO:v.avi\n", ErrTxtNotUTF8},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := DecodeTxt([]byte(tc.content))
+			if !utf8.ValidString(tc.content) || (d.Problem != "") != (tc.want == ErrTxtProblem) {
+				t.Fatalf("fixture: valid UTF-8 = %v, DecodeTxt = %s, problem %q", utf8.ValidString(tc.content), d.Encoding, d.Problem)
+			}
+			dir := t.TempDir()
+			txt := filepath.Join(dir, "song.txt")
+			writeFile(t, txt, tc.content)
+			replaced, err := ReplaceFileReference(fsops.New(false), dir, "v.avi", "v.mp4")
+			got, _ := os.ReadFile(txt)
+			if replaced || !errors.Is(err, tc.want) || string(got) != tc.content {
+				t.Errorf("replaced=%v err=%v file=%q; want %v and the file unchanged", replaced, err, got, tc.want)
+			}
+		})
+	}
+	// Clean UTF-8 with a BOM and earlier damage (U+FFFD is no Problem) is still updated.
+	dir := t.TempDir()
+	txt := filepath.Join(dir, "song.txt")
+	writeFile(t, txt, "\ufeff#TITLE:F\ufffdr dich\n#VIDEO:v.avi\n")
+	if replaced, err := ReplaceFileReference(fsops.New(false), dir, "v.avi", "v.mp4"); !replaced || err != nil {
+		t.Errorf("clean UTF-8: replaced=%v err=%v", replaced, err)
+	}
+	if got, _ := os.ReadFile(txt); string(got) != "\ufeff#TITLE:F\ufffdr dich\n#VIDEO:v.mp4\n" {
+		t.Errorf("clean UTF-8 file = %q", got)
 	}
 }

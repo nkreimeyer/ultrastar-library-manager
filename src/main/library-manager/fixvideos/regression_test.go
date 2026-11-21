@@ -584,3 +584,35 @@ func TestSymlinkedVideoIsNotProcessed(t *testing.T) {
 		t.Errorf("video.mp4 exists (err=%v)", err)
 	}
 }
+
+// A txt that DecodeTxt reads with a Problem (here valid UTF-8 with a stale #ENCODING and
+// Cyrillic lyrics) is left alone by fixtxt; the conversion must not rewrite it and delete
+// the original, but undo itself and count a failure.
+func TestConversionKeepsOriginalOfProblemTxt(t *testing.T) {
+	requireFFmpeg(t)
+	cfg, songDir, _ := newLibrary(t, false)
+	song := filepath.Join(songDir, "Artist - Song")
+	txt := "#TITLE:Песня\n#ARTIST:Artist\n#ENCODING:CP1252\n#MP3:video.avi\n#VIDEO:video.avi\n: 0 4 0 Ля\nE\n"
+	writeFile(t, filepath.Join(song, "song.txt"), txt)
+	video := filepath.Join(song, "video.avi")
+	makeMedia(t, video, "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
+	orig := readFile(t, video)
+
+	ops := fsops.New(false)
+	if err := Run(cfg, ops); err != nil {
+		t.Fatal(err)
+	}
+	if st := ops.Stats(); st.Failed != 1 || st.Written != 0 {
+		t.Errorf("stats = %+v, want 1 failure and nothing written", st)
+	}
+	if readFile(t, video) != orig {
+		t.Error("the original video changed")
+	}
+	if got := readFile(t, filepath.Join(song, "song.txt")); got != txt {
+		t.Errorf("txt = %q, want it unchanged", got)
+	}
+	if got := dirNames(t, song); !slices.Equal(got, []string{"song.txt", "video.avi"}) {
+		t.Errorf("song folder = %v, want song.txt and video.avi", got)
+	}
+	assertNoTempFiles(t, songDir)
+}
