@@ -59,6 +59,7 @@ type songInput struct {
 	song   *songtxt.Song
 	folder string   // name of the song folder
 	names  []string // names of the other files in the song folder
+	dirs   []string // names of the folders in the song folder (no extension to cut)
 	refs   []string // extra reference texts (fetched lyrics)
 	// own is the txt before an earlier repair (its oldest copy in originals/, else nil):
 	// the song's own undamaged words are taken from it, so that run's repairs are no
@@ -136,14 +137,15 @@ func localLex(in songInput, segs []segment) *langLex {
 	return l
 }
 
-// nameTexts returns the folder name and the file names, the latter without their
-// extension unless whole is set. A folder name is never cut at a dot: "Dr. Alban - Männer"
-// has no extension.
+// nameTexts returns the folder name, the names of its subfolders and the file names, the
+// latter without their extension unless whole is set. A folder name is never cut at a dot:
+// "Dr. Alban - Männer" has no extension.
 func (in songInput) nameTexts(whole bool) []string {
 	var texts []string
 	if in.folder != "" {
 		texts = append(texts, in.folder)
 	}
+	texts = append(texts, in.dirs...)
 	for _, n := range in.names {
 		if !whole {
 			n = strings.TrimSuffix(n, filepath.Ext(n))

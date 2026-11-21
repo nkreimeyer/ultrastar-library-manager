@@ -92,8 +92,9 @@ type damagedTxt struct {
 	path, rel string
 	raw       []byte
 	song      *songtxt.Song
-	folder    string // name of the song folder
-	names     []string
+	folder    string   // name of the song folder
+	names     []string // files in the song folder
+	dirs      []string // folders in the song folder
 	// own is the oldest copy in <out>/originals/ (nil if none): the song's own evidence
 	// comes from it, so words repaired by an earlier run are no evidence.
 	own []byte
@@ -141,20 +142,24 @@ type Report struct {
 	UnmatchedSections []string `json:"unmatched_sections,omitempty"`
 }
 
-// listNames returns the names of the entries of dir (hidden ones left out): like the
-// folder's own name, they may spell the song's words correctly.
-func listNames(dir string) []string {
-	var names []string
+// listNames returns the names of the files and of the folders in dir (hidden ones left
+// out): like the folder's own name, they may spell the song's words correctly. They are
+// apart because only a file name has an extension to cut.
+func listNames(dir string) (files, dirs []string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	for _, e := range entries {
-		if !utils.IsHidden(e.Name()) {
-			names = append(names, e.Name())
+		switch {
+		case utils.IsHidden(e.Name()):
+		case e.IsDir():
+			dirs = append(dirs, e.Name())
+		default:
+			files = append(files, e.Name())
 		}
 	}
-	return names
+	return files, dirs
 }
 
 // oldestOriginal returns the first copy of the txt rel that an earlier run backed up to
@@ -247,7 +252,8 @@ func scan(ctx context.Context, cfg config.Config, ops *fsops.Ops, lex *Lexicon, 
 					if skip != "" {
 						skipped = append(skipped, Skipped{rel, skip})
 					} else {
-						damaged = append(damaged, damagedTxt{path: txt, rel: rel, raw: raw, song: song, folder: filepath.Base(dir), names: listNames(dir), own: oldestOriginal(cfg, rel)})
+						files, dirs := listNames(dir)
+						damaged = append(damaged, damagedTxt{path: txt, rel: rel, raw: raw, song: song, folder: filepath.Base(dir), names: files, dirs: dirs, own: oldestOriginal(cfg, rel)})
 					}
 					mu.Unlock()
 				}
@@ -286,7 +292,7 @@ func planAll(ctx context.Context, p *planner, damaged []damagedTxt, refs map[int
 					continue
 				}
 				d := damaged[i]
-				plans[i] = p.plan(songInput{raw: d.raw, song: d.song, folder: d.folder, names: d.names, refs: refs[i], own: d.own, songWords: d.songWords})
+				plans[i] = p.plan(songInput{raw: d.raw, song: d.song, folder: d.folder, names: d.names, dirs: d.dirs, refs: refs[i], own: d.own, songWords: d.songWords})
 				progress(PhasePlan, int(planned.Add(1)), total)
 			}
 		}()

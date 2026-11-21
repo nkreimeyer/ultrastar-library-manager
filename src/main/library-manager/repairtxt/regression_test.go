@@ -43,6 +43,33 @@ func TestRunFolderNameWithDotIsEvidence(t *testing.T) {
 	}
 }
 
+// A subfolder of the song folder is read uncut too: "Dr. Alban - Männer" is no file "Dr"
+// with the extension ". Alban - Männer".
+func TestRunSubfolderNameIsEvidence(t *testing.T) {
+	base := t.TempDir()
+	lib := filepath.Join(base, "lib")
+	h := "#ARTIST:A\n#MP3:a.mp3\n#BPM:300\n#LANGUAGE:German\n"
+	writeLib(t, lib, map[string]string{
+		"A/A - Eins": songText("#TITLE:Eins\n"+h, "für dich", "das Glück für mich"),
+		"A/A - Zwei": songText("#TITLE:Zwei\n"+h, "nur für dich", "kein Glück"),
+		"M/song":     songText("#TITLE:M"+R+"nner\n"+h, "die M"+R+"nner"),
+	})
+	if err := os.Mkdir(filepath.Join(lib, "M", "song", "Dr. Alban - Männer"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.New(lib, filepath.Join(base, "out"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(cfg, fsops.New(false), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(lib, "M", "song", "song.txt"))
+	if !strings.Contains(string(got), "#TITLE:Männer\n") || !strings.Contains(string(got), " Männer\n") {
+		t.Errorf("not repaired from the subfolder name:\n%s", got)
+	}
+}
+
 // A file tag names a whole file: a longer name that only starts with the value
 // ("Cafè.mp3.bak") is another file, neither a fill nor a veto against the real one.
 func TestNameFillWholeNameOnly(t *testing.T) {
@@ -77,6 +104,11 @@ func TestNameFillFolderNameWithDot(t *testing.T) {
 	}
 	if got, want := in.nameTexts(true), []string{"Herbert feat. X - Männer", "Männer.mp3", "x.y.jpg"}; !slices.Equal(got, want) {
 		t.Errorf("nameTexts(true) = %q, want %q", got, want)
+	}
+	// A subfolder (stems, a "Dr. Alban - Männer (Video)" folder) has no extension either.
+	withDir := songInput{folder: "M", dirs: []string{"Dr. Alban - Männer"}, names: []string{"a.mp3"}}
+	if got, want := withDir.nameTexts(false), []string{"M", "Dr. Alban - Männer", "a"}; !slices.Equal(got, want) {
+		t.Errorf("nameTexts(false) = %q, want %q", got, want)
 	}
 	folderOnly := songInput{folder: "Herbert feat. X - Männer"}
 	if fill, ok := nameFill([]rune("M"+R+"nner"), folderOnly.nameTexts(false), false); !ok || string(fill) != "ä" {
