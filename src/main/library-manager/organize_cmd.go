@@ -36,8 +36,7 @@ func (t *tierList) Set(v string) error {
 // It returns the exit code (same meaning as run).
 func runOrganize(mode organize.Mode, args []string, output io.Writer) int {
 	name := filepath.Base(os.Args[0]) + " " + string(mode)
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(output)
+	fs := newSubcommand(name, output)
 	var tiers tierList
 	priority, ignoreThe := new(bool), new(bool)
 	libHelp := "Library folder to build (required unless -undo -o); may also be given as a source"
@@ -60,8 +59,7 @@ func runOrganize(mode organize.Mode, args []string, output io.Writer) int {
 	outDir := fs.String("o", "", "Output folder for invalid/, duplicates/, the journal and the reports (default: "+config.DefaultOrganizeOutDirName+"/ next to -l)")
 	deep := fs.Bool("deep", false, "Fully decode every referenced audio/video file while checking the songs (slow)")
 	dryRun := fs.Bool("n", false, "Dry run: write the plan report only; nothing is moved")
-	undo := fs.Bool("undo", false, "Undo the most recent organize, dedupe, add or remove run recorded in the journal (needs -o or -l)")
-	logLevel := fs.String("v", "info", "Log level (debug, info, warn, error)")
+	undo := fs.undoFlag()
 	fs.Usage = func() {
 		switch mode {
 		case organize.ModeDedupe:
@@ -88,93 +86,41 @@ func runOrganize(mode organize.Mode, args []string, output io.Writer) int {
 		}
 		fs.PrintDefaults()
 	}
-	usage := func(format string, a ...any) int {
-		fmt.Fprintf(output, "Error: "+format+"\n\n", a...)
-		fs.Usage()
-		return exitUsage
-	}
-	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return exitOK
-		}
-		return exitUsage // the flag package already printed the error and the usage
-	}
-	if fs.NArg() > 0 {
-		return usage("unexpected arguments %q.\nBool flags must be written as -priority=false, not -priority false (parsing stops at the first non-flag argument).", fs.Args())
+	if code, ok := fs.parse(args, boolFlagHint("priority")); !ok {
+		return code
 	}
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	if *undo {
 		for _, f := range []string{"s", "priority", "ignore-the", "deep"} {
 			if set[f] {
-				return usage("-%s cannot be combined with -undo.", f)
+				return fs.usageError("-%s cannot be combined with -undo.", f)
 			}
 		}
-		if *library == "" && *outDir == "" {
-			return usage("-undo needs the output folder: give -o <out> or -l <library>.")
+		if code, ok := fs.checkUndoFolder(*library, *outDir); !ok {
+			return code
 		}
 	} else {
 		if len(tiers) == 0 && mode != organize.ModeDedupe {
-			return usage("-s <source-dir> is required.")
+			return fs.usageError("-s <source-dir> is required.")
 		}
 		if *library == "" {
-			return usage("-l <library> is required.")
+			return fs.usageError("-l <library> is required.")
 		}
 	}
 
-	level, err := log.ParseLevel(*logLevel)
-	if err != nil {
-		fmt.Fprintf(output, "Error: invalid log level %q (use debug, info, warn or error).\n", *logLevel)
+	if !fs.setLogLevel() {
 		return exitUsage
 	}
-	log.SetLevel(level)
-
-	var cfg config.OrganizeConfig
-	switch {
-	case *undo:
-		cfg, err = config.NewOrganize(nil, *library, *outDir, *dryRun)
-	case mode == organize.ModeDedupe:
-		cfg, err = config.NewDedupe(*library, *outDir, *dryRun)
-	case mode == organize.ModeAdd:
-		cfg, err = config.NewAdd(tiers, *library, *outDir, *dryRun)
-	default:
-		cfg, err = config.NewOrganize(tiers, *library, *outDir, *dryRun)
-	}
-	if err != nil {
-		log.Error(err)
-		return exitUsage
-	}
-	ops := fsops.New(cfg.DryRun)
-	if cfg.DryRun {
-		log.Infof("Dry run: nothing will be moved (the plan report is written to the output dir)")
-	}
-	log.Infof("Output dir: %s", cfg.OutDir)
-
-	var runErr error
-	if *undo {
-		runErr = organize.Undo(cfg, ops, organize.UndoOptions{})
-	} else {
-		if err := cfg.PrepareOutDir(); err != nil {
-			log.Error(err)
-			return exitFailures
-		}
-		log.Infof("Library: %s", cfg.Library)
-		for _, s := range cfg.Sources {
-			log.Infof("Source (tier %d): %s", s.Tier+1, s.Path)
-		}
-		runErr = organize.Run(cfg, ops, organize.Options{Mode: mode, Priority: *priority, IgnoreThe: *ignoreThe, Deep: *deep})
-	}
-	if runErr != nil {
-		log.Errorf("organize failed: %v", runErr)
-	}
-	st := ops.Stats()
-	verb := ""
-	if cfg.DryRun {
-		verb = " (planned)"
-	}
-	log.Infof("Done%s: %d moved, %d failed operations", verb, st.Moved, st.Failed)
-	if st.Failed > 0 || runErr != nil {
-		return exitFailures
-	}
-	return exitOK
+	return journaledRun("organize", *undo, *library, *outDir, *dryRun,
+		func() (config.OrganizeConfig, error) {
+			return organize.NewConfig(mode, tiers, *library, *outDir, *dryRun)
+		},
+		func(cfg config.OrganizeConfig, ops *fsops.Ops) error {
+			log.Infof("Library: %s", cfg.Library)
+			for _, s := range cfg.Sources {
+				log.Infof("Source (tier %d): %s", s.Tier+1, s.Path)
+			}
+			return organize.Run(cfg, ops, organize.NewOptions(mode, *priority, *ignoreThe, *deep))
+		})
 }

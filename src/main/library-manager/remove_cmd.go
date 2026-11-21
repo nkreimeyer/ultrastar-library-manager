@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -24,8 +23,7 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 // runRemove runs the remove subcommand. It returns the exit code (same meaning as run).
 func runRemove(args []string, output io.Writer) int {
 	name := filepath.Base(os.Args[0]) + " remove"
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(output)
+	fs := newSubcommand(name, output)
 	var artists, songs, files stringList
 	fs.Var(&artists, "artist", "Remove every song of this artist, also collaborations with it (\"A & B\"); repeatable")
 	fs.Var(&songs, "song", "Remove this song, written \"Artist - Title\" (solo and duet version); repeatable")
@@ -33,8 +31,7 @@ func runRemove(args []string, output io.Writer) int {
 	library := fs.String("l", "", "Library folder to remove the songs from (required unless -undo -o)")
 	outDir := fs.String("o", "", "Output folder for removed/, the journal and the reports (default: "+config.DefaultOrganizeOutDirName+"/ next to -l)")
 	dryRun := fs.Bool("n", false, "Dry run: write the plan report only; nothing is moved")
-	undo := fs.Bool("undo", false, "Undo the most recent organize, dedupe, add or remove run recorded in the journal (needs -o or -l)")
-	logLevel := fs.String("v", "info", "Log level (debug, info, warn, error)")
+	undo := fs.undoFlag()
 	fs.Usage = func() {
 		fmt.Fprintf(output, "Usage: %s -l <library> [-artist <name>]... [-song \"Artist - Title\"]... [-from <file>]... [-o <out>] [-n] [-v level]\n"+
 			"       %s -undo [-o <out> | -l <library>] [-n] [-v level]\n\n"+
@@ -44,111 +41,66 @@ func runRemove(args []string, output io.Writer) int {
 			"first: <out>/remove_plan.txt also lists the patterns that matched no song.\n\nFlags:\n", name, name)
 		fs.PrintDefaults()
 	}
-	usage := func(format string, a ...any) int {
-		fmt.Fprintf(output, "Error: "+format+"\n\n", a...)
-		fs.Usage()
-		return exitUsage
-	}
-	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return exitOK
-		}
-		return exitUsage
-	}
-	if fs.NArg() > 0 {
-		return usage("unexpected arguments %q.\nQuote names with spaces (-artist \"Elton John\"); bool flags must be written as -n=false.", fs.Args())
+	if code, ok := fs.parse(args, "Quote names with spaces (-artist \"Elton John\"); bool flags must be written as -n=false."); !ok {
+		return code
 	}
 	hasPatterns := len(artists)+len(songs)+len(files) > 0
 	if *undo {
 		if hasPatterns {
-			return usage("-artist, -song and -from cannot be combined with -undo.")
+			return fs.usageError("-artist, -song and -from cannot be combined with -undo.")
 		}
-		if *library == "" && *outDir == "" {
-			return usage("-undo needs the output folder: give -o <out> or -l <library>.")
+		if code, ok := fs.checkUndoFolder(*library, *outDir); !ok {
+			return code
 		}
 	} else {
 		if *library == "" {
-			return usage("-l <library> is required.")
+			return fs.usageError("-l <library> is required.")
 		}
 		if !hasPatterns {
-			return usage("give at least one -artist, -song or -from.")
+			return fs.usageError("give at least one -artist, -song or -from.")
 		}
 	}
-	level, err := log.ParseLevel(*logLevel)
-	if err != nil {
-		fmt.Fprintf(output, "Error: invalid log level %q (use debug, info, warn or error).\n", *logLevel)
+	if !fs.setLogLevel() {
 		return exitUsage
 	}
-	log.SetLevel(level)
 
 	var patterns []organize.Pattern
 	for _, a := range artists {
 		p, err := organize.ParsePattern(organize.PatternArtist, a, "-artist")
 		if err != nil {
-			return usage("%v", err)
+			return fs.usageError("%v", err)
 		}
 		patterns = append(patterns, p)
 	}
 	for _, s := range songs {
 		p, err := organize.ParsePattern(organize.PatternSong, s, "-song")
 		if err != nil {
-			return usage("%v", err)
+			return fs.usageError("%v", err)
 		}
 		patterns = append(patterns, p)
 	}
 	for _, f := range files {
 		fh, err := os.Open(f)
 		if err != nil {
-			return usage("-from: %v", err)
+			return fs.usageError("-from: %v", err)
 		}
 		ps, err := organize.ParsePatternFile(fh, f)
 		fh.Close()
 		if err != nil {
-			return usage("%v", err)
+			return fs.usageError("%v", err)
 		}
 		if len(ps) == 0 {
-			return usage("-from %s: the file holds no patterns.", f)
+			return fs.usageError("-from %s: the file holds no patterns.", f)
 		}
 		patterns = append(patterns, ps...)
 	}
 
-	var cfg config.OrganizeConfig
-	if *undo {
-		cfg, err = config.NewOrganize(nil, *library, *outDir, *dryRun)
-	} else {
-		cfg, err = config.NewDedupe(*library, *outDir, *dryRun) // the library must exist
-	}
-	if err != nil {
-		log.Error(err)
-		return exitUsage
-	}
-	ops := fsops.New(cfg.DryRun)
-	if cfg.DryRun {
-		log.Infof("Dry run: nothing will be moved (the plan report is written to the output dir)")
-	}
-	log.Infof("Output dir: %s", cfg.OutDir)
-	var runErr error
-	if *undo {
-		runErr = organize.Undo(cfg, ops, organize.UndoOptions{})
-	} else {
-		if err := cfg.PrepareOutDir(); err != nil {
-			log.Error(err)
-			return exitFailures
-		}
-		log.Infof("Library: %s; %d pattern(s)", cfg.Library, len(patterns))
-		runErr = organize.Remove(cfg, ops, patterns)
-	}
-	if runErr != nil {
-		log.Errorf("remove failed: %v", runErr)
-	}
-	st := ops.Stats()
-	verb := ""
-	if cfg.DryRun {
-		verb = " (planned)"
-	}
-	log.Infof("Done%s: %d moved, %d failed operations", verb, st.Moved, st.Failed)
-	if st.Failed > 0 || runErr != nil {
-		return exitFailures
-	}
-	return exitOK
+	return journaledRun("remove", *undo, *library, *outDir, *dryRun,
+		func() (config.OrganizeConfig, error) {
+			return organize.NewConfig(organize.ModeRemove, nil, *library, *outDir, *dryRun) // the library must exist
+		},
+		func(cfg config.OrganizeConfig, ops *fsops.Ops) error {
+			log.Infof("Library: %s; %d pattern(s)", cfg.Library, len(patterns))
+			return organize.Remove(cfg, ops, patterns)
+		})
 }

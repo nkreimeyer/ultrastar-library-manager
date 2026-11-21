@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -14,11 +13,13 @@ import (
 	"github.com/nkreimeyer/library-manager/repairtxt"
 )
 
+// cliInputNames name the repair inputs by their flags.
+var cliInputNames = repairtxt.InputNames{WordList: "-wordlist", Words: "-words", LyricsCache: "-lyrics-cache"}
+
 // runRepair runs the repair subcommand. It returns the exit code (same meaning as run).
 func runRepair(args []string, output io.Writer) int {
 	name := filepath.Base(os.Args[0]) + " repair"
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(output)
+	fs := newSubcommand(name, output)
 	var wordlists, words stringList
 	songDir := fs.String("s", "", "Folder with the songs to repair (required); all its undamaged txts form the reference corpus")
 	outDir := fs.String("o", "", "Output folder for the report, originals/ and the lyrics cache (default: "+config.DefaultOutDirName+"/ next to -s)")
@@ -28,7 +29,6 @@ func runRepair(args []string, output io.Writer) int {
 	lyrics := fs.Bool("lyrics", false, "Look up the lyrics of songs that still have unrepaired words at lrclib.net (sends artist and title) and use them as a reference")
 	lyricsCache := fs.String("lyrics-cache", "", "Folder for cached lyrics answers, not inside -s (default: <out>/lyrics-cache)")
 	strict := fs.Bool("strict", false, "Leave the weak repairs (little evidence) undone; the report lists them with their suggestion")
-	logLevel := fs.String("v", "info", "Log level (debug, info, warn, error)")
 	fs.Usage = func() {
 		fmt.Fprintf(output, "Usage: %s -s <song-dir> [-wordlist [lang=]<file>]... [-words <file>]... [-lyrics] [-strict] [-o <out>] [-n] [-v level]\n\n"+
 			"Repairs song txts damaged by an earlier conversion, which put U+FFFD (�) in place of\n"+
@@ -39,49 +39,23 @@ func runRepair(args []string, output io.Writer) int {
 			"Review <out>/%s (run with -n first).\n\nFlags:\n", name, repairtxt.ReportTxt)
 		fs.PrintDefaults()
 	}
-	usage := func(format string, a ...any) int {
-		fmt.Fprintf(output, "Error: "+format+"\n\n", a...)
-		fs.Usage()
-		return exitUsage
-	}
-	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return exitOK
-		}
-		return exitUsage
-	}
-	if fs.NArg() > 0 {
-		return usage("unexpected arguments %q.\nBool flags must be written as -n=false.", fs.Args())
+	if code, ok := fs.parse(args, "Bool flags must be written as -n=false."); !ok {
+		return code
 	}
 	if *songDir == "" {
-		return usage("-s <song-dir> is required.")
+		return fs.usageError("-s <song-dir> is required.")
 	}
 	if *lyricsCache != "" && !*lyrics {
-		return usage("-lyrics-cache needs -lyrics.")
+		return fs.usageError("-lyrics-cache needs -lyrics.")
 	}
 	opts := repairtxt.Options{Strict: *strict}
-	for _, w := range wordlists {
-		wl, err := repairtxt.ParseWordListFlag(w)
-		if err != nil {
-			return usage("%v", err)
-		}
-		if _, err := os.Stat(wl.Path); err != nil {
-			return usage("-wordlist: %v", err)
-		}
-		opts.WordLists = append(opts.WordLists, wl)
+	var err error
+	if opts.WordLists, opts.Words, err = repairtxt.ResolveWordFiles(wordlists, words, cliInputNames); err != nil {
+		return fs.usageError("%v", err)
 	}
-	for _, w := range words {
-		if _, err := os.Stat(w); err != nil {
-			return usage("-words: %v", err)
-		}
-		opts.Words = append(opts.Words, w)
-	}
-	level, err := log.ParseLevel(*logLevel)
-	if err != nil {
-		fmt.Fprintf(output, "Error: invalid log level %q (use debug, info, warn or error).\n", *logLevel)
+	if !fs.setLogLevel() {
 		return exitUsage
 	}
-	log.SetLevel(level)
 
 	cfg, err := config.New(*songDir, *outDir, *dryRun)
 	if err != nil {
@@ -90,13 +64,9 @@ func runRepair(args []string, output io.Writer) int {
 	}
 	ops := fsops.New(cfg.DryRun)
 	if *lyrics {
-		cache := *lyricsCache
-		if cache == "" {
-			cache = filepath.Join(cfg.OutDir, "lyrics-cache")
-		}
-		// The cache is written in dry runs too.
-		if cache, err = cfg.OutsideSongDir(cache); err != nil {
-			log.Errorf("-lyrics-cache: %v", err)
+		cache, err := repairtxt.LyricsCacheDir(cfg, *lyricsCache, cliInputNames)
+		if err != nil {
+			log.Error(err)
 			return exitUsage
 		}
 		opts.Lyrics = repairtxt.NewLRCLib(cache, ops)
@@ -115,13 +85,6 @@ func runRepair(args []string, output io.Writer) int {
 		log.Errorf("repair failed: %v", runErr)
 	}
 	st := ops.Stats()
-	verb := ""
-	if cfg.DryRun {
-		verb = " (planned)"
-	}
-	log.Infof("Done%s: %d txts rewritten, %d failed operations; see %s", verb, st.Written, st.Failed, cfg.ReportPath(repairtxt.ReportTxt))
-	if st.Failed > 0 || runErr != nil {
-		return exitFailures
-	}
-	return exitOK
+	log.Infof("Done%s: %d txts rewritten, %d failed operations; see %s", plannedSuffix(cfg.DryRun), st.Written, st.Failed, cfg.ReportPath(repairtxt.ReportTxt))
+	return exitStatus(st.Failed > 0 || runErr != nil)
 }

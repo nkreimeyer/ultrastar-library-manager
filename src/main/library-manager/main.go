@@ -85,31 +85,21 @@ func run() int {
 	}
 	flag.Parse()
 
-	// Leftover arguments usually mean a bool flag was written as "-t false", which stops
-	// flag parsing and silently ignores every following flag (possibly including -s).
+	out := flag.CommandLine.Output()
 	if flag.NArg() > 0 {
-		fmt.Fprintf(flag.CommandLine.Output(), "Error: unexpected arguments %q.\nBool flags must be written as -t=false, not -t false (parsing stops at the first non-flag argument).\n\n", flag.Args())
-		flag.Usage()
-		return exitUsage
+		return leftoverError(out, flag.Usage, flag.Args(), boolFlagHint("t"))
 	}
 	if *songDir == "" {
-		fmt.Fprintf(flag.CommandLine.Output(), "Error: -s <song-dir> is required.\n\n")
-		flag.Usage()
-		return exitUsage
+		return usageError(out, flag.Usage, "-s <song-dir> is required.")
 	}
 
 	if (*deepCheck || *moveBroken) && !*runCheck {
-		fmt.Fprintf(flag.CommandLine.Output(), "Error: -deep and -move-broken only apply to the check module; add -k to run it.\n\n")
-		flag.Usage()
-		return exitUsage
+		return usageError(out, flag.Usage, "-deep and -move-broken only apply to the check module; add -k to run it.")
 	}
 
-	level, err := log.ParseLevel(*logLevel)
-	if err != nil {
-		fmt.Fprintf(flag.CommandLine.Output(), "Error: invalid log level %q (use debug, info, warn or error).\n", *logLevel)
+	if !setLogLevel(out, *logLevel) {
 		return exitUsage
 	}
-	log.SetLevel(level)
 
 	cfg, err := config.New(*songDir, *outDir, *dryRun)
 	if err != nil {
@@ -145,15 +135,7 @@ func run() int {
 	}
 
 	st := ops.Stats()
-	verb := ""
-	if cfg.DryRun {
-		verb = " (planned)"
-	}
 	log.Infof("Done%s: %d written, %d moved, %d replaced, %d backed up, %d removed, %d failed operations, %d failed modules",
-		verb, st.Written, st.Moved, st.Replaced, st.Copied, st.Removed, st.Failed, moduleErrors)
-
-	if st.Failed > 0 || moduleErrors > 0 {
-		return exitFailures
-	}
-	return exitOK
+		plannedSuffix(cfg.DryRun), st.Written, st.Moved, st.Replaced, st.Copied, st.Removed, st.Failed, moduleErrors)
+	return exitStatus(st.Failed > 0 || moduleErrors > 0)
 }
