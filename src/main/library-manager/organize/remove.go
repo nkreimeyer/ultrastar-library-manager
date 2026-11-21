@@ -351,6 +351,8 @@ type removedEntry struct {
 	Pattern string `json:"pattern"`
 	Dest    string `json:"dest"` // relative to the output dir, with "/"
 	Outcome string `json:"outcome"`
+	// OutcomeNote says why a move was skipped.
+	OutcomeNote string `json:"outcomeNote,omitempty"`
 }
 
 func buildRemoveReport(in removeInput) removeReport {
@@ -384,7 +386,7 @@ func buildRemoveReport(in removeInput) removeReport {
 		if s.FromFolder {
 			pattern += " (tags from the folder name)"
 		}
-		r.Removed = append(r.Removed, removedEntry{Song: s.Rel, Name: name, Pattern: pattern, Dest: dest, Outcome: o.Status})
+		r.Removed = append(r.Removed, removedEntry{Song: s.Rel, Name: name, Pattern: pattern, Dest: dest, Outcome: o.Status, OutcomeNote: o.Note})
 		switch o.Status {
 		case outcomeMoved, outcomePlanned:
 			r.Summary.Moved++
@@ -423,7 +425,7 @@ func (r removeReport) text() []byte {
 		s.Songs, s.Removed, s.LeftInPlace, len(r.Unmatched), s.Moved, moved, s.Failed)
 	fmt.Fprintf(&b, "\n== Removed (moved to removed/) (%d) ==\n", len(r.Removed))
 	for _, e := range r.Removed {
-		fmt.Fprintf(&b, "%s  (%s)%s\n    matched: %s\n", e.Song, e.Name, withOutcome(e.Outcome), e.Pattern)
+		fmt.Fprintf(&b, "%s  (%s)%s\n    matched: %s\n", e.Song, e.Name, withOutcome(e.Outcome, e.OutcomeNote), e.Pattern)
 	}
 	fmt.Fprintf(&b, "\n== Left in place (%d) ==\n", len(r.Left))
 	for _, e := range r.Left {

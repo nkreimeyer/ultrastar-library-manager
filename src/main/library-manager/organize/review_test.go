@@ -2,11 +2,13 @@ package organize
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -292,6 +294,31 @@ func TestRunCancelDuringMovesAndUndo(t *testing.T) {
 	runs, err := ListRuns(cfg)
 	if err != nil || len(runs) != 1 || runs[0].Moves != 1 || runs[0].Undone || !runs[0].Next || runs[0].Time == "" {
 		t.Fatalf("runs = %+v, %v", runs, err)
+	}
+	// The moves the stop skipped are reported as skipped, not as pending.
+	data, err := os.ReadFile(cfg.ReportPath(reportJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rep planReport
+	if err := json.Unmarshal(data, &rep); err != nil {
+		t.Fatal(err)
+	}
+	var outcomes []string
+	for _, e := range rep.ToLibrary {
+		outcomes = append(outcomes, e.Outcome+": "+e.OutcomeNote)
+	}
+	for _, e := range rep.Duplicates {
+		outcomes = append(outcomes, e.Outcome+": "+e.OutcomeNote)
+	}
+	sort.Strings(outcomes)
+	want := []string{"moved: ", "skipped: " + noteStopped, "skipped: " + noteStopped, "skipped: " + noteStopped}
+	if !reflect.DeepEqual(outcomes, want) {
+		t.Errorf("outcomes = %q, want %q", outcomes, want)
+	}
+	if txt, err := os.ReadFile(cfg.ReportPath(reportTxt)); err != nil || strings.Contains(string(txt), outcomePending) ||
+		strings.Count(string(txt), "[skipped: the run was stopped]") != 3 {
+		t.Errorf("report text (%v):\n%s", err, txt)
 	}
 	runUndo(t, cfg)
 	if !reflect.DeepEqual([][]string{tree(t, a), tree(t, b), tree(t, c)}, before) {

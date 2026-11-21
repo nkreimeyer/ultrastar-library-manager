@@ -535,7 +535,11 @@ func (a *applier) apply(p Plan) {
 	total, moved := len(out)+len(moves), 0
 	a.progress(PhaseMove, 0, total)
 	for _, i := range out {
-		if a.cancelled() || !a.ready(i) {
+		if a.cancelled() {
+			a.outcomes[i] = moveOutcome{Status: outcomeSkipped, Note: noteStopped}
+			continue
+		}
+		if !a.ready(i) {
 			continue
 		}
 		moved++
@@ -564,6 +568,7 @@ func (a *applier) apply(p Plan) {
 			continue // its move to the temporary name failed or was undone
 		}
 		if a.cancelled() {
+			a.outcomes[s.Cand] = moveOutcome{Status: outcomeSkipped, Note: noteStopped}
 			if s.ViaTemp {
 				a.unpark(s) // never leave a song hidden under the temporary name
 			}
@@ -663,7 +668,7 @@ func (a *applier) ready(i int) bool {
 		}
 		log.Errorf("Cannot write the journal %s; no further songs are moved", a.cfg.JournalPath())
 	}
-	a.outcomes[i] = moveOutcome{Status: outcomeSkipped}
+	a.outcomes[i] = moveOutcome{Status: outcomeSkipped, Note: noteJournalFailed}
 	return false
 }
 
@@ -676,7 +681,7 @@ func (a *applier) journalMkdirs(i int, dst string) bool {
 	for _, d := range missingDirs(filepath.Dir(dst)) {
 		if err := a.j.mkdir(d); err != nil {
 			log.Errorf("Cannot write the journal %s: %v; no further songs are moved", a.cfg.JournalPath(), err)
-			a.outcomes[i] = moveOutcome{Status: outcomeSkipped}
+			a.outcomes[i] = moveOutcome{Status: outcomeSkipped, Note: noteJournalFailed}
 			return false
 		}
 	}

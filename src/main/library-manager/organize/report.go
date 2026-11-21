@@ -23,10 +23,16 @@ const (
 	outcomePlanned = "planned" // dry run
 	outcomeMoved   = "moved"
 	outcomeFailed  = "failed"
-	outcomeSkipped = "skipped" // not attempted: the journal could not be written
+	outcomeSkipped = "skipped" // not attempted (moveOutcome.Note says why)
 	// outcomeRestored: a library song moved out, then back to its place because the
 	// keeper it lost to did not reach the library (restoreLibraryLosers).
 	outcomeRestored = "moved back"
+)
+
+// Why a move was skipped (moveOutcome.Note).
+const (
+	noteJournalFailed = "the journal could not be written"
+	noteStopped       = "the run was stopped"
 )
 
 // planReport is the content of organize_plan.json. It is deterministic: no timestamps,
@@ -82,15 +88,18 @@ type libraryEntry struct {
 	Song    string `json:"song"`   // "<label>:<rel>"
 	Name    string `json:"name"`   // "Artist - Title"
 	Outcome string `json:"outcome,omitempty"`
+	// OutcomeNote says why a move was skipped.
+	OutcomeNote string `json:"outcomeNote,omitempty"`
 }
 
 type duplicateEntry struct {
-	Song    string `json:"song"`
-	Name    string `json:"name"`
-	Keeper  string `json:"keeper"`
-	Reason  string `json:"reason"`
-	Dest    string `json:"dest"` // relative to the output dir, with "/"
-	Outcome string `json:"outcome"`
+	Song        string `json:"song"`
+	Name        string `json:"name"`
+	Keeper      string `json:"keeper"`
+	Reason      string `json:"reason"`
+	Dest        string `json:"dest"` // relative to the output dir, with "/"
+	Outcome     string `json:"outcome"`
+	OutcomeNote string `json:"outcomeNote,omitempty"`
 }
 
 type invalidEntry struct {
@@ -100,6 +109,7 @@ type invalidEntry struct {
 	Replacement string   `json:"replacement,omitempty"` // the working version used instead
 	Dest        string   `json:"dest"`
 	Outcome     string   `json:"outcome"`
+	OutcomeNote string   `json:"outcomeNote,omitempty"`
 }
 
 type similarEntry struct {
@@ -119,6 +129,7 @@ type leftEntry struct {
 type moveOutcome struct {
 	Status string
 	Dst    string // actual target (absolute), if moved
+	Note   string // why it was skipped (noteJournalFailed, noteStopped)
 }
 
 // reportInput is everything the report is built from.
@@ -172,15 +183,15 @@ func buildReport(in reportInput) planReport {
 		c := &in.cands[i]
 		switch d.Action {
 		case ActMove:
-			r.ToLibrary = append(r.ToLibrary, libraryEntry{Target: d.Target, Song: c.Ref(), Name: c.Song(), Outcome: outcome(i)})
+			r.ToLibrary = append(r.ToLibrary, libraryEntry{Target: d.Target, Song: c.Ref(), Name: c.Song(), Outcome: outcome(i), OutcomeNote: in.outcomes[i].Note})
 		case ActInPlace:
 			r.AlreadyInPlace = append(r.AlreadyInPlace, libraryEntry{Target: d.Target, Song: c.Ref(), Name: c.Song()})
 		case ActDuplicate:
 			r.Duplicates = append(r.Duplicates, duplicateEntry{Song: c.Ref(), Name: c.Song(), Keeper: ref(d.Other),
-				Reason: d.Reason, Dest: outDest(in.cfg, "duplicates", c, in.outcomes[i]), Outcome: outcome(i)})
+				Reason: d.Reason, Dest: outDest(in.cfg, "duplicates", c, in.outcomes[i]), Outcome: outcome(i), OutcomeNote: in.outcomes[i].Note})
 		case ActInvalid:
 			r.Invalid = append(r.Invalid, invalidEntry{Song: c.Ref(), Name: c.Song(), Errors: append([]string{}, c.Errors...),
-				Replacement: ref(d.Other), Dest: outDest(in.cfg, "invalid", c, in.outcomes[i]), Outcome: outcome(i)})
+				Replacement: ref(d.Other), Dest: outDest(in.cfg, "invalid", c, in.outcomes[i]), Outcome: outcome(i), OutcomeNote: in.outcomes[i].Note})
 		case ActLeft:
 			r.LeftInPlace = append(r.LeftInPlace, leftEntry{Song: c.Ref(), Name: c.Song(), Reason: d.Reason})
 		}
@@ -284,7 +295,7 @@ func (r planReport) text() []byte {
 	}
 	section("Into the library", len(r.ToLibrary))
 	for _, e := range r.ToLibrary {
-		fmt.Fprintf(&b, "%s  <-  %s%s\n", e.Target, e.Song, withOutcome(e.Outcome))
+		fmt.Fprintf(&b, "%s  <-  %s%s\n", e.Target, e.Song, withOutcome(e.Outcome, e.OutcomeNote))
 	}
 	section("Already in place", len(r.AlreadyInPlace))
 	for _, e := range r.AlreadyInPlace {
@@ -292,11 +303,11 @@ func (r planReport) text() []byte {
 	}
 	section("Duplicates (moved to duplicates/)", len(r.Duplicates))
 	for _, e := range r.Duplicates {
-		fmt.Fprintf(&b, "%s  (%s)%s\n    kept: %s\n    reason: %s\n", e.Song, e.Name, withOutcome(e.Outcome), e.Keeper, e.Reason)
+		fmt.Fprintf(&b, "%s  (%s)%s\n    kept: %s\n    reason: %s\n", e.Song, e.Name, withOutcome(e.Outcome, e.OutcomeNote), e.Keeper, e.Reason)
 	}
 	section("Invalid (moved to invalid/)", len(r.Invalid))
 	for _, e := range r.Invalid {
-		fmt.Fprintf(&b, "%s%s\n    errors: %s\n", e.Song, withOutcome(e.Outcome), strings.Join(e.Errors, ", "))
+		fmt.Fprintf(&b, "%s%s\n    errors: %s\n", e.Song, withOutcome(e.Outcome, e.OutcomeNote), strings.Join(e.Errors, ", "))
 		if e.Replacement != "" {
 			fmt.Fprintf(&b, "    used instead: %s\n", e.Replacement)
 		}
@@ -339,10 +350,14 @@ func (r planReport) text() []byte {
 	return b.Bytes()
 }
 
-// withOutcome is the outcome suffix of a report line: "  [moved]"; nothing for a dry run.
-func withOutcome(o string) string {
+// withOutcome is the outcome suffix of a report line: "  [moved]", "  [skipped: the run
+// was stopped]"; nothing for a dry run.
+func withOutcome(o, note string) string {
 	if o == "" || o == outcomePlanned {
 		return ""
+	}
+	if note != "" {
+		return "  [" + o + ": " + note + "]"
 	}
 	return "  [" + o + "]"
 }
