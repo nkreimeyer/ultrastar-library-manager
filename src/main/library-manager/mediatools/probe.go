@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ErrNotRun marks a Probe whose ffprobe could not be started (not on PATH, not
@@ -67,6 +68,10 @@ type Disposition struct {
 	AttachedPic int `json:"attached_pic"`
 }
 
+// WaitDelay is how long a command stopped by its context may take to close its output
+// (exec.Cmd.WaitDelay): a child process of a wrapper script can keep the pipe open.
+const WaitDelay = 2 * time.Second
+
 // Format is the container part of a ProbeInfo.
 type Format struct {
 	Duration string            `json:"duration"`
@@ -77,17 +82,22 @@ type Format struct {
 // Probe runs ffprobe once on path and returns everything it reports about the container
 // and its streams. An error wrapping ErrNotRun means ffprobe could not be started; a
 // *ProbeError means it failed on the file; any other error means its output could not
-// be parsed. Log is set in every case ffprobe ran.
+// be parsed. Log is set in every case ffprobe ran. If ctx is done, ffprobe is stopped and
+// the error is ctx.Err(), never a ProbeError: a stopped probe says nothing about the file.
 func Probe(ctx context.Context, path string) (ProbeInfo, error) {
 	// "--": a file name starting with "-" is no option. Warning level, so that Log holds
 	// warnings such as an estimated duration; they only count as an error with a
 	// non-zero exit.
 	cmd := exec.CommandContext(ctx, "ffprobe", "-v", "warning", "-print_format", "json",
 		"-show_format", "-show_streams", "--", filepath.Clean(path))
+	cmd.WaitDelay = WaitDelay
 	stderr := CapOutput()
 	cmd.Stderr = stderr
 	out, err := cmd.Output() // parsed as data: read in full
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ProbeInfo{}, ctxErr
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return ProbeInfo{Log: stderr.String()}, &ProbeError{Err: err, Stderr: stderr.String()}

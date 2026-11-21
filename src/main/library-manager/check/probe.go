@@ -35,8 +35,8 @@ const estimatedMsg = "Estimating duration from bitrate"
 // duration is replaced by a measured one (measureDuration); if that fails,
 // DurationEstimated is set. An error wrapping errToolFailed means ffprobe could not run;
 // any other error means the file is unreadable.
-func probeMedia(path string) (mediaInfo, error) {
-	probe, err := mediatools.Probe(context.Background(), path)
+func probeMedia(ctx context.Context, path string) (mediaInfo, error) {
+	probe, err := mediatools.Probe(ctx, path)
 	if err != nil {
 		var probeErr *mediatools.ProbeError
 		switch {
@@ -53,7 +53,7 @@ func probeMedia(path string) (mediaInfo, error) {
 	}
 	info := fromProbe(probe)
 	if info.HasAudio && strings.Contains(probe.Log, estimatedMsg) {
-		if d, ok := measureDuration(path); ok {
+		if d, ok := measureDuration(ctx, path); ok {
 			info.DurationSec, info.HasDuration = d, true
 		} else {
 			info.DurationEstimated = true
@@ -64,9 +64,10 @@ func probeMedia(path string) (mediaInfo, error) {
 
 // measureDuration returns the length of the first audio stream of path by reading all of
 // its packets (demuxing only, no decoding: fast). ok is false if it cannot be measured.
-func measureDuration(path string) (sec float64, ok bool) {
-	cmd := exec.Command("ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-i", path,
+func measureDuration(ctx context.Context, path string) (sec float64, ok bool) {
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-i", path,
 		"-map", "0:a:0", "-c", "copy", "-f", "null", "-progress", "pipe:1", "-nostats", "-")
+	cmd.WaitDelay = mediatools.WaitDelay
 	cmd.Stderr = capStderr()
 	out, err := cmd.Output()
 	if err != nil {
@@ -131,8 +132,9 @@ func fromProbe(probe mediatools.ProbeInfo) mediaInfo {
 // The decoder runs single-threaded: frame-threaded video decoders report the errors of
 // a corrupt file in a different order on every run, which would make the report differ.
 // It also keeps the memory and CPU use of the parallel workers bounded.
-func decodeCheck(path string) (decodeErr, decodeWarn string, err error) {
-	cmd := exec.Command("ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-threads", "1", "-i", path, "-f", "null", "-")
+func decodeCheck(ctx context.Context, path string) (decodeErr, decodeWarn string, err error) {
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-threads", "1", "-i", path, "-f", "null", "-")
+	cmd.WaitDelay = mediatools.WaitDelay
 	stderr := capStderr()
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {

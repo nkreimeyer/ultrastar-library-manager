@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/nkreimeyer/library-manager/fsops"
 )
@@ -459,5 +461,35 @@ func TestApplyCancelFallbackCreatesFolderIsJournaled(t *testing.T) {
 	}
 	if got := tree(t, lib); !reflect.DeepEqual(got, before) {
 		t.Errorf("library after undo:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(before, "\n"))
+	}
+}
+
+// Stopping a run stops the ffprobe runs of the inspection instead of waiting for them,
+// and a stopped probe is no failure.
+func TestRunCancelStopsProbes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake ffprobe is a shell script")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\nfor a; do [ \"$a\" = -version ] && { echo 'ffprobe version 6.0'; exit 0; }; done\nPATH=/usr/bin:/bin\nsleep 10\n"
+	if err := os.WriteFile(filepath.Join(dir, "ffprobe"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	base, a, b := reviewSources(t)
+	cfg := organizeCfg(t, [][]string{{a}, {b}}, filepath.Join(base, "library"), filepath.Join(base, "out"), false)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	ops := fsops.New(false)
+	start := time.Now()
+	err := Run(cfg, ops, Options{Ctx: ctx})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run = %v, want context.DeadlineExceeded", err)
+	}
+	if d := time.Since(start); d > 6*time.Second {
+		t.Errorf("Run returned %v after the start; the probes were not stopped", d)
+	}
+	if st := ops.Stats(); st.Failed != 0 {
+		t.Errorf("failed = %d; a stopped probe is no failure", st.Failed)
 	}
 }

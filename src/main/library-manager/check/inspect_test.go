@@ -1,6 +1,7 @@
 package check
 
 import (
+	"context"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -186,7 +187,7 @@ func TestInspect(t *testing.T) {
 	})
 	chmodUnreadable(t, filepath.Join(lib, "Unreadable", "s.txt"))
 	ops := fsops.New(false)
-	insp, notes := NewInspector(ops, true)
+	insp, notes := NewInspector(context.Background(), ops, true)
 	if !reflect.DeepEqual(notes, []string{noteNoFFprobe, noteNoFFmpeg}) || insp.MediaChecked() || insp.DeepChecked() {
 		t.Errorf("notes = %q, media %v, deep %v", notes, insp.MediaChecked(), insp.DeepChecked())
 	}
@@ -244,7 +245,7 @@ func TestInspectReadsPlannedTxt(t *testing.T) {
 	if _, err := ops.WriteFileAtomic(filepath.Join(lib, "S", "song.txt"), []byte(song("song.mp3", 10))); err != nil {
 		t.Fatal(err)
 	}
-	insp, _ := NewInspector(ops, false)
+	insp, _ := NewInspector(context.Background(), ops, false)
 	res, err := insp.Inspect(filepath.Join(lib, "S"))
 	if err != nil || res.Broken || len(res.Findings) != 0 {
 		t.Errorf("Inspect = %+v, %v, want the planned (fixed) txt", res, err)
@@ -259,7 +260,7 @@ func TestInspectMedia(t *testing.T) {
 	lavfi(t, filepath.Join(dir, "v.mp4"), "-f", "lavfi", "-i", "testsrc=d=2:s=96x64:r=10", "-c:v", "libx264", "-pix_fmt", "yuv420p")
 	writeFiles(t, lib, map[string]string{"S/song.txt": "#VIDEO:v.mp4\n" + song("a.mp3", 10)})
 
-	insp, notes := NewInspector(fsops.New(false), false)
+	insp, notes := NewInspector(context.Background(), fsops.New(false), false)
 	if len(notes) != 0 || !insp.MediaChecked() || insp.DeepChecked() {
 		t.Errorf("notes = %q, media %v, deep %v", notes, insp.MediaChecked(), insp.DeepChecked())
 	}

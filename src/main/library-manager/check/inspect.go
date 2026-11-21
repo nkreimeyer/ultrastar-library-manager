@@ -19,6 +19,7 @@ import (
 // other modules (organize) use to decide whether a song works and how good it is. It
 // never modifies anything. It is safe for concurrent use.
 type Inspector struct {
+	ctx     context.Context // stops the probes and decodes (organize's Options.Ctx)
 	ops     *fsops.Ops
 	media   bool // ffprobe is available
 	deep    bool // deep requested and ffmpeg (and ffprobe) are available
@@ -75,8 +76,15 @@ type MediaSummary struct {
 // still used: check only probes and decodes, which old releases do the same way, while
 // skipping the media checks would let broken media pass. A tool that is found but fails
 // to run is used too: its failures are counted (see errToolFailed), as before.
-func NewInspector(ops *fsops.Ops, deep bool) (*Inspector, []string) {
-	i := &Inspector{ops: ops, deepSem: make(chan struct{}, maxDeepDecodes)}
+//
+// Once ctx is done (nil = never), running ffprobe/ffmpeg commands are stopped and no new
+// ones start; the media of an inspection cut short this way are not checked and nothing
+// is counted as a failure, so its result must be thrown away.
+func NewInspector(ctx context.Context, ops *fsops.Ops, deep bool) (*Inspector, []string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	i := &Inspector{ctx: ctx, ops: ops, deepSem: make(chan struct{}, maxDeepDecodes)}
 	var notes []string
 	oldTool := func(t mediatools.Tool, what string) {
 		if t.TooOld() {

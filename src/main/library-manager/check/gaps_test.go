@@ -1,12 +1,15 @@
 package check
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/nkreimeyer/library-manager/fsops"
@@ -56,7 +59,7 @@ func TestProbeMediaFakeTools(t *testing.T) {
 
 	t.Run("ffprobe cannot run", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
-		if _, err := probeMedia(path); !errors.Is(err, errToolFailed) {
+		if _, err := probeMedia(context.Background(), path); !errors.Is(err, errToolFailed) {
 			t.Errorf("err = %v, want errToolFailed", err)
 		}
 	})
@@ -68,20 +71,20 @@ echo "second" >&2
 echo "third" >&2
 exit 1
 `})
-		_, err := probeMedia(path)
+		_, err := probeMedia(context.Background(), path)
 		if err == nil || errors.Is(err, errToolFailed) || err.Error() != "[mp3] Header missing in x.mp3 | second" {
 			t.Errorf("err = %v", err)
 		}
 	})
 	t.Run("failed probe without stderr", func(t *testing.T) {
 		fakeTools(t, map[string]string{"ffprobe": "exit 3\n"})
-		if _, err := probeMedia(path); err == nil || errors.Is(err, errToolFailed) || err.Error() != "exit status 3" {
+		if _, err := probeMedia(context.Background(), path); err == nil || errors.Is(err, errToolFailed) || err.Error() != "exit status 3" {
 			t.Errorf("err = %v, want exit status 3", err)
 		}
 	})
 	t.Run("invalid json", func(t *testing.T) {
 		fakeTools(t, map[string]string{"ffprobe": "echo nope\n"})
-		if _, err := probeMedia(path); err == nil || errors.Is(err, errToolFailed) || !strings.Contains(err.Error(), "parsing ffprobe output") {
+		if _, err := probeMedia(context.Background(), path); err == nil || errors.Is(err, errToolFailed) || !strings.Contains(err.Error(), "parsing ffprobe output") {
 			t.Errorf("err = %v", err)
 		}
 	})
@@ -106,7 +109,7 @@ exit 1
 				scripts["ffmpeg"] = tt.ffmpeg
 			}
 			fakeTools(t, scripts)
-			info, err := probeMedia(path)
+			info, err := probeMedia(context.Background(), path)
 			if err != nil || info.DurationSec != tt.wantSec || info.DurationEstimated != tt.wantEstimated || !info.HasDuration {
 				t.Errorf("probeMedia = %+v, %v, want %v s, estimated %v", info, err, tt.wantSec, tt.wantEstimated)
 			}
@@ -118,7 +121,7 @@ func TestDecodeCheckFakeTools(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.mp4")
 	t.Run("ffmpeg cannot run", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
-		if _, _, err := decodeCheck(path); !errors.Is(err, errToolFailed) {
+		if _, _, err := decodeCheck(context.Background(), path); !errors.Is(err, errToolFailed) {
 			t.Errorf("err = %v, want errToolFailed", err)
 		}
 	})
@@ -136,7 +139,7 @@ func TestDecodeCheckFakeTools(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fakeTools(t, map[string]string{"ffmpeg": tt.script})
-			decErr, decWarn, err := decodeCheck(path)
+			decErr, decWarn, err := decodeCheck(context.Background(), path)
 			if err != nil || decErr != tt.wantErr || decWarn != tt.wantWarn {
 				t.Errorf("decodeCheck = %q, %q, %v, want %q, %q", decErr, decWarn, err, tt.wantErr, tt.wantWarn)
 			}
@@ -150,7 +153,7 @@ func TestDecodeCheckGarbage(t *testing.T) {
 	if err := os.WriteFile(path, []byte(garbage(4000)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	decErr, decWarn, err := decodeCheck(path)
+	decErr, decWarn, err := decodeCheck(context.Background(), path)
 	if err != nil || decErr == "" || decWarn != "" || strings.Contains(decErr, filepath.Dir(path)) {
 		t.Errorf("decodeCheck = %q, %q, %v, want a decode error only", decErr, decWarn, err)
 	}
@@ -258,7 +261,7 @@ func TestNewInspectorTools(t *testing.T) {
 				scripts[tool] = "exit 0\n"
 			}
 			fakeTools(t, scripts)
-			insp, notes := NewInspector(fsops.New(false), tt.deep)
+			insp, notes := NewInspector(context.Background(), fsops.New(false), tt.deep)
 			if !reflect.DeepEqual(notes, tt.wantNotes) || insp.MediaChecked() != tt.wantMedia || insp.DeepChecked() != tt.want {
 				t.Errorf("notes %v, media %v, deep %v; want %v, %v, %v", notes, insp.MediaChecked(), insp.DeepChecked(),
 					tt.wantNotes, tt.wantMedia, tt.want)
@@ -274,7 +277,7 @@ func TestNewInspectorOldTools(t *testing.T) {
 		return "echo '" + name + " version " + v + " Copyright (c) the FFmpeg developers'\n"
 	}
 	fakeTools(t, map[string]string{"ffprobe": version("ffprobe", "4.4.2"), "ffmpeg": version("ffmpeg", "5.0.3")})
-	insp, notes := NewInspector(fsops.New(false), true)
+	insp, notes := NewInspector(context.Background(), fsops.New(false), true)
 	want := []string{
 		"ffprobe 4.4.2 is older than 5.1, the oldest tested release: the media checks may differ",
 		"ffmpeg 5.0.3 is older than 5.1, the oldest tested release: the deep decode checks may differ",
@@ -282,11 +285,11 @@ func TestNewInspectorOldTools(t *testing.T) {
 	if !insp.MediaChecked() || !insp.DeepChecked() || !reflect.DeepEqual(notes, want) {
 		t.Errorf("media %v, deep %v, notes %q; want both checks with notes %q", insp.MediaChecked(), insp.DeepChecked(), notes, want)
 	}
-	if insp, notes := NewInspector(fsops.New(false), false); !insp.MediaChecked() || insp.DeepChecked() || !reflect.DeepEqual(notes, want[:1]) {
+	if insp, notes := NewInspector(context.Background(), fsops.New(false), false); !insp.MediaChecked() || insp.DeepChecked() || !reflect.DeepEqual(notes, want[:1]) {
 		t.Errorf("not deep: media %v, deep %v, notes %q", insp.MediaChecked(), insp.DeepChecked(), notes)
 	}
 	fakeTools(t, map[string]string{"ffprobe": version("ffprobe", "7.1"), "ffmpeg": version("ffmpeg", "n6.0")})
-	if insp, notes := NewInspector(fsops.New(false), true); !insp.DeepChecked() || len(notes) != 0 {
+	if insp, notes := NewInspector(context.Background(), fsops.New(false), true); !insp.DeepChecked() || len(notes) != 0 {
 		t.Errorf("new tools: deep %v, notes %q; want no notes", insp.DeepChecked(), notes)
 	}
 }
@@ -361,7 +364,7 @@ func TestObserveFilesProbeOnce(t *testing.T) {
 		"Song/song.txt": "#VIDEO:x.png\n#COVER:x.png\n" + song("x.png", 10),
 		"Song/x.png":    "\x89PNG\r\n\x1a\n not a real png",
 	})
-	insp, _ := NewInspector(fsops.New(false), false)
+	insp, _ := NewInspector(context.Background(), fsops.New(false), false)
 	res, err := insp.Inspect(filepath.Join(lib, "Song"))
 	if err != nil {
 		t.Fatal(err)
@@ -551,9 +554,67 @@ func TestInspectSymlinkedTxt(t *testing.T) {
 	if err := os.Symlink("real.data", filepath.Join(lib, "Song", "song.txt")); err != nil {
 		t.Fatal(err)
 	}
-	insp, _ := NewInspector(fsops.New(false), false)
+	insp, _ := NewInspector(context.Background(), fsops.New(false), false)
 	res, err := insp.Inspect(filepath.Join(lib, "Song"))
 	if err != nil || res.Txt != "song.txt" || res.Broken || len(res.Findings) != 0 {
 		t.Errorf("Inspect = %+v, %v, want song.txt without findings", res, err)
 	}
+}
+
+// An inspection stopped by the Inspector's ctx neither reports its media as unreadable
+// or undecodable nor counts a failure: the probe or decode was stopped, the file is fine.
+func TestInspectStoppedByContext(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake tools are shell scripts")
+	}
+	marker := filepath.Join(t.TempDir(), "decoding")
+	isVersion := "for a; do [ \"$a\" = -version ] && { echo \"$(basename \"$0\") version 6.0\"; exit 0; }; done\n"
+	fakeTools(t, map[string]string{
+		"ffprobe": isVersion + `echo '{"streams":[{"index":0,"codec_type":"audio","codec_name":"mp3","duration":"2.0"}],"format":{"duration":"2.0"}}'` + "\n",
+		"ffmpeg":  isVersion + "PATH=/usr/bin:/bin\ntouch " + marker + "\nsleep 10\n",
+	})
+	lib := t.TempDir()
+	writeFiles(t, lib, map[string]string{"S/song.txt": song("song.mp3", 10), "S/song.mp3": "x"})
+	stopped := func(f []Finding) bool {
+		for _, c := range codes(f) {
+			if strings.HasSuffix(c, ":"+codeUnreadableMedia) || strings.HasSuffix(c, ":"+codeDecodeError) {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("probe", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		ops := fsops.New(false)
+		insp, _ := NewInspector(ctx, ops, false)
+		cancel()
+		in, err := insp.Inspect(filepath.Join(lib, "S"))
+		if err != nil || stopped(in.Findings) || ops.Stats().Failed != 0 {
+			t.Errorf("findings %v, err %v, failed %d", codes(in.Findings), err, ops.Stats().Failed)
+		}
+	})
+	t.Run("deep decode", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			for ctx.Err() == nil {
+				if _, err := os.Stat(marker); err == nil {
+					cancel()
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}()
+		ops := fsops.New(false)
+		insp, _ := NewInspector(ctx, ops, true)
+		start := time.Now()
+		in, err := insp.Inspect(filepath.Join(lib, "S"))
+		if err != nil || stopped(in.Findings) || ops.Stats().Failed != 0 {
+			t.Errorf("findings %v, err %v, failed %d", codes(in.Findings), err, ops.Stats().Failed)
+		}
+		if d := time.Since(start); d > 8*time.Second {
+			t.Errorf("Inspect took %v; the decode was not stopped", d)
+		}
+	})
 }

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func requireFFmpeg(t *testing.T) {
@@ -379,5 +380,22 @@ func TestHasTagInFiles(t *testing.T) {
 	p, err := Probe(context.Background(), f["h264.mp4"])
 	if err != nil || p.HasTag("SANITIZER_VIDEO") {
 		t.Errorf("h264.mp4: HasTag = true or %v, want no marker", err)
+	}
+}
+
+// A stopped probe returns the context's error, not a ProbeError (which would mark the
+// file as unreadable), and does not wait for a child process that keeps the pipe open.
+func TestProbeStoppedByContext(t *testing.T) {
+	fakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\nPATH=/usr/bin:/bin\nsleep 10\n"})
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := Probe(ctx, filepath.Join(t.TempDir(), "song.mp3"))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		var pe *ProbeError
+		t.Errorf("Probe = %v (ProbeError: %v), want context.DeadlineExceeded", err, errors.As(err, &pe))
+	}
+	if d := time.Since(start); d > WaitDelay+2*time.Second {
+		t.Errorf("Probe took %v after the stop", d)
 	}
 }

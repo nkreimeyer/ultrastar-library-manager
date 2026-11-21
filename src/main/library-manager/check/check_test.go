@@ -2,6 +2,7 @@ package check
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -361,7 +362,7 @@ func TestProbeMediaVideoBitrateFromLanguageBPSTag(t *testing.T) {
 	mkv := filepath.Join(t.TempDir(), "v.mkv")
 	lavfi(t, mkv, "-f", "lavfi", "-i", "testsrc=d=1:s=64x64:r=10", "-f", "lavfi", "-i", "sine=d=1",
 		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "libvorbis", "-metadata:s:v:0", "BPS-ger=4500000")
-	info, err := probeMedia(mkv)
+	info, err := probeMedia(context.Background(), mkv)
 	if err != nil || info.VideoBitrate != 4500000 || !info.HasAudio {
 		t.Errorf("probeMedia = %+v, %v; want the BPS-ger bitrate 4500000", info, err)
 	}
@@ -532,7 +533,7 @@ func TestRunEstimatedDuration(t *testing.T) {
 	}
 	// BPM 300: beat 990 + 10 ends at 50 s.
 	writeFiles(t, lib, map[string]string{"Song/song.txt": "#TITLE:T\n#ARTIST:A\n#MP3:a.mp3\n#BPM:300\n" + padNoEnd(0) + ": 990 10 0 x\nE\n"})
-	info, err := probeMedia(mp3)
+	info, err := probeMedia(context.Background(), mp3)
 	if err != nil || info.DurationEstimated || math.Abs(info.DurationSec-60) > 0.5 {
 		t.Errorf("probeMedia = %+v, %v, want a measured 60 s", info, err)
 	}

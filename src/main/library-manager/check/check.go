@@ -86,7 +86,7 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 		return fmt.Errorf("finding song folders in %q: %w", cfg.SongDir, err)
 	}
 
-	insp, notes := NewInspector(ops, opts.Deep)
+	insp, notes := NewInspector(context.Background(), ops, opts.Deep)
 	c := &checker{cfg: cfg}
 	_ = utils.ForEachParallel(context.Background(), folders, utils.Parallel{
 		Workers: workers,
@@ -243,8 +243,10 @@ func (i *Inspector) observeFile(path string, kind refKind) fileObs {
 	if !i.media {
 		return o
 	}
-	info, err := probeMedia(path)
+	info, err := probeMedia(i.ctx, path)
 	switch {
+	case i.ctx.Err() != nil:
+		return o // stopped: the result is thrown away
 	case errors.Is(err, errToolFailed):
 		log.Errorf("Checking %s: %v", path, err)
 		i.ops.Fail()
@@ -256,6 +258,9 @@ func (i *Inspector) observeFile(path string, kind refKind) fileObs {
 	o.Probed, o.Media = true, info
 	if i.deep {
 		decErr, decWarn, err := i.deepDecode(path)
+		if i.ctx.Err() != nil {
+			return o
+		}
 		if err != nil {
 			log.Errorf("Checking %s: %v", path, err)
 			i.ops.Fail()
@@ -269,9 +274,13 @@ func (i *Inspector) observeFile(path string, kind refKind) fileObs {
 // deepDecode runs decodeCheck in one of the maxDeepDecodes slots. The slot is released by
 // defer, so a panic the worker pool recovers does not keep it.
 func (i *Inspector) deepDecode(path string) (decodeErr, decodeWarn string, err error) {
-	i.deepSem <- struct{}{}
+	select {
+	case i.deepSem <- struct{}{}:
+	case <-i.ctx.Done():
+		return "", "", i.ctx.Err()
+	}
 	defer func() { <-i.deepSem }()
-	return decodeCheck(path)
+	return decodeCheck(i.ctx, path)
 }
 
 // rawHeaderValues returns the undecoded values of the tag lines of a txt in a

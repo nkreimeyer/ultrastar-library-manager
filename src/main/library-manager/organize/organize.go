@@ -160,7 +160,7 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 		}
 	}
 
-	insp, notes := check.NewInspector(ops, opts.Deep)
+	insp, notes := check.NewInspector(opts.ctx(), ops, opts.Deep)
 	if !insp.MediaChecked() {
 		notes = append(notes, noteNoMediaQuality)
 	}
