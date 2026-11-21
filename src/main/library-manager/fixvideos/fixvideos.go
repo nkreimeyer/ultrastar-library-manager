@@ -372,8 +372,18 @@ func (p *processor) processVideoFile(dir, file string) {
 		// Checked before encoding, so a blocked conversion is not encoded and discarded on
 		// every run, and the dry run plans what the real run does. In a dry run, a file an
 		// earlier module would move away does not count (in the real run it is gone).
-		if newPath := renamedPath(file, pl); p.exists(newPath) {
+		newPath := renamedPath(file, pl)
+		if p.exists(newPath) {
 			log.Warnf("Cannot convert %s: %s already exists, keeping the original", file, newPath)
+			return
+		}
+		// The same for a txt that cannot follow the new name (a decode Problem, which
+		// fixtxt never fixes, or not UTF-8 yet); replaceOriginal would undo the conversion.
+		if _, content, err := utils.FileReferenceReplacement(p.ops, dir, filepath.Base(file), filepath.Base(newPath)); err != nil || content == nil {
+			if err == nil {
+				err = fmt.Errorf("no file tag references %s", filepath.Base(file))
+			}
+			log.Warnf("Not converting %s to %s: the song txt cannot be updated, keeping the original: %v", file, pl.outputExt(file), err)
 			return
 		}
 	}

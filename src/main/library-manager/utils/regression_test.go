@@ -341,3 +341,20 @@ func TestReplaceFileReferenceRefusesResultWithProblem(t *testing.T) {
 		t.Errorf("replaced=%v err=%v file=%q; want ErrTxtProblem and the file unchanged", replaced, err, got)
 	}
 }
+
+// FileReferenceReplacement returns what ReplaceFileReference would write and writes
+// nothing; nil content when nothing references the name.
+func TestFileReferenceReplacementWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	txt := filepath.Join(dir, "song.txt")
+	writeFile(t, txt, "#TITLE:t\n#VIDEO:v.avi\n")
+	ops := fsops.New(false)
+	gotTxt, content, err := FileReferenceReplacement(ops, dir, "v.avi", "v.mp4")
+	disk, _ := os.ReadFile(txt)
+	if err != nil || gotTxt != txt || string(content) != "#TITLE:t\n#VIDEO:v.mp4\n" || string(disk) != "#TITLE:t\n#VIDEO:v.avi\n" || ops.Stats().Written != 0 {
+		t.Errorf("txt=%q content=%q err=%v disk=%q stats=%+v", gotTxt, content, err, disk, ops.Stats())
+	}
+	if _, content, err := FileReferenceReplacement(ops, dir, "other.avi", "other.mp4"); content != nil || err != nil {
+		t.Errorf("unreferenced: content=%q err=%v, want nil, nil", content, err)
+	}
+}

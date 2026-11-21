@@ -253,25 +253,39 @@ var ErrTxtProblem = errors.New("song txt has an encoding problem and is never re
 // (ErrTxtNotUTF8, ErrTxtProblem). The txt is found and read through ops, so in a dry run
 // the replacement applies to the content earlier modules planned.
 func ReplaceFileReference(ops *fsops.Ops, dir, oldName, newName string) (replaced bool, err error) {
-	txt, err := FindSongTxt(ops, dir)
-	if err != nil {
+	txt, content, err := FileReferenceReplacement(ops, dir, oldName, newName)
+	if err != nil || content == nil {
 		return false, err
+	}
+	_, err = ops.WriteFileAtomic(txt, content)
+	return err == nil, err
+}
+
+// FileReferenceReplacement returns the song txt in dir and the content
+// ReplaceFileReference would write to it, without writing; content is nil if no file tag
+// references oldName. The errors are ReplaceFileReference's, so a caller can check before
+// expensive work (fixvideos encodes only if the txt can follow the new name).
+func FileReferenceReplacement(ops *fsops.Ops, dir, oldName, newName string) (txt string, content []byte, err error) {
+	txt, err = FindSongTxt(ops, dir)
+	if err != nil {
+		return "", nil, err
 	}
 	raw, err := ops.ReadFile(txt)
 	if err != nil {
-		return false, err
+		return "", nil, err
 	}
 	// Valid UTF-8 bytes are not enough: DecodeTxt may read them as CP1252 (accidental
 	// UTF-8) or with a Problem (stale #ENCODING, NUL bytes), and such a file is never
 	// rewritten; fixtxt leaves it alone too.
 	if err := rewritableUTF8(txt, raw); err != nil {
-		return false, err
+		return "", nil, err
 	}
 
 	want := normalizeName(oldName)
 	// A name read from disk may be NFD (macOS); its combining marks alone are no clean
 	// UTF-8 evidence for DecodeTxt, while the NFC letters are.
 	newName = norm.NFC.String(newName)
+	replaced := false
 	lines := strings.SplitAfter(string(raw), "\n")
 	for i, line := range lines {
 		body := strings.TrimRight(line, "\r\n")
@@ -295,15 +309,14 @@ func ReplaceFileReference(ops *fsops.Ops, dir, oldName, newName string) (replace
 		}
 	}
 	if !replaced {
-		return false, nil
+		return txt, nil, nil
 	}
-	out := []byte(strings.Join(lines, ""))
+	content = []byte(strings.Join(lines, ""))
 	// The new name may not fit the file either (a Cyrillic name under a stale #ENCODING).
-	if err := rewritableUTF8(txt, out); err != nil {
-		return false, err
+	if err := rewritableUTF8(txt, content); err != nil {
+		return "", nil, err
 	}
-	_, err = ops.WriteFileAtomic(txt, out)
-	return err == nil, err
+	return txt, content, nil
 }
 
 // rewritableUTF8 returns nil if DecodeTxt reads content, the content of txt, as UTF-8
