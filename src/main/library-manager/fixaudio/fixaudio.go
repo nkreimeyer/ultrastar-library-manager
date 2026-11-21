@@ -22,6 +22,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
@@ -81,12 +82,35 @@ var workers = min(maxWorkers, runtime.NumCPU())
 // (the original keeps it, in originals/).
 var coverExts = map[string]bool{".mp3": true, ".m4a": true, ".flac": true}
 
-// Run processes all audio files of all song folders below cfg.SongDir. A panic in one
+// Options configures RunWith.
+type Options struct {
+	Ctx      context.Context       // nil = Background; once done no further file starts (running ffmpeg encodes finish)
+	Progress func(done, total int) // called after each song folder; may be nil
+}
+
+// Run processes all audio files of all song folders below cfg.SongDir, without a stop
+// or progress (see RunWith).
+func Run(cfg config.Config, ops *fsops.Ops) error { return RunWith(cfg, ops, Options{}) }
+
+// RunWith processes all audio files of all song folders below cfg.SongDir. A panic in one
 // folder is logged and counted as a failure, and the other folders are still processed.
-func Run(cfg config.Config, ops *fsops.Ops) error {
+//
+// Once opts.Ctx is done no further file is probed or encoded; an encode already running
+// finishes, so a file is never left half replaced. A stopped run returns an error that
+// wraps the ctx's error (errors.Is(err, context.Canceled)); the journal keeps the files
+// done so far (it is saved after each one).
+func RunWith(cfg config.Config, ops *fsops.Ops, opts Options) error {
+	ctx := opts.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// The filters use options of the minimum release (aresample's ochl is new in 5.1);
 	// an older ffmpeg would fail on every file.
-	if err := mediatools.Require(context.Background(), mediatools.Names...); err != nil {
+	if err := mediatools.Require(ctx, mediatools.Names...); err != nil {
+		// With a done ctx "-version" cannot run: that is a stop, not a missing ffmpeg.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("the audio module was stopped: %w", ctxErr)
+		}
 		return fmt.Errorf("the audio module needs ffmpeg and ffprobe %d.%d or newer: %w", mediatools.MinMajor, mediatools.MinMinor, err)
 	}
 
@@ -100,9 +124,10 @@ func Run(cfg config.Config, ops *fsops.Ops) error {
 		return fmt.Errorf("opening media journal: %w", err)
 	}
 
-	p := &processor{cfg: cfg, ops: ops, journal: j}
-	_ = utils.ForEachParallel(context.Background(), folders, utils.Parallel{
-		Workers: workers,
+	p := &processor{cfg: cfg, ops: ops, journal: j, ctx: ctx}
+	poolErr := utils.ForEachParallel(ctx, folders, utils.Parallel{
+		Workers:  workers,
+		Progress: opts.Progress,
 		OnPanic: func(i int, _ any) {
 			log.Errorf("fixaudio: %s not finished: internal error (logged above)", folders[i])
 			ops.Fail()
@@ -111,6 +136,15 @@ func Run(cfg config.Config, ops *fsops.Ops) error {
 
 	if err := j.Save(ops); err != nil {
 		log.Errorf("Saving media journal: %v", err) // counted by ops
+	}
+	// The pool only reports folders it never started; a file stopped at its probe counts
+	// too.
+	if poolErr == nil && p.stopped.Load() {
+		poolErr = ctx.Err()
+	}
+	if poolErr != nil {
+		log.Warnf("The audio module was stopped; the remaining files were not processed.")
+		return fmt.Errorf("the audio module was stopped: %w", poolErr)
 	}
 	log.Infof("All audio files have been processed.")
 	return nil
@@ -124,6 +158,30 @@ type processor struct {
 	// normalizedTag (the tag can be lost, e.g. when another tool rewrites the file). For
 	// noMetadataExts it is the only record.
 	journal *journal.Journal
+	// ctx stops the run (nil = never, as in tests that build a processor); stopped
+	// records that a file was left out because of it.
+	ctx     context.Context
+	stopped atomic.Bool
+}
+
+// context returns the run's ctx, Background if none was set.
+func (p *processor) context() context.Context {
+	if p.ctx == nil {
+		return context.Background()
+	}
+	return p.ctx
+}
+
+// isStop reports whether err only says the run was stopped (mediatools.Probe returns
+// the ctx's error then): that says nothing about the file, so it is no failure. It
+// records the stop for RunWith.
+func (p *processor) isStop(err error) bool {
+	ctxErr := p.context().Err()
+	if ctxErr == nil || !errors.Is(err, ctxErr) {
+		return false
+	}
+	p.stopped.Store(true)
+	return true
 }
 
 // processFolder processes every audio file directly inside folder.
@@ -158,7 +216,7 @@ func (p *processor) processFolder(folder string) {
 			log.Infof("Skipping %s: it is a #VOCALS/#INSTRUMENTAL stem, normalizing it would change the mix balance", filepath.Join(folder, name))
 			continue
 		}
-		p.processFile(folder, name)
+		p.processFile(folder, name) // a done ctx stops it at the probe
 	}
 }
 
@@ -193,7 +251,11 @@ func (p *processor) processFile(folder, name string) {
 		return
 	}
 
-	info, err := probeAudio(path)
+	info, err := probeAudio(p.context(), path)
+	if p.isStop(err) {
+		log.Debugf("Not processing %s: the run was stopped", path)
+		return
+	}
 	if err != nil {
 		log.Errorf("Skipping %s: probing audio failed: %v", path, err)
 		ops.Fail()
@@ -238,6 +300,13 @@ func (p *processor) processFile(folder, name string) {
 	}
 	action := strings.Join(actions, " and ")
 	backupRel := filepath.Join(p.cfg.RelPath(folder), name)
+	// The peak measuring does not stop with the ctx; a stop during it must not start the
+	// encode.
+	if p.context().Err() != nil {
+		p.stopped.Store(true)
+		log.Debugf("Not processing %s: the run was stopped", path)
+		return
+	}
 
 	if ops.DryRun {
 		// Both calls only log and count in dry-run mode.
@@ -325,8 +394,9 @@ type audioInfo struct {
 // probeAudio reads codec, channel count, sample format and bitrate of the first audio
 // stream. The stream bitrate is preferred; if the container does not report one (e.g.
 // opus), the overall format bitrate is used instead.
-func probeAudio(path string) (audioInfo, error) {
-	probe, err := mediatools.Probe(context.Background(), path)
+// A done ctx stops the probe; the error is then ctx.Err().
+func probeAudio(ctx context.Context, path string) (audioInfo, error) {
+	probe, err := mediatools.Probe(ctx, path)
 	if err != nil {
 		return audioInfo{}, err
 	}

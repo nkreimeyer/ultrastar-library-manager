@@ -2,6 +2,7 @@ package fixaudio
 
 import (
 	"bytes"
+	"context"
 	"math"
 	"os"
 	"os/exec"
@@ -172,7 +173,7 @@ func quietMP3(t *testing.T, path string, seconds string) {
 
 func probe(t *testing.T, path string) audioInfo {
 	t.Helper()
-	info, err := probeAudio(path)
+	info, err := probeAudio(context.Background(), path)
 	if err != nil {
 		t.Fatalf("probing %s: %v", path, err)
 	}

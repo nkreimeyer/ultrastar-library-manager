@@ -1,6 +1,7 @@
 package fixvideos
 
 import (
+	"context"
 	"math"
 	"os"
 	"os/exec"
@@ -444,7 +445,7 @@ func TestTagByRemuxNeedsKnownDuration(t *testing.T) {
 		t.Skipf("cannot generate test media (%v): %s", err, stderr.String())
 	}
 	f.Close()
-	if m, err := probeMarker(video); err != nil || m.duration != 0 {
+	if m, err := probeMarker(context.Background(), video); err != nil || m.duration != 0 {
 		t.Fatalf("fixture probe = %+v, %v; want an unknown duration", m, err)
 	}
 	before := testutil.Snapshot(t, songDir)
@@ -551,10 +552,10 @@ func TestSameVideoDurationFallbacks(t *testing.T) {
 		return path
 	}
 	long, short := gen("long.mp4", "3"), gen("short.mp4", "1")
-	if ok, msg := sameVideoDuration(long, short, true); ok || !strings.Contains(msg, "instead of 3.000 s") {
+	if ok, msg, _ := sameVideoDuration(context.Background(), long, short, true); ok || !strings.Contains(msg, "instead of 3.000 s") {
 		t.Errorf("3 s vs 1 s = %v, %q; want a mismatch", ok, msg)
 	}
-	if ok, _ := sameVideoDuration(long, gen("same.mp4", "3"), false); !ok {
+	if ok, _, _ := sameVideoDuration(context.Background(), long, gen("same.mp4", "3"), false); !ok {
 		t.Error("3 s vs 3 s: mismatch")
 	}
 	// FLV has a container duration, but none per stream.
@@ -562,20 +563,20 @@ func TestSameVideoDurationFallbacks(t *testing.T) {
 	if d, err := videoStreamDuration(noTags); err != nil || d != 0 {
 		t.Fatalf("fixture has a video duration (%v, %v)", d, err)
 	}
-	if ok, _ := sameVideoDuration(noTags, short, false); !ok {
+	if ok, _, _ := sameVideoDuration(context.Background(), noTags, short, false); !ok {
 		t.Error("unknown video duration, audio stripped: compared anyway")
 	}
-	if ok, _ := sameVideoDuration(noTags, short, true); ok {
+	if ok, _, _ := sameVideoDuration(context.Background(), noTags, short, true); ok {
 		t.Error("unknown video duration, audio kept: the containers (3 s vs 1 s) were not compared")
 	}
-	if ok, _ := sameVideoDuration(noTags, gen("same.mkv", "3"), true); !ok {
+	if ok, _, _ := sameVideoDuration(context.Background(), noTags, gen("same.mkv", "3"), true); !ok {
 		t.Error("unknown video duration, audio kept, same container duration: mismatch")
 	}
 	broken := filepath.Join(dir, "broken.mp4")
 	if err := os.WriteFile(broken, []byte("garbage"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if ok, msg := sameVideoDuration(long, broken, true); ok || !strings.Contains(msg, "cannot read") {
+	if ok, msg, _ := sameVideoDuration(context.Background(), long, broken, true); ok || !strings.Contains(msg, "cannot read") {
 		t.Errorf("unreadable output = %v, %q; want a mismatch", ok, msg)
 	}
 }

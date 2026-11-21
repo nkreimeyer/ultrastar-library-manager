@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
@@ -101,15 +102,71 @@ type processor struct {
 	mu        sync.Mutex
 	corrupted map[string]struct{} // videos ffmpeg could not read
 	readable  map[string]struct{} // videos this run found readable (see markReadable)
+
+	// ctx stops the run (nil = never, as in tests that build a processor); stopped
+	// records that a video was left out because of it.
+	ctx     context.Context
+	stopped atomic.Bool
 }
 
-// Run processes the videos of all song folders below cfg.SongDir with a pool of workers,
-// then writes the corrupted-files report and the media journal. A panic while processing
-// one video is logged and counted as a failure, and the other videos are still processed.
-func Run(cfg config.Config, ops *fsops.Ops) error {
+// context returns the run's ctx, Background if none was set.
+func (p *processor) context() context.Context {
+	if p.ctx == nil {
+		return context.Background()
+	}
+	return p.ctx
+}
+
+// isStop reports whether err only says the run was stopped (mediatools.Probe returns
+// the ctx's error then): that says nothing about the video, so it is no failure, no
+// corrupted file and no journal entry. It records the stop for RunWith.
+func (p *processor) isStop(err error) bool {
+	if !stoppedBy(p.context(), err) {
+		return false
+	}
+	p.stopped.Store(true)
+	return true
+}
+
+// stoppedBy reports whether err is the error of the done ctx.
+func stoppedBy(ctx context.Context, err error) bool {
+	ctxErr := ctx.Err()
+	return err != nil && ctxErr != nil && errors.Is(err, ctxErr)
+}
+
+// Options configures RunWith.
+type Options struct {
+	Ctx      context.Context       // nil = Background; once done no further file starts (running ffmpeg encodes finish)
+	Progress func(done, total int) // called after each video file; may be nil
+}
+
+// Run processes the videos of all song folders below cfg.SongDir, without a stop or
+// progress (see RunWith).
+func Run(cfg config.Config, ops *fsops.Ops) error { return RunWith(cfg, ops, Options{}) }
+
+// RunWith processes the videos of all song folders below cfg.SongDir with a pool of
+// workers, then writes the corrupted-files report and the media journal. A panic while
+// processing one video is logged and counted as a failure, and the other videos are still
+// processed.
+//
+// Once opts.Ctx is done no further video is probed or encoded; an encode already running
+// finishes (its rename and txt update must not be cut off), but its result is discarded
+// if the stop comes before its duration check. A stopped run returns an error that wraps
+// the ctx's error (errors.Is(err, context.Canceled)) and leaves the corrupted-files report
+// as it is: this run did not look at every video. The journal keeps the videos done so
+// far (it is saved after each one).
+func RunWith(cfg config.Config, ops *fsops.Ops, opts Options) error {
+	ctx := opts.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// The encodes use options of the minimum release; an older ffmpeg would fail (or
 	// differ) on every video.
-	if err := mediatools.Require(context.Background(), mediatools.Names...); err != nil {
+	if err := mediatools.Require(ctx, mediatools.Names...); err != nil {
+		// With a done ctx "-version" cannot run: that is a stop, not a missing ffmpeg.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("the video module was stopped: %w", ctxErr)
+		}
 		return fmt.Errorf("the video module needs ffmpeg and ffprobe %d.%d or newer: %w", mediatools.MinMajor, mediatools.MinMinor, err)
 	}
 
@@ -125,22 +182,34 @@ func Run(cfg config.Config, ops *fsops.Ops) error {
 		return fmt.Errorf("reading media journal %q: %w", cfg.JournalPath(), err)
 	}
 
-	p := &processor{cfg: cfg, ops: ops, journal: j, corrupted: map[string]struct{}{}}
+	p := &processor{cfg: cfg, ops: ops, journal: j, corrupted: map[string]struct{}{}, ctx: ctx}
 
 	videos := p.collectVideos(entries)
-	_ = utils.ForEachParallel(context.Background(), videos, utils.Parallel{
-		Workers: workers,
+	poolErr := utils.ForEachParallel(ctx, videos, utils.Parallel{
+		Workers:  workers,
+		Progress: opts.Progress,
 		OnPanic: func(i int, _ any) {
 			log.Errorf("fixvideos: %s not finished: internal error (logged above)", videos[i])
 			ops.Fail()
 		},
 	}, func(_ int, file string) { p.processVideoFile(filepath.Dir(file), file) })
 
-	p.writeCorruptedReport()
+	// The pool only reports videos it never started; a video stopped at a probe counts
+	// too.
+	if poolErr == nil && p.stopped.Load() {
+		poolErr = ctx.Err()
+	}
+	if poolErr == nil {
+		p.writeCorruptedReport()
+	}
 	// Save writes only a changed journal. A dry run never adds to it (entries are added
 	// after an encode), so it does not write the journal.
 	if err := j.Save(ops); err != nil {
 		log.Errorf("%v", err) // counted as a failure by ops
+	}
+	if poolErr != nil {
+		log.Warnf("The video module was stopped; the remaining videos were not processed and %s was not updated.", corruptedReportName)
+		return fmt.Errorf("the video module was stopped: %w", poolErr)
 	}
 	log.Infof("All video files have been processed.")
 	return nil
@@ -355,7 +424,12 @@ func (p *processor) processVideoFile(dir, file string) {
 		return
 	}
 	// One probe for every decision about the file (plan's codec, bitrate, size and audio).
-	probe, probeErr := mediatools.Probe(context.Background(), file)
+	probe, probeErr := mediatools.Probe(p.context(), file)
+	if p.isStop(probeErr) {
+		// plan would take it for an unreadable video and encode it.
+		log.Debugf("Not processing %s: the run was stopped", file)
+		return
+	}
 	if probeErr == nil && markerFromProbe(probe).tagged {
 		log.Debugf("Skipping %s: it carries the %s tag", file, markerTag)
 		p.markReadable(file)
@@ -396,6 +470,13 @@ func (p *processor) processVideoFile(dir, file string) {
 		}
 	}
 
+	// plan's packet-size measuring does not stop with the ctx; a stop during it must not
+	// start the encode.
+	if p.context().Err() != nil {
+		p.stopped.Store(true)
+		log.Debugf("Not processing %s: the run was stopped", file)
+		return
+	}
 	if p.cfg.DryRun {
 		action := pl.describe()
 		if pl.renames(file) {
@@ -451,7 +532,14 @@ func (p *processor) encode(dir, file string, pl encodePlan) {
 		p.ops.Fail()
 		return
 	}
-	if ok, msg := sameVideoDuration(file, tmp, !pl.removeAudio); !ok {
+	ok, msg, err := sameVideoDuration(p.context(), file, tmp, !pl.removeAudio)
+	if p.isStop(err) {
+		// Unchecked, the result may have lost a damaged section; the original stays.
+		os.Remove(tmp) // our own temp file, not a library file
+		log.Infof("Not replacing %s: the run was stopped before its result was checked", file)
+		return
+	}
+	if !ok {
 		os.Remove(tmp) // our own temp file, not a library file
 		p.flagCorrupted(file, msg+", keeping the original")
 		return
@@ -499,6 +587,11 @@ func (p *processor) replaceOriginal(dir, file, tmp string, pl encodePlan) {
 	if outInfo.Size() > inInfo.Size() {
 		discard()
 		if pl.reEncode && pl.removeAudio {
+			if p.context().Err() != nil {
+				p.stopped.Store(true) // no further encode starts; the next run tries again
+				log.Infof("Not stripping the audio of %s: the run was stopped", file)
+				return
+			}
 			log.Infof("Re-encoded video is larger than the original (%d > %d bytes), only stripping the audio of %s", outInfo.Size(), inInfo.Size(), file)
 			p.encode(dir, file, encodePlan{removeAudio: true})
 			return
@@ -589,6 +682,11 @@ func (p *processor) markChecked(file string) {
 			log.Infof("Tagged %s as checked (lossless remux)", file)
 			return
 		}
+		if p.isStop(err) {
+			// Not checked as far as this run knows: the next run tries again.
+			log.Infof("Not tagging %s as checked: the run was stopped", file)
+			return
+		}
 		log.Infof("Could not tag %s (%v), recording it in the media journal instead", file, err)
 	}
 	p.record(journalChecked, file)
@@ -597,7 +695,7 @@ func (p *processor) markChecked(file string) {
 // tagByRemux replaces file with a stream copy of all its streams that carries markerTag.
 // The copy is only used if it has the tag and the same duration as file.
 func (p *processor) tagByRemux(file string) error {
-	orig, err := probeMarker(file)
+	orig, err := probeMarker(p.context(), file)
 	if err != nil {
 		return err
 	}
@@ -617,7 +715,7 @@ func (p *processor) tagByRemux(file string) error {
 		os.Remove(tmp) // our own temp file, not a library file
 		return fmt.Errorf("ffmpeg remux: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	got, err := probeMarker(tmp)
+	got, err := probeMarker(p.context(), tmp)
 	switch {
 	case err != nil:
 	case !got.tagged:
@@ -638,34 +736,43 @@ func (p *processor) tagByRemux(file string) error {
 // original's video stream has no known duration, the container durations are compared
 // when the audio is kept (keepsAudio); with neither known there is nothing to compare and
 // the result counts as matching. An out that ffprobe cannot read never matches.
-func sameVideoDuration(in, out string, keepsAudio bool) (bool, string) {
-	outProbe, err := mediatools.Probe(context.Background(), out)
+//
+// stopErr is ctx.Err() if a done ctx stopped a probe: then nothing was compared (an
+// unread original would otherwise count as matching) and ok and why mean nothing.
+func sameVideoDuration(ctx context.Context, in, out string, keepsAudio bool) (ok bool, why string, stopErr error) {
+	outProbe, err := mediatools.Probe(ctx, out)
+	if stoppedBy(ctx, err) {
+		return false, "", err
+	}
 	if err != nil {
-		return false, fmt.Sprintf("ffprobe cannot read the processed video: %v", err)
+		return false, fmt.Sprintf("ffprobe cannot read the processed video: %v", err), nil
 	}
 	got := videoDuration(outProbe)
-	inProbe, inErr := mediatools.Probe(context.Background(), in)
+	inProbe, inErr := mediatools.Probe(ctx, in)
+	if stoppedBy(ctx, inErr) {
+		return false, "", inErr
+	}
 	want := videoDuration(inProbe)
 	if inErr != nil || want <= 0 || got <= 0 {
 		if !keepsAudio {
 			log.Debugf("Not comparing the duration of %s with its processed version: unknown video duration", in)
-			return true, ""
+			return true, "", nil
 		}
 		if inErr == nil {
 			want, err = formatDuration(inProbe)
 		}
 		if inErr != nil || err != nil || want <= 0 {
 			log.Debugf("Not comparing the duration of %s with its processed version: unknown duration", in)
-			return true, ""
+			return true, "", nil
 		}
 		if got, err = formatDuration(outProbe); err != nil {
-			return false, fmt.Sprintf("ffprobe cannot read the processed video: %v", err)
+			return false, fmt.Sprintf("ffprobe cannot read the processed video: %v", err), nil
 		}
 	}
 	if !durationsMatch(got, want) {
-		return false, fmt.Sprintf("the processed video is %.3f s long instead of %.3f s (damaged input?)", got, want)
+		return false, fmt.Sprintf("the processed video is %.3f s long instead of %.3f s (damaged input?)", got, want), nil
 	}
-	return true, ""
+	return true, "", nil
 }
 
 // videoDuration returns the duration in seconds of the first video stream of probe (see
@@ -934,8 +1041,9 @@ type markerProbe struct {
 }
 
 // probeMarker reads the format and stream tags and the duration of file.
-func probeMarker(file string) (markerProbe, error) {
-	probe, err := mediatools.Probe(context.Background(), file)
+// A done ctx stops the probe; the error is then ctx.Err().
+func probeMarker(ctx context.Context, file string) (markerProbe, error) {
+	probe, err := mediatools.Probe(ctx, file)
 	if err != nil {
 		return markerProbe{}, err
 	}
