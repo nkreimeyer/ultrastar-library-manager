@@ -151,6 +151,9 @@ after the video module, handles audio files and the `#VOCALS`/`#INSTRUMENTAL` ta
   - flags files ffmpeg cannot read in `potentiallyCorruptedFiles.txt`, and keeps the
     original (and lists it there) when the processed video comes out shorter or longer
     than the original, as with an AVI whose damaged section ffmpeg drops
+  - a conversion that changes the name (`.avi` → `.mp4`) is not started when the song's txt
+    cannot be updated afterwards (no reference to the video, an encoding problem, not
+    UTF-8: run the txt fix first); the log names the reason
   - symbolic links to videos are left alone (process the file they point to)
   - every video it writes or checks is tagged (`SANITIZER_VIDEO`) and skipped on later
     runs; containers that cannot hold the tag (AVI, MPEG) are recorded in `media-journal.txt`
@@ -532,7 +535,8 @@ What a damaged word stood for is decided from evidence, strongest first:
    The name in brackets is compared with the song's folder name, its txt name and its
    `#ARTIST - #TITLE`; case, accents, punctuation and a U+FFFD in the name do not matter.
    Sections that match no damaged txt are listed in the report;
-1. **the song itself**: the names of the files in its folder (`Drömhus - Vill Ha Dig.mp3`),
+1. **the song itself**: its folder name, the names of the files and folders in it
+   (`Drömhus - Vill Ha Dig.mp3`; a dot in a folder name is no extension, `Dr. Alban - …`),
    its lyrics from lrclib.net with `-lyrics`, and its own undamaged words;
 2. **the library**: all undamaged song txts in the song's language (`#LANGUAGE`, plus the
    language detected from its words when the tag is missing or clearly wrong);
@@ -568,8 +572,9 @@ data is in `fffd_repair.json`.
 
 With `-lyrics`, artist and title of every song that still has unrepaired words after the
 offline pass are sent to [lrclib.net](https://lrclib.net) (no account needed). The answers
-are cached in `<out>/lyrics-cache/` (`-lyrics-cache` to choose another folder), so a second
-run sends no request for the same song. A song that is not found by artist and title is
+are cached in `<out>/lyrics-cache/` (`-lyrics-cache` to choose another folder, never one
+inside the song dir), so a second run sends no request for the same song; if the cache
+cannot be written, the answer is still used for this run. A song that is not found by artist and title is
 searched again by its first artist (`Shakira feat. …` = `Shakira`) and its title without
 bracketed qualifiers (`(Duett)`, `(Live)`, `[VIDEO]`), then by that title alone; titles match
 without accents (`Desole'` = `Désolé`). A word's capital letter follows the song's lyrics

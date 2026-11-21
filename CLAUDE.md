@@ -245,8 +245,9 @@ Same exit codes and leftover-argument rule.
   of the raw file change (tested: originals and repaired files differ nowhere else). Only
   UTF-8 txts without a decode Problem are repaired. Words are rebuilt across note syllables
   (`~` is transparent, breaks and player markers end a line). Evidence levels in order:
-  reviewed spellings (`-words`, unique), song (folder file names, fetched lyrics, own
-  undamaged words; min 1, ratio 3), corpus of
+  reviewed spellings (`-words`, unique), song (the folder name and subfolder names uncut,
+  file names without the extension, fetched lyrics, own undamaged words; min 1, ratio 3;
+  a file tag such as `#MP3` is filled only from a whole file name of the same length), corpus of
   the song's languages (min 2, ratio 5), word lists (unique), global corpus (weak if the song
   has a language); an undecided level narrows the candidate pool for the next. Then `¿`/`¡`
   by the line's `?`/`!` (Spanish only), bigram context, apostrophe split, the char n-gram
@@ -260,7 +261,10 @@ Same exit codes and leftover-argument rule.
   smoothing let a word missing from both corpora cost a big corpus more, so songs drifted
   to the small Dutch corpus). lrclib lookups fall back to first artist + title without
   `(…)`/`[…]`, then the title alone; titles and artists match accent-insensitively; old
-  "not found" cache entries (no `version` 2) are looked up again. The mid-line case of a
+  "not found" cache entries (no `version` 2) are looked up again. Lookups take the run's ctx
+  (a cancel stops a request or a rate-limit wait; Run returns the ctx error right after the
+  lookup); an answer whose cache entry cannot be written is still used; a `-lyrics-cache`
+  inside `-s` is refused (CLI exit 2, UI 400: it would become a song folder). The mid-line case of a
   repaired first letter follows the song's own lexicon (lyrics) before the corpus. The song's
   own lexicon is built from its oldest copy in `originals/` if there is one (`oldestOriginal`),
   so words an earlier run repaired are no evidence (a context-repaired `får` decided the
@@ -346,7 +350,10 @@ stripped from the only audio source, and the README.
   and moves (e.g. the A–Z reorganization). `.m4a` files are journaled, not tagged: writing
   the tag needs `-movflags +use_metadata_tags`, which drops the cover and the iTunes tags.
 - fixvideos re-encodes always output 8-bit yuv420p with even dimensions. A conversion
-  whose `.mp4` target already exists is skipped before encoding. A result whose first
+  whose `.mp4` target already exists is skipped before encoding, and so is one whose txt
+  cannot follow it (`utils.FileReferenceReplacement`: no reference, a decode Problem, not
+  UTF-8). `utils.ReplaceFileReference` refuses txts with a decode Problem (`ErrTxtProblem`)
+  and writes the new name NFC. A result whose first
   video stream is more than 0.5 s shorter or longer than the original's
   (`sameVideoDuration`: stream duration, else Matroska `DURATION` tag, else the container
   if the audio is kept) is discarded and the original listed in
