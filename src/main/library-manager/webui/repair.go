@@ -172,7 +172,9 @@ func (s *Server) handleRepairAnalyse(w http.ResponseWriter, r *http.Request) {
 		}
 		a.report = rep
 		s.mu.Lock()
-		s.repair[a.id] = a
+		// Only the newest analysis is kept: an older one holds every song of its library and
+		// is not shown any more (applying it answers "check again").
+		s.repair = map[string]*repairAnalysis{a.id: a}
 		s.mu.Unlock()
 		return map[string]any{"analysis": a.id, "summary": summarizeRepair(rep)}, nil
 	})

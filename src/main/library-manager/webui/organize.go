@@ -152,7 +152,9 @@ func (s *Server) handleOrganizeAnalyse(w http.ResponseWriter, r *http.Request) {
 			return nil, fmt.Errorf("the run made no plan")
 		}
 		s.mu.Lock()
-		s.organize[a.id] = a
+		// Only the newest analysis is kept: an older one holds every song of its library and
+		// is not shown any more (applying it answers "check again").
+		s.organize = map[string]*organizeAnalysis{a.id: a}
 		s.mu.Unlock()
 		return map[string]any{"analysis": a.id, "summary": summarize(a.review.Cands, a.plan)}, nil
 	})

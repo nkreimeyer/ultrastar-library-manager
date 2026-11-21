@@ -490,3 +490,40 @@ func TestWriteChoicesReplacesEarlierSpelling(t *testing.T) {
 		t.Errorf("not repaired with the new choice:\n%s", txt)
 	}
 }
+
+// A new analysis frees the older one of its kind (it holds every song of its library).
+func TestOnlyNewestAnalysisKept(t *testing.T) {
+	s := newTestServer(t)
+	lib, out := dedupeLibrary(t)
+	q := organizeRequest{Mode: "dedupe", Library: lib, Out: out}
+	first := analyseOrganize(t, s, q)
+	second := analyseOrganize(t, s, q)
+	var e apiError
+	if got := s.do("GET", "/api/organize/analysis?id="+first.ID, nil, &e); got != http.StatusNotFound {
+		t.Errorf("older organize analysis: %d", got)
+	}
+	if got := s.do("GET", "/api/organize/analysis?id="+second.ID, nil, nil); got != http.StatusOK {
+		t.Errorf("newest organize analysis: %d", got)
+	}
+
+	rlib, rout := damagedLib(t)
+	var ids []string
+	for range 2 {
+		var j Job
+		s.do("POST", "/api/repair/analyse", repairRequest{SongDir: rlib, Out: rout}, &j)
+		if j = s.wait(); j.State != stateDone {
+			t.Fatalf("repair analyse: %+v", j)
+		}
+		ids = append(ids, j.Result.(map[string]any)["analysis"].(string))
+	}
+	if got := s.do("GET", "/api/repair/analysis?id="+ids[0], nil, &e); got != http.StatusNotFound {
+		t.Errorf("older repair analysis: %d", got)
+	}
+	if got := s.do("GET", "/api/repair/analysis?id="+ids[1], nil, nil); got != http.StatusOK {
+		t.Errorf("newest repair analysis: %d", got)
+	}
+	// The organize analysis is not freed by a repair one.
+	if got := s.do("GET", "/api/organize/analysis?id="+second.ID, nil, nil); got != http.StatusOK {
+		t.Errorf("organize analysis after a repair one: %d", got)
+	}
+}
