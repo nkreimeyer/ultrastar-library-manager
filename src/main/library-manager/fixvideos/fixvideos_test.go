@@ -387,6 +387,53 @@ func TestCorruptedVideoIsReported(t *testing.T) {
 	assertNoTempFiles(t, songDir)
 }
 
+// A video an earlier run reported as potentially corrupted is dropped from the report once
+// a run finds it readable: tagged as processed, needing no processing (ffprobe read its
+// codec), or re-encoded in place by ffmpeg. An entry this run did not read stays.
+func TestReadableVideoIsDroppedFromReport(t *testing.T) {
+	requireFFmpeg(t)
+	tests := []struct {
+		name         string
+		codecArgs    []string
+		wantReplaced int64
+	}{
+		{"tagged", []string{"-c:v", "mpeg4", "-q:v", "1", "-c:a", "aac",
+			"-metadata", "SANITIZER_VIDEO=processed", "-movflags", "+use_metadata_tags"}, 0},
+		// Low-bitrate H.264 without audio: nothing to re-encode or strip.
+		{"no processing needed", []string{"-c:v", "libx264", "-crf", "35", "-an"}, 0},
+		// mpeg4 is re-encoded to H.264 and its audio stripped, keeping the name video.mp4.
+		{"re-encoded in place", []string{"-c:v", "mpeg4", "-q:v", "1", "-c:a", "aac"}, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, songDir, outDir := newLibrary(t, false)
+			song := filepath.Join(songDir, "A - S")
+			writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")
+			writeFile(t, filepath.Join(song, "song.mp3"), "audio")
+			video := filepath.Join(song, "video.mp4")
+			makeMedia(t, video, tt.codecArgs...)
+			unread := filepath.Join(t.TempDir(), "other.avi") // not below the song dir
+			writeFile(t, unread, "v")
+			report := filepath.Join(outDir, corruptedReportName)
+			writeFile(t, report, unread+"\n"+video+"\n")
+
+			ops := fsops.New(false)
+			if err := Run(cfg, ops); err != nil {
+				t.Fatal(err)
+			}
+			if st := ops.Stats(); st.Failed != 0 || st.Replaced != tt.wantReplaced {
+				t.Errorf("Stats = %+v, want %d replaced, 0 failed", st, tt.wantReplaced)
+			}
+			if _, err := os.Stat(video); err != nil {
+				t.Fatalf("video must stay under its name: %v", err)
+			}
+			if got, want := readFile(t, report), unread+"\n"; got != want {
+				t.Errorf("report = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestDryRunLeavesTreeIdentical(t *testing.T) {
 	requireFFmpeg(t)
 	cfg, songDir, outDir := newLibrary(t, true)
