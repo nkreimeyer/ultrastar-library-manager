@@ -11,30 +11,34 @@ import (
 
 // languagePrefixes maps the start of a folded, letters-only language name (English,
 // German or native spelling) to a code. The first matching prefix wins, so a prefix is
-// listed before every shorter one it starts with (TestLanguagePrefixOrder).
+// listed before every shorter one it starts with (TestLanguagePrefixOrder). An empty code
+// stops the search: the name starts like a known language but is another one (Friulian,
+// not French) or is ambiguous, and a wrong code is worse than none.
 var languagePrefixes = []struct{ prefix, code string }{
 	{"deu", "de"}, {"ger", "de"}, {"dt", "de"},
 	{"eng", "en"},
-	{"fr", "fr"},
-	{"spa", "es"}, {"esp", "es"}, {"cast", "es"},
+	{"frie", "fy"}, {"fris", "fy"}, {"frys", "fy"}, {"friu", ""}, {"fria", ""}, {"fr", "fr"},
+	{"spa", "es"}, {"esper", "eo"}, {"esp", "es"}, {"cast", "es"},
 	{"schwed", "sv"}, {"swe", "sv"}, {"sve", "sv"},
-	{"pol", "pl"},
+	{"polyn", ""}, {"pol", "pl"},
 	{"ita", "it"},
 	{"dut", "nl"}, {"ned", "nl"}, {"nied", "nl"}, {"holl", "nl"}, {"flam", "nl"}, {"flem", "nl"},
 	{"nor", "no"},
 	{"dan", "da"},
 	{"fin", "fi"}, {"suom", "fi"},
 	{"por", "pt"},
-	{"tur", "tr"},
+	{"turkm", ""}, {"tur", "tr"},
 	{"tsch", "cs"}, {"cze", "cs"}, {"ces", "cs"},
 	{"slovak", "sk"}, {"slowak", "sk"}, {"slovenc", "sk"}, {"slove", "sl"}, {"slowe", "sl"},
 	{"hin", "hi"}, {"chin", "zh"},
 	{"hun", "hu"}, {"ung", "hu"}, {"magy", "hu"},
 	{"kor", "ko"}, {"jap", "ja"}, {"rus", "ru"},
-	{"latv", "lv"}, {"lett", "lv"}, {"lat", "la"},
+	// "Latino" is Latin in Italian but Latin American Spanish in Spanish.
+	{"latv", "lv"}, {"lett", "lv"}, {"latino", ""}, {"lat", "la"},
 	{"ice", "is"}, {"isl", "is"},
 	{"kroat", "hr"}, {"croat", "hr"}, {"hrv", "hr"},
-	{"rum", "ro"}, {"rom", "ro"},
+	{"rumantsch", ""}, {"rum", "ro"},
+	{"romanian", "ro"}, {"romani", ""}, {"romanes", ""}, {"romansh", ""}, {"rom", "ro"},
 }
 
 // foldLetters lower-cases s, drops diacritics and keeps only ASCII letters.
@@ -50,7 +54,8 @@ func foldLetters(s string) string {
 }
 
 // LanguageCodes returns the language codes a #LANGUAGE value names, in order and without
-// repetitions ("German/English" = de, en). Names it does not know are left out. A U+FFFD
+// repetitions ("German/English" = de, en). Names it does not know are left out, also those
+// that only start like a known one ("Esperanto" is eo, not es). A U+FFFD
 // in the name does not matter ("Espa�ol" = es).
 func LanguageCodes(value string) []string {
 	parts := strings.FieldsFunc(value, func(r rune) bool {
@@ -65,7 +70,7 @@ func LanguageCodes(value string) []string {
 		}
 		for _, lp := range languagePrefixes {
 			if strings.HasPrefix(f, lp.prefix) {
-				if !seen[lp.code] {
+				if lp.code != "" && !seen[lp.code] {
 					seen[lp.code] = true
 					codes = append(codes, lp.code)
 				}

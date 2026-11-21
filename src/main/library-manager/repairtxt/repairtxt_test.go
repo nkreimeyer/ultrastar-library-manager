@@ -107,6 +107,31 @@ func TestLanguageCodes(t *testing.T) {
 		"Čeština":          {"cs"},
 		"Slovenščina":      {"sl"},
 		"Slowenisch":       {"sl"},
+		// Names that start like another language get their own code, or none.
+		"Esperanto":        {"eo"},
+		"Español":          {"es"},
+		"Espanhol":         {"es"},
+		"Frisian":          {"fy"},
+		"Friesisch":        {"fy"},
+		"Frysk":            {"fy"},
+		"French":           {"fr"},
+		"Französisch":      {"fr"},
+		"Friulian":         nil,
+		"Friaulisch":       nil,
+		"Latino":           nil,
+		"Español (Latino)": {"es"},
+		"Latina":           {"la"},
+		"Polynesian":       nil,
+		"Polski":           {"pl"},
+		"Turkmen":          nil,
+		"Türkçe":           {"tr"},
+		"Romanian":         {"ro"},
+		"Română":           {"ro"},
+		"Rumänisch":        {"ro"},
+		"Romani":           nil,
+		"Romansh":          nil,
+		"Rumantsch":        nil,
+		"German/Esperanto": {"de", "eo"},
 		"Other":            nil,
 		"":                 nil,
 	} {
@@ -493,13 +518,16 @@ func TestReadWordList(t *testing.T) {
 		"DE=x.dic":     {Lang: "de", Path: "x.dic"},
 		"lv=x.dic":     {Lang: "lv", Path: "x.dic"},
 		"dt=x.dic":     {Lang: "de", Path: "x.dic"}, // a name prefix, not a code
+		"eo=x.dic":     {Lang: "eo", Path: "x.dic"},
+		"Frysk=x.dic":  {Lang: "fy", Path: "x.dic"},
 	} {
 		if got, err := ParseWordListFlag(in); err != nil || got != want {
 			t.Errorf("ParseWordListFlag(%q) = %+v, %v; want %+v", in, got, err, want)
 		}
 	}
 	// "ge" and "xx" are no codes a song's language can have: such a list is never used.
-	for _, in := range []string{"Klingon=x.dic", "ge=x.dic", "xx=x.dic"} {
+	// Neither may a name that gives no code.
+	for _, in := range []string{"Klingon=x.dic", "ge=x.dic", "xx=x.dic", "Latino=x.dic", "Romani=x.dic"} {
 		if _, err := ParseWordListFlag(in); err == nil {
 			t.Errorf("ParseWordListFlag(%q): unknown language accepted", in)
 		}
