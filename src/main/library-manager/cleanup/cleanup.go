@@ -26,39 +26,84 @@ import (
 // files) are worked on at the same time than before; the work is file I/O, not CPU.
 const workers = 100
 
-// Run performs the cleanup on every song folder below cfg.SongDir. It only returns an
-// error if the library cannot be read at all; per-song problems are logged and counted
-// by ops. A panic in one folder is logged and counted as a failure, and the other folders
-// are still cleaned up.
+// Options selects the cleanup passes and how a run is driven.
+type Options struct {
+	LeftoverFiles bool // move files no song txt references to extra-files/
+	BrokenFolders bool // move folders with at most one entry to invalid/
+
+	Ctx      context.Context       // nil = Background; once done no further folder starts
+	Progress func(done, total int) // over the folders of the leftover-file pass, may be nil
+}
+
+// DefaultOptions returns the options of the CLI's -c: both passes on.
+func DefaultOptions() Options {
+	return Options{LeftoverFiles: true, BrokenFolders: true}
+}
+
+// Run performs the cleanup on every song folder below cfg.SongDir with DefaultOptions.
 func Run(cfg config.Config, ops *fsops.Ops) error {
+	return RunWith(cfg, ops, DefaultOptions())
+}
+
+// RunWith performs the cleanup passes opts selects on every song folder below
+// cfg.SongDir. It only returns an error if the library cannot be read at all or the run
+// was stopped (opts.Ctx done: the error wraps ctx.Err()); per-song problems are logged
+// and counted by ops. A panic in one folder is logged and counted as a failure, and the
+// other folders are still cleaned up.
+func RunWith(cfg config.Config, ops *fsops.Ops, opts Options) error {
+	ctx := opts.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("cleanup stopped: %w", err)
+	}
 	entries, err := utils.GetAllSongFolders(ops, cfg.SongDir)
 	if err != nil {
 		return fmt.Errorf("listing song folders: %w", err)
 	}
 
-	validEntries := filterEntries(cfg, ops, entries)
+	validEntries, err := filterEntries(ctx, cfg, ops, entries, opts.BrokenFolders)
+	if err != nil {
+		return fmt.Errorf("cleanup stopped: %w", err)
+	}
+	if !opts.LeftoverFiles {
+		return nil
+	}
 
-	_ = utils.ForEachParallel(context.Background(), validEntries, utils.Parallel{
-		Workers: workers,
+	err = utils.ForEachParallel(ctx, validEntries, utils.Parallel{
+		Workers:  workers,
+		Progress: opts.Progress,
 		OnPanic: func(i int, _ any) {
 			log.Errorf("cleanup: %s not finished: internal error (logged above)", validEntries[i])
 			ops.Fail()
 		},
 	}, func(_ int, entry string) { cleanupDirectory(cfg, ops, entry) })
+	if err != nil {
+		return fmt.Errorf("cleanup stopped: %w", err)
+	}
 	return nil
 }
 
-// filterEntries moves folders with at most one visible entry to the invalid folder and
-// returns the remaining folders. Moved (or, in dry-run mode, to-be-moved) folders and
-// unreadable folders are excluded from further cleanup. An empty folder whose counterpart
-// already exists in invalid/ (a category whose songs fixtxt moved there) is merged into it
-// by ops.MoveInto.
-func filterEntries(cfg config.Config, ops *fsops.Ops, entries []string) []string {
+// filterEntries moves folders with at most one visible entry to the invalid folder (only
+// if moveBroken is set; otherwise they stay and are returned like the others) and returns
+// the remaining folders. Moved (or, in dry-run mode, to-be-moved) folders and unreadable
+// folders are excluded from further cleanup. An empty folder whose counterpart already
+// exists in invalid/ (a category whose songs fixtxt moved there) is merged into it by
+// ops.MoveInto. Once ctx is done no further folder is looked at and ctx.Err() is returned.
+func filterEntries(ctx context.Context, cfg config.Config, ops *fsops.Ops, entries []string, moveBroken bool) ([]string, error) {
 	validEntries := make([]string, 0, len(entries))
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		files, err := os.ReadDir(entry)
 		if err != nil {
 			reportUnreadable(ops, entry, err)
+			continue
+		}
+		if !moveBroken {
+			validEntries = append(validEntries, entry)
 			continue
 		}
 		if n := countEntries(ops, entry, files); n <= 1 {
@@ -70,7 +115,7 @@ func filterEntries(cfg config.Config, ops *fsops.Ops, entries []string) []string
 		}
 		validEntries = append(validEntries, entry)
 	}
-	return validEntries
+	return validEntries, nil
 }
 
 // countEntries counts the entries of dir that make up a song. Hidden files (leftovers of

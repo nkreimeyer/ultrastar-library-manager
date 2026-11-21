@@ -1,6 +1,7 @@
 package cleanup
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -250,7 +251,7 @@ func TestFilterEntriesSkipsUnreadableFolder(t *testing.T) {
 	good, gone := filepath.Join(cfg.SongDir, "Good"), filepath.Join(cfg.SongDir, "Gone")
 	ops := fsops.New(false)
 	for range 2 {
-		if got := filterEntries(cfg, ops, []string{gone, good}); !reflect.DeepEqual(got, []string{good}) {
+		if got, _ := filterEntries(context.Background(), cfg, ops, []string{gone, good}, true); !reflect.DeepEqual(got, []string{good}) {
 			t.Errorf("filterEntries = %q, want %q", got, []string{good})
 		}
 	}
