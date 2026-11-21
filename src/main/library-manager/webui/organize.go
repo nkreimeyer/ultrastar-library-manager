@@ -134,7 +134,7 @@ func (s *Server) handleOrganizeAnalyse(w http.ResponseWriter, r *http.Request) {
 	}
 	a := &organizeAnalysis{id: s.newID("o"), req: q, cfg: viewConfig(cfg), exclude: map[string]bool{}}
 	ops := fsops.New(true)
-	job, err := s.jobs.start(a.id, "organize-analyse", ops, func(ctx context.Context, c jobControl) (any, error) {
+	s.startJob(w, a.id, "organize-analyse", ops, func(ctx context.Context, c jobControl) (any, error) {
 		if err := cfg.PrepareOutDir(); err != nil {
 			return nil, err
 		}
@@ -158,11 +158,6 @@ func (s *Server) handleOrganizeAnalyse(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		return map[string]any{"analysis": a.id, "summary": summarize(a.review.Cands, a.plan)}, nil
 	})
-	if err != nil {
-		writeError(w, http.StatusConflict, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, job)
 }
 
 func (s *Server) analysis(id string) (*organizeAnalysis, error) {
@@ -257,7 +252,7 @@ func (s *Server) handleOrganizeApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ops := fsops.New(false)
-	job, err := s.jobs.start(s.newID("a"), "organize-apply", ops, func(ctx context.Context, c jobControl) (any, error) {
+	s.startJob(w, s.newID("a"), "organize-apply", ops, func(ctx context.Context, c jobControl) (any, error) {
 		if err := cfg.PrepareOutDir(); err != nil {
 			return nil, err
 		}
@@ -289,11 +284,6 @@ func (s *Server) handleOrganizeApply(w http.ResponseWriter, r *http.Request) {
 		}
 		return res, runErr // a changed plan's detailedError brings its own result
 	})
-	if err != nil {
-		writeError(w, http.StatusConflict, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, job)
 }
 
 type folderRequest struct {
@@ -346,7 +336,7 @@ func (s *Server) handleOrganizeUndo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ops := fsops.New(cfg.DryRun)
-	job, err := s.jobs.start(s.newID("u"), "organize-undo", ops, func(ctx context.Context, c jobControl) (any, error) {
+	s.startJob(w, s.newID("u"), "organize-undo", ops, func(ctx context.Context, c jobControl) (any, error) {
 		progress := c.Progress
 		if undoProgressHook != nil {
 			progress = func(phase string, done, total int) {
@@ -358,11 +348,6 @@ func (s *Server) handleOrganizeUndo(w http.ResponseWriter, r *http.Request) {
 		// The folders also with an error: a stopped or partial undo is retried from them.
 		return map[string]any{"library": cfg.Library, "outDir": cfg.OutDir}, err
 	})
-	if err != nil {
-		writeError(w, http.StatusConflict, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, job)
 }
 
 // The review view: every song folder with its decision; the UI groups them.

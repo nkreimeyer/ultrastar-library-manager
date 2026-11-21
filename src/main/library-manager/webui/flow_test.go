@@ -259,6 +259,14 @@ func TestOrganizeBusyAndUnknown(t *testing.T) {
 	if got := s.do("POST", "/api/organize/analyse", organizeRequest{Mode: "dedupe", Library: lib, Out: out}, &e); got != http.StatusConflict || e.Error != errBusy.Error() {
 		t.Errorf("busy: %d %q", got, e.Error)
 	}
+	// The other handlers that start a job answer the same way (Server.startJob).
+	if got := s.do("POST", "/api/organize/undo", folderRequest{Library: lib, Out: out}, &e); got != http.StatusConflict || e.Error != errBusy.Error() {
+		t.Errorf("undo busy: %d %q", got, e.Error)
+	}
+	rlib, rout := damagedLib(t)
+	if got := s.do("POST", "/api/repair/analyse", repairRequest{SongDir: rlib, Out: rout}, &e); got != http.StatusConflict || e.Error != errBusy.Error() {
+		t.Errorf("repair busy: %d %q", got, e.Error)
+	}
 }
 
 // damagedLib writes a song whose word "s�rprise" no evidence repairs, and one whose

@@ -144,6 +144,17 @@ func (r *jobRunner) start(id, kind string, ops *fsops.Ops, fn func(ctx context.C
 	return j.snapshot(), nil
 }
 
+// startJob starts fn as the new job and answers 202 with the job, or 409 with errBusy's
+// message while another job runs. Every handler that starts a job answers this way.
+func (s *Server) startJob(w http.ResponseWriter, id, kind string, ops *fsops.Ops, fn func(ctx context.Context, c jobControl) (any, error)) {
+	job, err := s.jobs.start(id, kind, ops, fn)
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, job)
+}
+
 // runSafely turns a panic in the job's own goroutine into a job error, so the UI keeps
 // running. The modules' worker pools (utils.ForEachParallel) recover a panic per song
 // themselves: it is logged, counted as a failure in the job's stats and the job goes on.

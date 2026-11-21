@@ -157,7 +157,7 @@ func (s *Server) handleRepairAnalyse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a := &repairAnalysis{id: s.newID("r"), req: q, cfg: cfg}
-	job, err := s.jobs.start(a.id, "repair-analyse", ops, func(ctx context.Context, c jobControl) (any, error) {
+	s.startJob(w, a.id, "repair-analyse", ops, func(ctx context.Context, c jobControl) (any, error) {
 		if err := cfg.PrepareOutDir(); err != nil {
 			return nil, err
 		}
@@ -178,11 +178,6 @@ func (s *Server) handleRepairAnalyse(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		return map[string]any{"analysis": a.id, "summary": summarizeRepair(rep)}, nil
 	})
-	if err != nil {
-		writeError(w, http.StatusConflict, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, job)
 }
 
 func (s *Server) repairAnalysis(id string) (*repairAnalysis, error) {
@@ -354,7 +349,7 @@ func (s *Server) handleRepairApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ops := fsops.New(false)
-	job, err := s.jobs.start(s.newID("w"), "repair-apply", ops, func(ctx context.Context, c jobControl) (any, error) {
+	s.startJob(w, s.newID("w"), "repair-apply", ops, func(ctx context.Context, c jobControl) (any, error) {
 		if err := cfg.PrepareOutDir(); err != nil {
 			return nil, err
 		}
@@ -377,9 +372,4 @@ func (s *Server) handleRepairApply(w http.ResponseWriter, r *http.Request) {
 		}
 		return res, runErr
 	})
-	if err != nil {
-		writeError(w, http.StatusConflict, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, job)
 }
