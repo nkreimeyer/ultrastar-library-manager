@@ -569,7 +569,7 @@ func (p *processor) rememberProcessed(file string) {
 }
 
 // record adds file to the media journal as kind and saves the journal. A failing Save is
-// counted by ops (WriteReport); a failing Add (fingerprinting the file) is not.
+// counted by ops (WriteReport); a failing Add (fingerprinting the file) is counted here.
 func (p *processor) record(kind, file string) {
 	if err := p.journal.Add(kind, file); err != nil {
 		log.Errorf("Recording %s in the media journal: %v", file, err)
