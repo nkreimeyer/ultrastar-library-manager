@@ -47,7 +47,10 @@ func snapshot(t *testing.T, root string) []string {
 			return err
 		}
 		rel, _ := filepath.Rel(root, path)
-		entry := fmt.Sprintf("%s:%v:%d", rel, info.Mode(), info.Size())
+		entry := fmt.Sprintf("%s:%v", rel, info.Mode())
+		if !info.IsDir() { // a folder's size is the file system's bookkeeping (tmpfs and btrfs differ)
+			entry += fmt.Sprintf(":%d", info.Size())
+		}
 		if info.Mode()&os.ModeSymlink == 0 { // symlink mtimes are not preserved by design
 			entry += fmt.Sprintf(":%d", info.ModTime().UnixNano())
 		}
