@@ -38,6 +38,19 @@ var openBrowser = func(url string) error {
 	return nil
 }
 
+// stopSignals are the signals that stop the UI: Ctrl-C, SIGTERM and SIGHUP (the terminal
+// window was closed). A signal the program was started with ignored stays ignored: Notify
+// would install a handler, and "nohup library-manager ui &" would stop at the logout.
+func stopSignals() []os.Signal {
+	var sigs []os.Signal
+	for _, sig := range []os.Signal{os.Interrupt, syscall.SIGHUP} {
+		if !signal.Ignored(sig) {
+			sigs = append(sigs, sig)
+		}
+	}
+	return append(sigs, syscall.SIGTERM)
+}
+
 // uiStop is closed by tests to stop the UI; nil = wait for a signal.
 var uiStop chan struct{}
 
@@ -87,10 +100,9 @@ func runUI(args []string, output io.Writer, noArgs bool) int {
 		return exitUsage
 	}
 	hs := &http.Server{Handler: srv, ReadHeaderTimeout: 10 * time.Second}
-	// Set before the browser opens. SIGHUP: the terminal window was closed. Stopping lets a
-	// running job end cleanly (organize gets a song parked under a temporary name out of it
-	// and journals the moves).
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	// Set before the browser opens. Stopping lets a running job end cleanly (organize gets a
+	// song parked under a temporary name out of it and journals the moves).
+	ctx, stop := signal.NotifyContext(context.Background(), stopSignals()...)
 	defer stop()
 
 	url := srv.StartURL()
