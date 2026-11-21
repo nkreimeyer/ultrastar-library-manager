@@ -13,6 +13,7 @@ import (
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
 	"github.com/nkreimeyer/library-manager/internal/testutil"
+	"github.com/nkreimeyer/library-manager/journal"
 )
 
 // --- pure unit tests (no ffmpeg needed) ---
@@ -543,33 +544,64 @@ func TestPeakAboveFullScaleIsNormalized(t *testing.T) {
 }
 
 // Raw ADTS AAC cannot carry the marker tag; the media journal must stop the peak, which
-// drifts with every lossy encode, from being "fixed" again on every run.
+// drifts with every lossy encode, from being "fixed" again on every run. Whether the
+// encoder misses the target depends on the ffmpeg version (9.1 hits -3.00 dB), so the
+// two halves are tested apart: a run journals what it normalized, and a journaled file
+// that misses the target is left alone.
 func TestAACNormalizationIsIdempotentViaJournal(t *testing.T) {
 	testutil.RequireFFmpeg(t)
-	cfg, ops := newLibrary(t, false)
-	dir := addSong(t, cfg, "Artist - Loud", "song.aac")
-	audio := filepath.Join(dir, "song.aac")
-	// Clipped pink noise at a low bitrate: the encoder overshoots the peak by more than the
-	// tolerance, so without the journal every run would apply another gain.
-	testutil.FFmpeg(t, "-f", "lavfi", "-i", "anoisesrc=d=3:c=pink:a=0.9:seed=7", "-af", "volume=12dB", "-ac", "2", "-c:a", "aac", "-b:a", "64k", audio)
-
-	run(t, cfg, ops)
-	if got := ops.Stats().Replaced; got != 1 {
-		t.Fatalf("first run replaced %d files, want 1", got)
-	}
-	if peak, err := measurePeak(audio, false); err != nil || math.Abs(peak-targetPeakDB) <= peakToleranceDB {
-		t.Fatalf("fixture peak after the first run = %.2f dB (%v); it must miss the target to test the journal", peak, err)
-	}
-	if _, err := os.Stat(cfg.JournalPath()); err != nil {
-		t.Errorf("media journal not written: %v", err)
-	}
-	for i := 2; i <= 3; i++ {
-		again := fsops.New(false)
-		run(t, cfg, again)
-		if got := again.Stats().Replaced; got != 0 {
-			t.Errorf("run %d replaced %d files, want 0", i, got)
+	loudAAC := func(path string) {
+		// Clipped pink noise: the peak is near 0 dBFS, far from the target.
+		testutil.FFmpeg(t, "-f", "lavfi", "-i", "anoisesrc=d=3:c=pink:a=0.9:seed=7", "-af", "volume=12dB", "-ac", "2", "-c:a", "aac", "-b:a", "64k", path)
+		if peak, err := measurePeak(path, false); err != nil || math.Abs(peak-targetPeakDB) <= peakToleranceDB {
+			t.Fatalf("fixture peak = %.2f dB (%v); it must miss the target", peak, err)
 		}
 	}
+
+	t.Run("a run journals the file", func(t *testing.T) {
+		cfg, ops := newLibrary(t, false)
+		audio := filepath.Join(addSong(t, cfg, "Artist - Loud", "song.aac"), "song.aac")
+		loudAAC(audio)
+		run(t, cfg, ops)
+		if got := ops.Stats().Replaced; got != 1 {
+			t.Fatalf("first run replaced %d files, want 1", got)
+		}
+		j, err := journal.Open(cfg.JournalPath())
+		if err != nil || !j.Has(journalKind, audio) {
+			t.Fatalf("the normalized file is not in the media journal (%v)", err)
+		}
+		for i := 2; i <= 3; i++ {
+			again := fsops.New(false)
+			run(t, cfg, again)
+			if got := again.Stats().Replaced; got != 0 {
+				t.Errorf("run %d replaced %d files, want 0", i, got)
+			}
+		}
+	})
+
+	t.Run("a journaled file is not normalized again", func(t *testing.T) {
+		cfg, ops := newLibrary(t, false)
+		audio := filepath.Join(addSong(t, cfg, "Artist - Loud", "song.aac"), "song.aac")
+		loudAAC(audio)
+		j, err := journal.Open(cfg.JournalPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := j.Add(journalKind, audio); err != nil {
+			t.Fatal(err)
+		}
+		if err := j.Save(ops); err != nil {
+			t.Fatal(err)
+		}
+		before := readFile(t, audio)
+		run(t, cfg, ops)
+		if got := ops.Stats().Replaced; got != 0 {
+			t.Errorf("replaced %d files, want 0: the journal must stop a second normalization", got)
+		}
+		if !slices.Equal(readFile(t, audio), before) {
+			t.Error("the journaled file was changed")
+		}
+	})
 }
 
 func TestStemsAreNotNormalized(t *testing.T) {

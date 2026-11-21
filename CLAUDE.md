@@ -404,9 +404,6 @@ stripped from the only audio source, and the README.
 
 Still open (roadmap items):
 
-- `fixaudio`'s `TestAACNormalizationIsIdempotentViaJournal` fails with ffmpeg 9.1: its fixture
-  now reaches -3.00 dB on the first pass, so it no longer misses the target as the test needs.
-
 - **No signal handling.** Ctrl-C during `-m`/`-a` leaves a hidden `.*.sanitizer-*` temp file.
   It is ignored as media and moved to `extra-files/` by the next cleanup run, and the
   original is untouched.
