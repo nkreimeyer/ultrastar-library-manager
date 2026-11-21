@@ -143,7 +143,7 @@ func TestSignIn(t *testing.T) {
 }
 
 func TestNewLoopbackOnly(t *testing.T) {
-	for _, addr := range []string{"0.0.0.0:80", "192.168.1.2:80", "example.com:80", "nonsense"} {
+	for _, addr := range []string{"0.0.0.0:80", "192.168.1.2:80", "example.com:80", "nonsense", "127.0.0.1:99999", "127.0.0.1:http", "127.0.0.1:-1"} {
 		if _, err := New(addr, ""); err == nil {
 			t.Errorf("New(%q) accepted", addr)
 		}

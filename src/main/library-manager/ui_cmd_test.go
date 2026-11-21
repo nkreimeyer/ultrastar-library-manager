@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"strings"
@@ -26,6 +27,15 @@ func TestUIUsage(t *testing.T) {
 		if got := runWithArgs(t, args...); got != exitUsage {
 			t.Errorf("%q = %d, want %d", args, got, exitUsage)
 		}
+	}
+	// A port in use is no usage error.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if got := runWithArgs(t, "ui", "-addr", ln.Addr().String(), "-no-browser"); got != exitFailures {
+		t.Errorf("port in use = %d, want %d", got, exitFailures)
 	}
 	if got := runWithArgs(t, "ui", "-h"); got != exitOK {
 		t.Errorf("-h = %d", got)

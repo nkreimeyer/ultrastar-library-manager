@@ -71,10 +71,14 @@ func runUI(args []string, output io.Writer, noArgs bool) int {
 	}
 	log.SetLevel(level)
 
-	ln, err := net.Listen("tcp", *addr)
+	if err := webui.CheckAddr(*addr); err != nil {
+		fmt.Fprintf(output, "invalid -addr %q: %v\n", *addr, err)
+		return exitUsage
+	}
+	ln, err := net.Listen("tcp", *addr) // fails e.g. if the port is in use: not a usage error
 	if err != nil {
 		log.Errorf("Cannot listen on %s: %v", *addr, err)
-		return exitUsage
+		return exitFailures
 	}
 	srv, err := webui.New(ln.Addr().String(), version)
 	if err != nil {

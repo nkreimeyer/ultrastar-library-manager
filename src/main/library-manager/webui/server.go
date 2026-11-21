@@ -21,6 +21,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -59,12 +60,8 @@ type Server struct {
 // New returns a server for the loopback address addr ("127.0.0.1:8080"). version is shown
 // in the UI.
 func New(addr, version string) (*Server, error) {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
+	if err := CheckAddr(addr); err != nil {
 		return nil, err
-	}
-	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
-		return nil, fmt.Errorf("the UI only listens on a loopback address (127.0.0.1 or ::1), not %q", host)
 	}
 	_, port, _ := net.SplitHostPort(addr)
 	s := &Server{
@@ -74,6 +71,22 @@ func New(addr, version string) (*Server, error) {
 	}
 	s.routes()
 	return s, nil
+}
+
+// CheckAddr reports whether addr is an address the UI may listen on: a loopback IP and a
+// port (0 = any free one).
+func CheckAddr(addr string) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return err
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("the UI only listens on a loopback address (127.0.0.1 or ::1), not %q", host)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 0 || n > 65535 {
+		return fmt.Errorf("invalid port %q", port)
+	}
+	return nil
 }
 
 // StartURL is the URL to open: it carries the token that sets the session cookie. The
