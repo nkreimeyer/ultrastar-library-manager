@@ -420,8 +420,8 @@ func TestRunDryRunMatchesRealRun(t *testing.T) {
 		t.Errorf("real run moved %d (failed %d), dry run planned %d", rst.Moved, rst.Failed, dst.Moved)
 	}
 	if a, b := comparable(dryRep), comparable(realRep); !reflect.DeepEqual(a, b) {
-		da, _ := a.json()
-		db, _ := b.json()
+		da, _ := fsops.MarshalReport(a)
+		db, _ := fsops.MarshalReport(b)
 		t.Errorf("dry-run plan differs from the real run:\n%s\nreal:\n%s", da, db)
 	}
 	for _, e := range realRep.ToLibrary {

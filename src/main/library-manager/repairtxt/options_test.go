@@ -387,3 +387,23 @@ func TestReportLabelsUnwrittenFixes(t *testing.T) {
 		}
 	}
 }
+
+// fffd_repair.json keeps "&", "<" and ">" in paths and words literal (no HTML escaping).
+func TestReportJSONIsNotHTMLEscaped(t *testing.T) {
+	cfg, err := config.New(t.TempDir(), t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := Report{Damaged: 1, Fixed: 1, Files: []FileReport{{Path: "Simon & Garfunkel - <3>/song.txt", Damaged: 1, Fixed: 1, Written: true,
+		Fixes: []Fix{{Before: "f" + R + "r", After: "für", Source: srcCorpus, Lines: []int{3}}}}}}
+	if err := writeReports(cfg, fsops.New(false), rep); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(cfg.ReportPath(ReportJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"Simon & Garfunkel - <3>/song.txt"`) || !strings.HasSuffix(string(data), "}\n") || strings.HasSuffix(string(data), "\n\n") {
+		t.Errorf("%s = %s", ReportJSON, data)
+	}
+}

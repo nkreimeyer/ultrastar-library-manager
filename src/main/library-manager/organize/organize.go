@@ -249,11 +249,7 @@ func (o Options) mode() Mode {
 func movesSong(a Action) bool { return a == ActMove || a == ActDuplicate || a == ActInvalid }
 
 func writeReports(cfg config.OrganizeConfig, ops *fsops.Ops, rep planReport) error {
-	data, err := rep.json()
-	if err != nil {
-		return fmt.Errorf("encoding organize report: %w", err)
-	}
-	if err := ops.WriteReport(cfg.ReportPath(reportJSON), data); err != nil {
+	if err := ops.WriteJSONReport(cfg.ReportPath(reportJSON), rep); err != nil {
 		return err
 	}
 	return ops.WriteReport(cfg.ReportPath(reportTxt), rep.text())

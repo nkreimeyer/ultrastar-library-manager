@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/nkreimeyer/library-manager/config"
+	"github.com/nkreimeyer/library-manager/fsops"
 )
 
 // prepared returns a function that fails the test on err, else prepares the out dir of
@@ -86,8 +87,8 @@ func TestRunDedupe(t *testing.T) {
 		t.Errorf("real run moved %d (failed %d), dry run planned %d", st.Moved, st.Failed, dst.Moved)
 	}
 	if a, b := comparable(dryRep), comparable(rep); !reflect.DeepEqual(a, b) {
-		da, _ := a.json()
-		db, _ := b.json()
+		da, _ := fsops.MarshalReport(a)
+		db, _ := fsops.MarshalReport(b)
 		t.Errorf("dry-run plan differs from the real run:\n%s\nreal:\n%s", da, db)
 	}
 	if rep.Mode != ModeDedupe || !strings.HasPrefix(string(rep.text()), "dedupe plan (real run)\n") {
@@ -190,8 +191,8 @@ func TestRunAdd(t *testing.T) {
 		t.Errorf("real run moved %d (failed %d), dry run planned %d", st.Moved, st.Failed, dst.Moved)
 	}
 	if a, b := comparable(dryRep), comparable(rep); !reflect.DeepEqual(a, b) {
-		da, _ := a.json()
-		db, _ := b.json()
+		da, _ := fsops.MarshalReport(a)
+		db, _ := fsops.MarshalReport(b)
 		t.Errorf("dry-run plan differs from the real run:\n%s\nreal:\n%s", da, db)
 	}
 

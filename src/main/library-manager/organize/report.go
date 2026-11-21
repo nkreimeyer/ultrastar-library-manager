@@ -2,7 +2,6 @@ package organize
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -247,14 +246,6 @@ func buildReport(in reportInput) planReport {
 	r.Summary.EmptyFolders = len(r.EmptyFolders)
 	r.Summary.EmptyCategoriesLeft = in.emptyLeft
 	return r
-}
-
-func (r planReport) json() ([]byte, error) {
-	data, err := json.MarshalIndent(r, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(data, '\n'), nil
 }
 
 // text renders the human-readable report.

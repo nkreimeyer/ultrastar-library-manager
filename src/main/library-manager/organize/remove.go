@@ -3,7 +3,6 @@ package organize
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -398,14 +397,6 @@ func buildRemoveReport(in removeInput) removeReport {
 	return r
 }
 
-func (r removeReport) json() ([]byte, error) {
-	data, err := json.MarshalIndent(r, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(data, '\n'), nil
-}
-
 func (r removeReport) text() []byte {
 	var b bytes.Buffer
 	run := "real run"
@@ -439,11 +430,7 @@ func (r removeReport) text() []byte {
 }
 
 func writeRemoveReports(cfg config.OrganizeConfig, ops *fsops.Ops, rep removeReport) error {
-	data, err := rep.json()
-	if err != nil {
-		return fmt.Errorf("encoding remove report: %w", err)
-	}
-	if err := ops.WriteReport(cfg.ReportPath(removeReportJSON), data); err != nil {
+	if err := ops.WriteJSONReport(cfg.ReportPath(removeReportJSON), rep); err != nil {
 		return err
 	}
 	return ops.WriteReport(cfg.ReportPath(removeReportTxt), rep.text())

@@ -24,7 +24,6 @@ package repairtxt
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -465,11 +464,7 @@ func lineList(lines []int) string {
 }
 
 func writeReports(cfg config.Config, ops *fsops.Ops, rep Report) error {
-	data, err := json.MarshalIndent(rep, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := ops.WriteReport(cfg.ReportPath(ReportJSON), append(data, '\n')); err != nil {
+	if err := ops.WriteJSONReport(cfg.ReportPath(ReportJSON), rep); err != nil {
 		return err
 	}
 	var b strings.Builder
