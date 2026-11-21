@@ -24,6 +24,9 @@ const (
 	outcomeMoved   = "moved"
 	outcomeFailed  = "failed"
 	outcomeSkipped = "skipped" // not attempted: the journal could not be written
+	// outcomeRestored: a library song moved out, then back to its place because the
+	// keeper it lost to did not reach the library (restoreLibraryLosers).
+	outcomeRestored = "moved back"
 )
 
 // planReport is the content of organize_plan.json. It is deterministic: no timestamps,

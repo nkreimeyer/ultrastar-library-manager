@@ -192,7 +192,7 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 	}
 
 	a := newApplier(cfg, ops, cands, in.outcomes)
-	a.ctx, a.progress = ctx, opts.progress
+	a.ctx, a.progress, a.libraryInPlace = ctx, opts.progress, planOpts.LibraryInPlace
 	a.apply(plan)
 	if !cfg.DryRun {
 		in.emptyLeft = emptiedCategories(cfg, cands, in.outcomes)
@@ -471,6 +471,8 @@ type applier struct {
 	stopped bool
 	// progress reports the moves (PhaseMove); never nil.
 	progress func(phase string, done, total int)
+	// libraryInPlace is PlanOptions.LibraryInPlace (dedupe, add): see restoreLibraryLosers.
+	libraryInPlace bool
 }
 
 func newApplier(cfg config.OrganizeConfig, ops *fsops.Ops, cands []Candidate, outcomes map[int]moveOutcome) *applier {
@@ -500,8 +502,10 @@ func (a *applier) done(i int, dst string) {
 
 // apply moves the broken songs and duplicates to the output dir first (which frees
 // their place in a library that is also a source), then the keepers into the library in
-// an order in which every target is free (orderMoves).
+// an order in which every target is free (orderMoves), and finally moves library songs
+// whose keeper did not get there back (restoreLibraryLosers).
 func (a *applier) apply(p Plan) {
+	defer a.restoreLibraryLosers(p)
 	var out []int
 	var moves []libMove
 	for i, d := range p.Decisions {
@@ -594,6 +598,50 @@ func (a *applier) apply(p Plan) {
 			parked[s.Cand] = false
 			a.done(s.Cand, s.Dst)
 		}
+	}
+}
+
+// restoreLibraryLosers moves the library songs that went to duplicates/ back to their
+// place when the keeper they lost to, from another source, did not reach the library:
+// its move failed, was refused (bucketTaken) or not attempted (stop, journal failure).
+// Otherwise the library would be left without the song. In dedupe and add (a library
+// that stays in place) the same goes for a broken library song whose replacement did not
+// get there. It is the counterpart of keepLibraryLosers for what only the moves show, and
+// it also runs after a stop (as unpark does). The moves back are journaled, so -undo
+// still reverts the whole run; after a journal failure nothing is moved and the songs are
+// named instead. A dry run plans the same moves back.
+func (a *applier) restoreLibraryLosers(p Plan) {
+	reached := func(k int) bool {
+		s := a.outcomes[k].Status
+		return s == outcomeMoved || s == outcomePlanned
+	}
+	for i, d := range p.Decisions {
+		c := &a.cands[i]
+		k := d.Other
+		switch {
+		case !c.InLibrary || k < 0 || !reached(i):
+			continue
+		case d.Action != ActDuplicate && !(d.Action == ActInvalid && a.libraryInPlace):
+			continue
+		case p.Decisions[k].Action != ActMove || a.cands[k].InLibrary || reached(k):
+			continue // the keeper is in the library (a library keeper stays there if its move fails)
+		}
+		from := a.outcomes[i].Dst
+		if a.j.failed {
+			log.Errorf("%s did not reach the library, and %s (moved to %s) cannot be moved back: the journal cannot be written; move it back by hand", a.cands[k].Ref(), c.Ref(), from)
+			continue
+		}
+		if out := a.outcomes[i]; !a.journalMkdirs(i, c.Folder) {
+			a.outcomes[i] = out // it is still where it was moved to
+			continue
+		}
+		if err := a.moveTo(from, c.Folder); err != nil {
+			log.Errorf("%s did not reach the library, and moving %s back from %s failed: %v; -undo moves it back", a.cands[k].Ref(), c.Ref(), from, err) // counted by ops
+			continue
+		}
+		log.Warnf("Moved %s back into the library: %s, which it lost to, did not get there", c.Ref(), a.cands[k].Ref())
+		a.journalMove(from, c.Folder)
+		a.outcomes[i] = moveOutcome{Status: outcomeRestored}
 	}
 }
 
