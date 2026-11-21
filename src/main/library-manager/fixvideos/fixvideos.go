@@ -11,6 +11,7 @@
 package fixvideos
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -103,7 +104,8 @@ type processor struct {
 }
 
 // Run processes the videos of all song folders below cfg.SongDir with a pool of workers,
-// then writes the corrupted-files report and the media journal.
+// then writes the corrupted-files report and the media journal. A panic while processing
+// one video is logged and counted as a failure, and the other videos are still processed.
 func Run(cfg config.Config, ops *fsops.Ops) error {
 	for _, tool := range []string{"ffmpeg", "ffprobe"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -126,22 +128,13 @@ func Run(cfg config.Config, ops *fsops.Ops) error {
 	p := &processor{cfg: cfg, ops: ops, journal: j, corrupted: map[string]struct{}{}}
 
 	videos := p.collectVideos(entries)
-	queue := make(chan string)
-	var wg sync.WaitGroup
-	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for file := range queue {
-				p.processVideoFile(filepath.Dir(file), file)
-			}
-		}()
-	}
-	for _, file := range videos {
-		queue <- file
-	}
-	close(queue)
-	wg.Wait()
+	_ = utils.ForEachParallel(context.Background(), videos, utils.Parallel{
+		Workers: workers,
+		OnPanic: func(i int, _ any) {
+			log.Errorf("fixvideos: %s not finished: internal error (logged above)", videos[i])
+			ops.Fail()
+		},
+	}, func(_ int, file string) { p.processVideoFile(filepath.Dir(file), file) })
 
 	p.writeCorruptedReport()
 	// Save writes only a changed journal. A dry run never adds to it (entries are added
