@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Config is passed explicitly to every module. All paths are absolute and cleaned.
@@ -149,12 +151,17 @@ func (c Config) RelPath(path string) string {
 // IsWithin reports whether path equals root or lies below it. On darwin and windows, whose
 // file systems are case-insensitive by default (APFS, NTFS), the case of the paths is ignored:
 // there "-s ~/Karaoke/Songs -o ~/karaoke/songs/out" puts the output dir inside the song dir.
+// On darwin the Unicode normalization is ignored too, as APFS and HFS+ do: "Ärzte" typed as NFD
+// (A + U+0308) is the same folder as NFC "Ärzte".
 func IsWithin(path, root string) bool {
 	return isWithin(path, root, runtime.GOOS)
 }
 
 // isWithin is IsWithin for the given GOOS, so the case-insensitive rule is tested on Linux.
 func isWithin(path, root, goos string) bool {
+	if goos == "darwin" {
+		path, root = norm.NFC.String(path), norm.NFC.String(root)
+	}
 	if goos == "darwin" || goos == "windows" {
 		path, root = strings.ToLower(path), strings.ToLower(root)
 	}

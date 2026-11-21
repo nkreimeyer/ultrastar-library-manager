@@ -211,6 +211,9 @@ func TestIsWithinIgnoresCaseOnDarwinAndWindows(t *testing.T) {
 		{"/home/u/karaoke/songs/out", "/home/u/Karaoke/Songs", "windows", true},
 		{"/home/u/KARAOKE/SONGS", "/home/u/karaoke/songs", "darwin", true},
 		{"/home/u/ÄRZTE/x", "/home/u/ärzte", "darwin", true},
+		{"/home/u/A\u0308rzte/out", "/home/u/\u00c4rzte", "darwin", true}, // NFD vs. NFC
+		{"/home/u/a\u0308rzte/out", "/home/u/\u00c4RZTE", "darwin", true},
+		{"/home/u/A\u0308rzte/out", "/home/u/\u00c4rzte", "windows", false}, // NTFS keeps NFD and NFC apart
 		{"/home/u/karaoke/songs/out", "/home/u/Karaoke/Songs", "linux", false},
 		{"/home/u/karaoke/songs-out", "/home/u/Karaoke/Songs", "darwin", false},
 		{"/home/u/Karaoke", "/home/u/karaoke/songs", "darwin", false},
