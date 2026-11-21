@@ -2,12 +2,11 @@ package mediatools
 
 import (
 	"context"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 func TestParseVersion(t *testing.T) {
@@ -47,28 +46,13 @@ func TestParseVersion(t *testing.T) {
 	}
 }
 
-// fakeTools puts shell scripts named after the keys on an otherwise empty PATH.
-func fakeTools(t *testing.T, scripts map[string]string) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fake tools are shell scripts")
-	}
-	dir := t.TempDir()
-	for name, body := range scripts {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("PATH", dir)
-}
-
 func versionScript(name, v string) string {
 	return "#!/bin/sh\necho '" + name + " version " + v + " Copyright (c) the FFmpeg developers'\n"
 }
 
 func TestDetect(t *testing.T) {
 	t.Run("missing", func(t *testing.T) {
-		fakeTools(t, nil)
+		testutil.FakeTools(t, nil)
 		tools := Detect(context.Background())
 		if len(tools) != 2 || tools[0].Name != "ffmpeg" || tools[1].Name != "ffprobe" {
 			t.Fatalf("tools = %+v", tools)
@@ -83,7 +67,7 @@ func TestDetect(t *testing.T) {
 		}
 	})
 	t.Run("ok", func(t *testing.T) {
-		fakeTools(t, map[string]string{"ffmpeg": versionScript("ffmpeg", "7.1.1"), "ffprobe": versionScript("ffprobe", "N-1-gabc")})
+		testutil.FakeTools(t, map[string]string{"ffmpeg": versionScript("ffmpeg", "7.1.1"), "ffprobe": versionScript("ffprobe", "N-1-gabc")})
 		tools := Detect(context.Background())
 		for _, tool := range tools {
 			if !tool.Found || !tool.Known || !tool.OK || tool.Problem != "" || tool.Path == "" {
@@ -98,7 +82,7 @@ func TestDetect(t *testing.T) {
 		}
 	})
 	t.Run("too old, unreadable, broken", func(t *testing.T) {
-		fakeTools(t, map[string]string{"ffmpeg": versionScript("ffmpeg", "4.4.2"), "ffprobe": "#!/bin/sh\necho hello\n"})
+		testutil.FakeTools(t, map[string]string{"ffmpeg": versionScript("ffmpeg", "4.4.2"), "ffprobe": "#!/bin/sh\necho hello\n"})
 		tools := Detect(context.Background())
 		if f := tools[0]; !f.Found || !f.Known || f.OK || !strings.Contains(f.Problem, "too old") {
 			t.Errorf("ffmpeg %+v, want too old", f)
@@ -111,7 +95,7 @@ func TestDetect(t *testing.T) {
 		}
 	})
 	t.Run("fails to run", func(t *testing.T) {
-		fakeTools(t, map[string]string{"ffmpeg": "#!/bin/sh\nexit 3\n", "ffprobe": "#!/nonexistent/interpreter\n"})
+		testutil.FakeTools(t, map[string]string{"ffmpeg": "#!/bin/sh\nexit 3\n", "ffprobe": "#!/nonexistent/interpreter\n"})
 		for _, tool := range Detect(context.Background()) {
 			if !tool.Found || tool.OK || !strings.Contains(tool.Problem, "-version failed") {
 				t.Errorf("%+v, want failed", tool)
@@ -122,7 +106,7 @@ func TestDetect(t *testing.T) {
 		old := Timeout
 		Timeout = 100 * time.Millisecond
 		t.Cleanup(func() { Timeout = old })
-		fakeTools(t, map[string]string{"ffmpeg": "#!/bin/sh\nexec sleep 10\n"})
+		testutil.FakeTools(t, map[string]string{"ffmpeg": "#!/bin/sh\nexec sleep 10\n"})
 		start := time.Now()
 		f := Detect(context.Background())[0]
 		if f.OK || !strings.Contains(f.Problem, "-version failed") {
@@ -144,7 +128,7 @@ func TestInstallHint(t *testing.T) {
 
 func TestRequire(t *testing.T) {
 	t.Run("ok, also with an unreadable version", func(t *testing.T) {
-		fakeTools(t, map[string]string{"ffmpeg": versionScript("ffmpeg", "5.1.6"), "ffprobe": "#!/bin/sh\necho hello\n"})
+		testutil.FakeTools(t, map[string]string{"ffmpeg": versionScript("ffmpeg", "5.1.6"), "ffprobe": "#!/bin/sh\necho hello\n"})
 		if err := Require(context.Background(), Names...); err != nil {
 			t.Errorf("Require = %v", err)
 		}
@@ -153,7 +137,7 @@ func TestRequire(t *testing.T) {
 		}
 	})
 	t.Run("too old, missing", func(t *testing.T) {
-		fakeTools(t, map[string]string{"ffmpeg": versionScript("ffmpeg", "4.4.2")})
+		testutil.FakeTools(t, map[string]string{"ffmpeg": versionScript("ffmpeg", "4.4.2")})
 		err := Require(context.Background(), Names...)
 		want := "ffmpeg: version 4.4.2 is too old, 5.1 or newer is needed; ffprobe was not found on PATH"
 		if err == nil || err.Error() != want {
@@ -170,7 +154,7 @@ func TestRequire(t *testing.T) {
 		}
 	})
 	t.Run("fails to run", func(t *testing.T) {
-		fakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\nexit 3\n"})
+		testutil.FakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\nexit 3\n"})
 		if err := Require(context.Background(), "ffprobe"); err == nil || !strings.HasPrefix(err.Error(), "ffprobe -version failed: ") {
 			t.Errorf("Require = %v, want the failure", err)
 		}

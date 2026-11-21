@@ -11,25 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
-
-func requireFFmpeg(t *testing.T) {
-	t.Helper()
-	for _, tool := range Names {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s not available: %v", tool, err)
-		}
-	}
-}
-
-// ffmpegGen runs ffmpeg with args, skipping the test if the media cannot be generated.
-func ffmpegGen(t *testing.T, args ...string) {
-	t.Helper()
-	full := append([]string{"-hide_banner", "-nostdin", "-loglevel", "error", "-y"}, args...)
-	if out, err := exec.Command("ffmpeg", full...).CombinedOutput(); err != nil {
-		t.Skipf("cannot generate test media (%v): %s", err, out)
-	}
-}
 
 // probeFixtures generates the kinds of files the media modules probe.
 func probeFixtures(t *testing.T) map[string]string {
@@ -46,17 +30,17 @@ func probeFixtures(t *testing.T) map[string]string {
 		return all
 	}
 
-	ffmpegGen(t, cat(video, sine, []string{"-c:v", "libx264", "-c:a", "aac", "-ac", "2", path("h264.mp4")})...)
-	ffmpegGen(t, cat(video, sine, []string{"-c:v", "libx264", "-c:a", "libvorbis",
+	testutil.GenerateMedia(t, cat(video, sine, []string{"-c:v", "libx264", "-c:a", "aac", "-ac", "2", path("h264.mp4")})...)
+	testutil.GenerateMedia(t, cat(video, sine, []string{"-c:v", "libx264", "-c:a", "libvorbis",
 		"-metadata:s:v:0", "BPS=1234567", "-metadata:s:v:0", "BPS-ger=7654321", path("bps.mkv")})...)
-	ffmpegGen(t, cat([]string{"-f", "lavfi", "-i", "testsrc=size=64x64:rate=1:duration=1", "-frames:v", "1"}, []string{path("cover.png")})...)
-	ffmpegGen(t, cat(sine, []string{"-i", path("cover.png"), "-map", "0:a", "-map", "1:v", "-c:a", "libmp3lame", "-c:v", "png",
+	testutil.GenerateMedia(t, cat([]string{"-f", "lavfi", "-i", "testsrc=size=64x64:rate=1:duration=1", "-frames:v", "1"}, []string{path("cover.png")})...)
+	testutil.GenerateMedia(t, cat(sine, []string{"-i", path("cover.png"), "-map", "0:a", "-map", "1:v", "-c:a", "libmp3lame", "-c:v", "png",
 		"-disposition:v:0", "attached_pic", "-id3v2_version", "3", path("cover.mp3")})...)
-	ffmpegGen(t, cat(sine, []string{"-c:a", "flac", path("audio.flac")})...)
-	ffmpegGen(t, cat(video, sine, []string{"-c:v", "libx264", "-c:a", "aac", "-metadata", "SANITIZER_VIDEO=processed",
+	testutil.GenerateMedia(t, cat(sine, []string{"-c:a", "flac", path("audio.flac")})...)
+	testutil.GenerateMedia(t, cat(video, sine, []string{"-c:v", "libx264", "-c:a", "aac", "-metadata", "SANITIZER_VIDEO=processed",
 		"-movflags", "+use_metadata_tags", path("tagged.mp4")})...)
-	ffmpegGen(t, cat(sine, []string{"-c:a", "libvorbis", "-metadata", "SANITIZER_NORMALIZED=-3.0dB", path("tagged.ogg")})...)
-	ffmpegGen(t, cat(video, []string{"-c:v", "mpeg4", path("video-only.avi")})...)
+	testutil.GenerateMedia(t, cat(sine, []string{"-c:a", "libvorbis", "-metadata", "SANITIZER_NORMALIZED=-3.0dB", path("tagged.ogg")})...)
+	testutil.GenerateMedia(t, cat(video, []string{"-c:v", "mpeg4", path("video-only.avi")})...)
 	names := map[string]string{}
 	for _, n := range []string{"h264.mp4", "bps.mkv", "cover.mp3", "audio.flac", "tagged.mp4", "tagged.ogg", "video-only.avi"} {
 		names[n] = path(n)
@@ -77,7 +61,7 @@ func ffprobeOld(t *testing.T, file string, args ...string) string {
 // TestProbeMatchesFieldProbes compares Probe with the separate ffprobe calls it replaces
 // in fixvideos, fixaudio and check, for the same files.
 func TestProbeMatchesFieldProbes(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	for name, file := range probeFixtures(t) {
 		t.Run(name, func(t *testing.T) {
 			p, err := Probe(context.Background(), file)
@@ -180,7 +164,7 @@ func TestProbeMatchesFieldProbes(t *testing.T) {
 
 // What the fixtures are meant to cover is really in them.
 func TestProbeFixtures(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	f := probeFixtures(t)
 	probe := func(name string) ProbeInfo {
 		p, err := Probe(context.Background(), f[name])
@@ -226,13 +210,13 @@ func sameTags(a, b map[string]string) bool {
 func TestProbeErrors(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.mp4")
 	t.Run("ffprobe cannot run", func(t *testing.T) {
-		fakeTools(t, nil)
+		testutil.FakeTools(t, nil)
 		if _, err := Probe(context.Background(), path); !errors.Is(err, ErrNotRun) {
 			t.Errorf("err = %v, want ErrNotRun", err)
 		}
 	})
 	t.Run("ffprobe fails", func(t *testing.T) {
-		fakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\nfor a; do last=$a; done\necho \"$last: Invalid data\" >&2\nexit 1\n"})
+		testutil.FakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\nfor a; do last=$a; done\necho \"$last: Invalid data\" >&2\nexit 1\n"})
 		info, err := Probe(context.Background(), path)
 		var pe *ProbeError
 		if !errors.As(err, &pe) || errors.Is(err, ErrNotRun) || pe.Stderr != path+": Invalid data\n" || info.Log != pe.Stderr {
@@ -247,13 +231,13 @@ func TestProbeErrors(t *testing.T) {
 		}
 	})
 	t.Run("ffprobe fails silently", func(t *testing.T) {
-		fakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\nexit 3\n"})
+		testutil.FakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\nexit 3\n"})
 		if _, err := Probe(context.Background(), path); err == nil || err.Error() != "ffprobe: exit status 3" {
 			t.Errorf("err = %v", err)
 		}
 	})
 	t.Run("output is no JSON", func(t *testing.T) {
-		fakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\necho nope\necho warned >&2\n"})
+		testutil.FakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\necho nope\necho warned >&2\n"})
 		info, err := Probe(context.Background(), path)
 		var pe *ProbeError
 		if err == nil || errors.As(err, &pe) || errors.Is(err, ErrNotRun) || !strings.Contains(err.Error(), "parsing ffprobe output") {
@@ -264,14 +248,14 @@ func TestProbeErrors(t *testing.T) {
 		}
 	})
 	t.Run("warnings are kept", func(t *testing.T) {
-		fakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\necho '{\"format\":{\"duration\":\"2.5\"}}'\necho 'Estimating duration from bitrate' >&2\n"})
+		testutil.FakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\necho '{\"format\":{\"duration\":\"2.5\"}}'\necho 'Estimating duration from bitrate' >&2\n"})
 		info, err := Probe(context.Background(), path)
 		if err != nil || info.Log != "Estimating duration from bitrate\n" || info.Format.Duration != "2.5" {
 			t.Errorf("Probe = %+v, %v", info, err)
 		}
 	})
 	t.Run("a file name like an option", func(t *testing.T) {
-		fakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\nfor a; do prev=$last; last=$a; done\necho \"{\\\"format\\\":{\\\"bit_rate\\\":\\\"$prev $last\\\"}}\"\n"})
+		testutil.FakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\nfor a; do prev=$last; last=$a; done\necho \"{\\\"format\\\":{\\\"bit_rate\\\":\\\"$prev $last\\\"}}\"\n"})
 		info, err := Probe(context.Background(), "-x.mp4")
 		if err != nil || info.Format.BitRate != "-- -x.mp4" {
 			t.Errorf("Probe = %+v, %v; want the name after --", info, err)
@@ -366,7 +350,7 @@ func TestHasTag(t *testing.T) {
 // The marker tags the modules write are found in real files: in the container (mp4 with
 // use_metadata_tags) and in the stream (Ogg comments).
 func TestHasTagInFiles(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	f := probeFixtures(t)
 	for name, tag := range map[string]string{"tagged.mp4": "SANITIZER_VIDEO", "tagged.ogg": "SANITIZER_NORMALIZED"} {
 		p, err := Probe(context.Background(), f[name])
@@ -386,7 +370,7 @@ func TestHasTagInFiles(t *testing.T) {
 // A stopped probe returns the context's error, not a ProbeError (which would mark the
 // file as unreadable), and does not wait for a child process that keeps the pipe open.
 func TestProbeStoppedByContext(t *testing.T) {
-	fakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\nPATH=/usr/bin:/bin\nsleep 10\n"})
+	testutil.FakeTools(t, map[string]string{"ffprobe": "#!/bin/sh\nPATH=/usr/bin:/bin\nsleep 10\n"})
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	start := time.Now()
