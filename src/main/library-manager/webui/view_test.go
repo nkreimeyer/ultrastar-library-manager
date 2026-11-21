@@ -86,7 +86,7 @@ func TestOrganizeUndoJournalUnreadable(t *testing.T) {
 	if got := s.do("POST", "/api/organize/undo", folderRequest{Library: lib, Out: out}, &j); got != http.StatusAccepted {
 		t.Fatalf("undo: %d", got)
 	}
-	if j = s.wait(); j.State != stateFailed || !strings.Contains(j.Error, "journal") || j.Result != nil {
+	if j = s.wait(); j.State != stateFailed || !strings.Contains(j.Error, "journal") {
 		t.Errorf("undo job = %+v", j)
 	}
 }

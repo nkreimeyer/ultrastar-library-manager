@@ -331,6 +331,9 @@ func (s *Server) handleOrganizeHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"outDir": cfg.OutDir, "runs": runs})
 }
 
+// undoProgressHook, if set (tests), is called after each journal entry an undo job handled.
+var undoProgressHook func(done int)
+
 // handleOrganizeUndo reverts the newest run that is not undone yet.
 func (s *Server) handleOrganizeUndo(w http.ResponseWriter, r *http.Request) {
 	var q folderRequest
@@ -344,10 +347,16 @@ func (s *Server) handleOrganizeUndo(w http.ResponseWriter, r *http.Request) {
 	}
 	ops := fsops.New(cfg.DryRun)
 	job, err := s.jobs.start(s.newID("u"), "organize-undo", ops, func(ctx context.Context, c jobControl) (any, error) {
-		if err := organize.Undo(cfg, ops, organize.UndoOptions{Ctx: ctx, Progress: c.Progress}); err != nil {
-			return nil, err
+		progress := c.Progress
+		if undoProgressHook != nil {
+			progress = func(phase string, done, total int) {
+				c.Progress(phase, done, total)
+				undoProgressHook(done)
+			}
 		}
-		return map[string]any{"library": cfg.Library, "outDir": cfg.OutDir}, nil
+		err := organize.Undo(cfg, ops, organize.UndoOptions{Ctx: ctx, Progress: progress})
+		// The folders also with an error: a stopped or partial undo is retried from them.
+		return map[string]any{"library": cfg.Library, "outDir": cfg.OutDir}, err
 	})
 	if err != nil {
 		writeError(w, http.StatusConflict, err)

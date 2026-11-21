@@ -527,3 +527,55 @@ func TestOnlyNewestAnalysisKept(t *testing.T) {
 		t.Errorf("organize analysis after a repair one: %d", got)
 	}
 }
+
+// An undo stopped through the UI ends "cancelled" with its folders in the result (the page
+// offers to undo again), the run stays the next one to undo, and a second undo finishes it.
+func TestOrganizeUndoStopped(t *testing.T) {
+	s := newTestServer(t)
+	base := t.TempDir()
+	lib, src, out := filepath.Join(base, "library"), filepath.Join(base, "src"), filepath.Join(base, "out")
+	for _, name := range []string{"Abba", "Bee", "Cee", "Dee"} {
+		writeSong(t, filepath.Join(src, name+" - Song"), name, "Song", nil)
+	}
+	before := tree(t, src)
+	v := analyseOrganize(t, s, organizeRequest{Mode: "organize", Tiers: [][]string{{src}}, Library: lib, Out: out})
+	var j Job
+	s.do("POST", "/api/organize/apply", map[string]any{"analysis": v.ID}, &j)
+	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 4 {
+		t.Fatalf("apply: %+v", j)
+	}
+
+	undoProgressHook = func(done int) {
+		if done == 1 {
+			s.srv.jobs.cancelRunning()
+		}
+	}
+	t.Cleanup(func() { undoProgressHook = nil })
+	s.do("POST", "/api/organize/undo", folderRequest{Library: lib, Out: out}, &j)
+	if j = s.wait(); j.State != stateCancelled || j.Stats.Moved != 1 {
+		t.Fatalf("stopped undo: %+v", j)
+	}
+	if res, _ := j.Result.(map[string]any); res["library"] != lib || res["outDir"] != out {
+		t.Errorf("stopped undo result = %#v, want the folders", j.Result)
+	}
+	var hist struct {
+		Runs []organize.RunInfo `json:"runs"`
+	}
+	s.do("POST", "/api/organize/history", folderRequest{Library: lib, Out: out}, &hist)
+	if len(hist.Runs) != 1 || hist.Runs[0].Undone || !hist.Runs[0].Next {
+		t.Errorf("history after the stop = %+v", hist)
+	}
+
+	undoProgressHook = nil
+	s.do("POST", "/api/organize/undo", folderRequest{Library: lib, Out: out}, &j)
+	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 3 {
+		t.Errorf("second undo: %+v", j)
+	}
+	if !equalTrees(tree(t, src), before) {
+		t.Error("the two undos did not restore the source")
+	}
+	s.do("POST", "/api/organize/history", folderRequest{Library: lib, Out: out}, &hist)
+	if len(hist.Runs) != 1 || !hist.Runs[0].Undone {
+		t.Errorf("history after the second undo = %+v", hist)
+	}
+}

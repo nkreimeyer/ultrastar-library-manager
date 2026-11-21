@@ -775,7 +775,8 @@ async function onJobEnd(j) {
         }
         break;
       case "organize-undo":
-        S.done = { kind: "undo", job: j, cfg: resultFolders(j) || S.done?.cfg };
+        // Never the folders of an earlier result: a retry must undo the same journal.
+        S.done = { kind: "undo", job: j, cfg: resultFolders(j) };
         S.view = "done";
         if (j.state === "failed") S.notice = failed("Undo did not finish");
         break;
@@ -1277,15 +1278,17 @@ function viewDone() {
       st.moved ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Undo this run") : null,
       again));
   } else if (d.kind === "undo") {
-    add(frag, h("h1", null, j.state === "done" ? "Undone" : "Undo did not finish"));
+    const stopped = j.state === "cancelled";
+    add(frag, h("h1", null, j.state === "done" ? "Undone" : stopped ? "Stopped part-way" : "Undo did not finish"));
     add(frag, noticeBox(S.notice));
-    add(frag, h("p", null, `${plural(st.moved, "song folder is", "song folders are")} back where ${st.moved === 1 ? "it was" : "they were"}.`));
+    add(frag, h("p", null, `${plural(st.moved, "song folder is", "song folders are")} back where ${st.moved === 1 ? "it was" : "they were"}.`
+      + (stopped ? " Undo again to move back the rest." : "")));
     if (st.failed) {
       add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "folder", "folders")} could not be moved back`,
         text: "If something is in the way, fix it (the log says what) and undo again: folders that are back already are skipped. A folder that is gone is not looked for again." }));
     }
     add(frag, h("div", { class: "actions" },
-      st.failed && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Try the undo again") : null,
+      (st.failed || stopped) && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, stopped ? "Undo again" : "Try the undo again") : null,
       again));
   } else {
     const sum = j.result?.summary || {};
