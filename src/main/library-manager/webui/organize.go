@@ -345,7 +345,7 @@ func (s *Server) handleOrganizeUndo(w http.ResponseWriter, r *http.Request) {
 		if err := organize.Undo(cfg, ops); err != nil {
 			return nil, err
 		}
-		return map[string]any{"outDir": cfg.OutDir}, nil
+		return map[string]any{"library": cfg.Library, "outDir": cfg.OutDir}, nil
 	})
 	if err != nil {
 		writeError(w, http.StatusConflict, err)

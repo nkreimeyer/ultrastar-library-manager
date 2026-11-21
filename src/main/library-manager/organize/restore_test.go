@@ -179,3 +179,86 @@ func TestRestoreLibraryLosersSelection(t *testing.T) {
 		})
 	}
 }
+
+// An undo with a move that fails for a reason that can be fixed (here: the original place
+// is taken) does not record the run as undone: the next undo retries the same run,
+// skipping what is back already, instead of reverting the run before it.
+func TestUndoRetriesRunWithFailedMoves(t *testing.T) {
+	noFFprobe(t)
+	base := t.TempDir()
+	src1, src2, lib, out := filepath.Join(base, "src1"), filepath.Join(base, "src2"), filepath.Join(base, "lib"), filepath.Join(base, "out")
+	writeFiles(t, src1, songFiles("a", "Abba", "SOS"))
+	writeFiles(t, src2, merge(songFiles("b", "Bee Gees", "Tragedy"), songFiles("c", "Cher", "Believe")))
+	runOrganize(t, organizeCfg(t, [][]string{{src1}}, lib, out, false), Options{})
+	runOrganize(t, organizeCfg(t, [][]string{{src2}}, lib, out, false), Options{})
+	undoCfg := organizeCfg(t, nil, lib, out, false)
+	runs, err := ListRuns(undoCfg)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("runs = %+v, %v", runs, err)
+	}
+	second := runs[1].ID
+
+	blocker := filepath.Join(src2, "b")
+	writeFiles(t, blocker, map[string]string{"new.txt": "put here since"})
+	if st := runUndo(t, undoCfg); st.Moved != 1 || st.Failed != 1 {
+		t.Errorf("undo with a blocked move: %+v, want c moved back and b failed", st)
+	}
+	if runs, _ = ListRuns(undoCfg); runs[1].Undone || !runs[1].Next || runs[1].ID != second {
+		t.Fatalf("runs after the partial undo = %+v, want the second run still next", runs)
+	}
+	// Still blocked: c is skipped (back already), b fails again, the first run is untouched.
+	if st := runUndo(t, undoCfg); st.Moved != 0 || st.Failed != 1 {
+		t.Errorf("undo still blocked: %+v", st)
+	}
+	if _, err := os.Stat(filepath.Join(lib, "A", "Abba - SOS")); err != nil {
+		t.Errorf("the first run's song was moved: %v", err)
+	}
+	if err := os.RemoveAll(blocker); err != nil {
+		t.Fatal(err)
+	}
+	// A dry run plans exactly the one move left.
+	if st := runUndo(t, organizeCfg(t, nil, lib, out, true)); st.Moved != 1 || st.Failed != 0 {
+		t.Errorf("dry-run retry: %+v", st)
+	}
+	if st := runUndo(t, undoCfg); st.Moved != 1 || st.Failed != 0 {
+		t.Errorf("retry: %+v", st)
+	}
+	if _, err := os.Stat(filepath.Join(src2, "b", "song.txt")); err != nil {
+		t.Errorf("b not back: %v", err)
+	}
+	if runs, _ = ListRuns(undoCfg); !runs[1].Undone || !runs[0].Next {
+		t.Errorf("runs after the retry = %+v, want the second undone and the first next", runs)
+	}
+	if st := runUndo(t, undoCfg); st.Moved != 1 || st.Failed != 0 {
+		t.Errorf("undo of the first run: %+v", st)
+	}
+	if _, err := os.Stat(filepath.Join(src1, "a", "song.txt")); err != nil {
+		t.Errorf("a not back: %v", err)
+	}
+}
+
+// A dry-run undo of a run whose moves chain through a temporary name (two library songs
+// swapping names) plans every move: the skip of moves that are back already must follow
+// the planned moves, not the disk.
+func TestUndoDryRunOfSwapPlansEveryMove(t *testing.T) {
+	noFFprobe(t)
+	base := t.TempDir()
+	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
+	// Each folder holds the song the other one's name belongs to.
+	writeFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A")))
+	cfg := organizeCfg(t, [][]string{{lib}}, lib, out, false)
+	st, _ := runOrganize(t, cfg, Options{})
+	if st.Moved != 3 || st.Failed != 0 {
+		t.Fatalf("run: %+v, want a swap through a temporary name (3 moves)", st)
+	}
+	after := tree(t, lib)
+	if dst := runUndo(t, organizeCfg(t, nil, lib, out, true)); dst.Moved != 3 || dst.Failed != 0 {
+		t.Errorf("dry-run undo: %+v, want 3 planned moves", dst)
+	}
+	if got := tree(t, lib); !reflect.DeepEqual(got, after) {
+		t.Error("dry-run undo changed the library")
+	}
+	if rst := runUndo(t, organizeCfg(t, nil, lib, out, false)); rst.Moved != 3 || rst.Failed != 0 {
+		t.Errorf("undo: %+v", rst)
+	}
+}

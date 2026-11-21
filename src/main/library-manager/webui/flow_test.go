@@ -156,6 +156,10 @@ func TestOrganizeFlow(t *testing.T) {
 	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 1 {
 		t.Errorf("undo job: %+v", j)
 	}
+	// The result names the folders, so the UI can offer to try a partial undo again.
+	if res, _ := j.Result.(map[string]any); res["library"] != lib || res["outDir"] != out {
+		t.Errorf("undo result = %#v, want library %s and outDir %s", j.Result, lib, out)
+	}
 	if !equalTrees(tree(t, lib), before) {
 		t.Error("undo did not restore the library")
 	}

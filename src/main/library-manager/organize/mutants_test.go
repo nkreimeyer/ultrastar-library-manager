@@ -124,7 +124,7 @@ func TestUndoLogsResult(t *testing.T) {
 	if st := runUndo(t, organizeCfg(t, nil, lib, out, false)); st.Moved != 2 || st.Failed != 1 {
 		t.Fatalf("undo: %+v", st)
 	}
-	if infos := messages(hook, log.InfoLevel); !slicesContain(infos, "Undo: 2 move(s) moved back, 1 failed") {
+	if infos := messages(hook, log.InfoLevel); !slicesContain(infos, "Undo: 2 move(s) moved back, 1 failed (1 gone)") {
 		t.Errorf("undo log: %q", infos)
 	}
 }

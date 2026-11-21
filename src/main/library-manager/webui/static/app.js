@@ -761,7 +761,7 @@ async function onJobEnd(j) {
         }
         break;
       case "organize-undo":
-        S.done = { kind: "undo", job: j, cfg: S.done?.cfg };
+        S.done = { kind: "undo", job: j, cfg: j.result?.library ? { library: j.result.library, outDir: j.result.outDir } : S.done?.cfg };
         S.view = "done";
         if (j.state === "failed") S.notice = failed("Undo did not finish");
         break;
@@ -1263,8 +1263,13 @@ function viewDone() {
     add(frag, h("h1", null, j.state === "done" ? "Undone" : "Undo did not finish"));
     add(frag, noticeBox(S.notice));
     add(frag, h("p", null, `${plural(st.moved, "song folder is", "song folders are")} back where ${st.moved === 1 ? "it was" : "they were"}.`));
-    if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "folder", "folders")} could not be moved back` }));
-    add(frag, h("div", { class: "actions" }, again));
+    if (st.failed) {
+      add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "folder", "folders")} could not be moved back`,
+        text: "If something is in the way, fix it (the log says what) and undo again: folders that are back already are skipped. A folder that is gone is not looked for again." }));
+    }
+    add(frag, h("div", { class: "actions" },
+      st.failed && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Try the undo again") : null,
+      again));
   } else {
     const sum = j.result?.summary || {};
     add(frag, h("h1", null, d.stopped ? "Stopped part-way" : "Repaired"));

@@ -637,6 +637,12 @@ func (o *Ops) PlanReplace(path, action string) {
 	o.replaced.Add(1)
 }
 
+// Exists reports whether path exists as this run has left it so far: on disk outside
+// dry-run mode, and in dry-run mode after the planned moves (MoveInto, MoveTo).
+func (o *Ops) Exists(path string) bool {
+	return o.exists(filepath.Clean(path))
+}
+
 // WouldBeMoved reports whether path or one of its parent folders was moved away by an
 // earlier MoveInto in dry-run mode. It is always false outside dry-run mode, where moved
 // paths simply no longer exist. A nil *Ops plans nothing.
