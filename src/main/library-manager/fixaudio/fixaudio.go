@@ -12,7 +12,6 @@ package fixaudio
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -327,20 +326,11 @@ type audioInfo struct {
 // stream. The stream bitrate is preferred; if the container does not report one (e.g.
 // opus), the overall format bitrate is used instead.
 func probeAudio(path string) (audioInfo, error) {
-	out, err := exec.Command("ffprobe",
-		"-v", "error",
-		"-select_streams", "a:0",
-		"-show_entries", "stream=codec_name,profile,channels,sample_fmt,bit_rate:stream_tags:format=bit_rate:format_tags",
-		"-of", "json",
-		path).Output()
+	probe, err := mediatools.Probe(context.Background(), path)
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return audioInfo{}, fmt.Errorf("ffprobe: %v: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
-		}
-		return audioInfo{}, fmt.Errorf("ffprobe: %w", err)
+		return audioInfo{}, err
 	}
-	return parseProbe(out)
+	return audioFromProbe(probe)
 }
 
 // hasTag reports whether tags contains name (tag names are case-insensitive).
@@ -353,28 +343,12 @@ func hasTag(tags map[string]string, name string) bool {
 	return false
 }
 
-func parseProbe(data []byte) (audioInfo, error) {
-	var probe struct {
-		Streams []struct {
-			CodecName string            `json:"codec_name"`
-			Profile   string            `json:"profile"`
-			Channels  int               `json:"channels"`
-			SampleFmt string            `json:"sample_fmt"`
-			BitRate   string            `json:"bit_rate"`
-			Tags      map[string]string `json:"tags"`
-		} `json:"streams"`
-		Format struct {
-			BitRate string            `json:"bit_rate"`
-			Tags    map[string]string `json:"tags"`
-		} `json:"format"`
-	}
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return audioInfo{}, fmt.Errorf("parsing ffprobe output: %w", err)
-	}
-	if len(probe.Streams) == 0 {
+// audioFromProbe describes the first audio stream of probe.
+func audioFromProbe(probe mediatools.ProbeInfo) (audioInfo, error) {
+	s, ok := probe.FirstStream("audio")
+	if !ok {
 		return audioInfo{}, errors.New("no audio stream")
 	}
-	s := probe.Streams[0]
 	if s.Channels <= 0 {
 		return audioInfo{}, errors.New("unknown channel count")
 	}

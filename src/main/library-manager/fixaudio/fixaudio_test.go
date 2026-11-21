@@ -53,14 +53,14 @@ func TestParseProbe(t *testing.T) {
 		want    audioInfo
 		wantErr bool
 	}{
-		{"stream bitrate", `{"streams":[{"codec_name":"mp3","channels":2,"sample_fmt":"fltp","bit_rate":"320000"}],"format":{"bit_rate":"330000"}}`,
+		{"stream bitrate", `{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":2,"sample_fmt":"fltp","bit_rate":"320000"}],"format":{"bit_rate":"330000"}}`,
 			audioInfo{Codec: "mp3", Channels: 2, SampleFmt: "fltp", Bitrate: 320000}, false},
-		{"format bitrate fallback", `{"streams":[{"codec_name":"opus","channels":2,"sample_fmt":"fltp"}],"format":{"bit_rate":"131000"}}`,
+		{"format bitrate fallback", `{"streams":[{"codec_type":"audio","codec_name":"opus","channels":2,"sample_fmt":"fltp"}],"format":{"bit_rate":"131000"}}`,
 			audioInfo{Codec: "opus", Channels: 2, SampleFmt: "fltp", Bitrate: 131000}, false},
-		{"no bitrate", `{"streams":[{"codec_name":"flac","channels":1,"sample_fmt":"s16","bit_rate":"N/A"}],"format":{}}`,
+		{"no bitrate", `{"streams":[{"codec_type":"audio","codec_name":"flac","channels":1,"sample_fmt":"s16","bit_rate":"N/A"}],"format":{}}`,
 			audioInfo{Codec: "flac", Channels: 1, SampleFmt: "s16"}, false},
 		{"no audio stream", `{"streams":[],"format":{"bit_rate":"1000"}}`, audioInfo{}, true},
-		{"zero channels", `{"streams":[{"codec_name":"mp3","channels":0}]}`, audioInfo{}, true},
+		{"zero channels", `{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":0}]}`, audioInfo{}, true},
 		{"garbage", `not json`, audioInfo{}, true},
 	}
 	for _, tt := range tests {

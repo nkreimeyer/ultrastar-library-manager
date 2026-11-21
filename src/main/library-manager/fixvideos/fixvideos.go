@@ -12,7 +12,6 @@ package fixvideos
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -294,26 +293,27 @@ func canCarryMarker(file string) bool {
 	return markerExts[strings.ToLower(filepath.Ext(file))]
 }
 
-// plan probes file and decides what has to be done with it. ok is false if the file
-// needs no processing.
-func (p *processor) plan(dir, file string) (pl encodePlan, ok bool) {
-	codec, err := getVideoCodec(file)
+// plan decides what has to be done with file from its ffprobe result (probeErr is the
+// error of that probe). ok is false if the file needs no processing.
+func (p *processor) plan(dir, file string, probe mediatools.ProbeInfo, probeErr error) (pl encodePlan, ok bool) {
+	video, _ := probe.FirstStream("video")
 	switch {
-	case err != nil:
+	case probeErr != nil:
 		// ffprobe cannot read the video stream. Try to re-encode anyway: if ffmpeg cannot
 		// read the file either, it is reported as potentially corrupted.
-		log.Debugf("Error getting codec for %s: %v", file, err)
+		log.Debugf("Error probing %s: %v", file, probeErr)
 		pl.reEncode = true
-	case codec == "":
+	case video.CodecName == "":
 		log.Debugf("No video stream in %s, skipping", file)
 		return encodePlan{}, false
 	default:
-		pl.reEncode = getNeedsReEncode(file, codec)
+		log.Debugf("Video codec for %s: %s", file, video.CodecName)
+		pl.reEncode = needsReEncode(file, video.CodecName, probe)
 	}
 
-	pl.removeAudio = needsRemoveAudio(p.ops, dir, file)
+	pl.removeAudio = needsRemoveAudio(p.ops, dir, file, probe)
 
-	width, height, err := getVideoResolution(file)
+	width, height, err := videoResolution(probe)
 	if err != nil {
 		log.Debugf("Error getting resolution for %s: %v", file, err)
 	}
@@ -349,13 +349,15 @@ func (p *processor) processVideoFile(dir, file string) {
 		p.markReadable(file)
 		return
 	}
-	if m, err := probeMarker(file); err == nil && m.tagged {
+	// One probe for every decision about the file (plan's codec, bitrate, size and audio).
+	probe, probeErr := mediatools.Probe(context.Background(), file)
+	if probeErr == nil && markerFromProbe(probe).tagged {
 		log.Debugf("Skipping %s: it carries the %s tag", file, markerTag)
 		p.markReadable(file)
 		return
 	}
 
-	pl, ok := p.plan(dir, file)
+	pl, ok := p.plan(dir, file, probe, probeErr)
 	if !ok {
 		// plan only skips a video whose codec ffprobe read (an unreadable one is re-encoded).
 		log.Debugf("No processing needed for: %s", file)
@@ -631,22 +633,26 @@ func (p *processor) tagByRemux(file string) error {
 // when the audio is kept (keepsAudio); with neither known there is nothing to compare and
 // the result counts as matching. An out that ffprobe cannot read never matches.
 func sameVideoDuration(in, out string, keepsAudio bool) (bool, string) {
-	got, err := videoStreamDuration(out)
+	outProbe, err := mediatools.Probe(context.Background(), out)
 	if err != nil {
 		return false, fmt.Sprintf("ffprobe cannot read the processed video: %v", err)
 	}
-	want, err := videoStreamDuration(in)
-	if err != nil || want <= 0 || got <= 0 {
+	got := videoDuration(outProbe)
+	inProbe, inErr := mediatools.Probe(context.Background(), in)
+	want := videoDuration(inProbe)
+	if inErr != nil || want <= 0 || got <= 0 {
 		if !keepsAudio {
 			log.Debugf("Not comparing the duration of %s with its processed version: unknown video duration", in)
 			return true, ""
 		}
-		want, err = getVideoDuration(in)
-		if err != nil || want <= 0 {
+		if inErr == nil {
+			want, err = formatDuration(inProbe)
+		}
+		if inErr != nil || err != nil || want <= 0 {
 			log.Debugf("Not comparing the duration of %s with its processed version: unknown duration", in)
 			return true, ""
 		}
-		if got, err = getVideoDuration(out); err != nil {
+		if got, err = formatDuration(outProbe); err != nil {
 			return false, fmt.Sprintf("ffprobe cannot read the processed video: %v", err)
 		}
 	}
@@ -656,44 +662,28 @@ func sameVideoDuration(in, out string, keepsAudio bool) (bool, string) {
 	return true, ""
 }
 
-// videoStreamDuration returns the duration in seconds of the first video stream of file:
-// the stream duration, else its DURATION tag (Matroska writes one per stream, maybe with
-// a language suffix); 0 if neither is known.
-func videoStreamDuration(file string) (float64, error) {
-	out, err := exec.Command("ffprobe", "-v", "error", selectStreams, "v:0",
-		showEntries, "stream=duration:stream_tags",
-		"-of", "json", "--", filepath.Clean(file)).Output()
-	if err != nil {
-		return 0, fmt.Errorf("ffprobe: %w", err)
-	}
-	return parseVideoStreamDuration(out)
+// videoDuration returns the duration in seconds of the first video stream of probe (see
+// streamDuration); 0 if it is not known or there is no video stream.
+func videoDuration(probe mediatools.ProbeInfo) float64 {
+	video, _ := probe.FirstStream("video")
+	return streamDuration(video)
 }
 
-func parseVideoStreamDuration(data []byte) (float64, error) {
-	var probe struct {
-		Streams []struct {
-			Duration string            `json:"duration"`
-			Tags     map[string]string `json:"tags"`
-		} `json:"streams"`
-	}
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return 0, fmt.Errorf("parsing ffprobe output: %w", err)
-	}
-	if len(probe.Streams) == 0 {
-		return 0, nil
-	}
-	st := probe.Streams[0]
+// streamDuration returns the duration in seconds of the stream: its duration, else its
+// DURATION tag (Matroska writes one per stream, maybe with a language suffix); 0 if
+// neither is known.
+func streamDuration(st mediatools.Stream) float64 {
 	if d, err := strconv.ParseFloat(st.Duration, 64); err == nil && d > 0 {
-		return d, nil
+		return d
 	}
 	for _, k := range slices.Sorted(maps.Keys(st.Tags)) {
 		if name, _, _ := strings.Cut(k, "-"); strings.EqualFold(name, "DURATION") {
 			if d, ok := parseClock(st.Tags[k]); ok {
-				return d, nil
+				return d
 			}
 		}
 	}
-	return 0, nil
+	return 0
 }
 
 // parseClock parses a Matroska duration tag ("HH:MM:SS.nnnnnnnnn") into seconds.
@@ -734,8 +724,9 @@ func isVideoReferenced(ops *fsops.Ops, dir, file string) bool {
 // existing, visible, non-empty audio file. A song whose #MP3 points to the video itself, to a hidden
 // file (e.g. "._v.mp3" left by old versions) or to nothing keeps the video's audio,
 // because it may be the only audio track of the song. The txt is read through ops, so in
-// a dry run the #MP3 fixtxt would write counts.
-func needsRemoveAudio(ops *fsops.Ops, dir, file string) bool {
+// a dry run the #MP3 fixtxt would write counts. probe is the ffprobe result of file (zero
+// if ffprobe could not read it: then the video has no audio stream that is known).
+func needsRemoveAudio(ops *fsops.Ops, dir, file string, probe mediatools.ProbeInfo) bool {
 	tags, err := utils.ReadSongTags(ops, dir)
 	if err != nil {
 		return false
@@ -757,31 +748,25 @@ func needsRemoveAudio(ops *fsops.Ops, dir, file string) bool {
 		return false
 	}
 
-	cmd := exec.Command("ffprobe", "-v", "error", showEntries, "stream=codec_type", "-of", "default=nokey=1:noprint_wrappers=1", "--", filepath.Clean(file))
-	output, err := cmd.Output()
-	if err != nil {
-		log.Debugf("Error checking audio stream for %s: %v", file, err)
-		return false
-	}
-	log.Debugf("ffprobe stream types for %s: %s", file, strings.TrimSpace(string(output)))
-	return strings.Contains(string(output), "audio")
+	return probe.HasStream("audio")
 }
 
-// getNeedsReEncode determines if a video with the given codec should be re-encoded based
-// on its bitrate, codec and the estimated size of the re-encoded video.
-func getNeedsReEncode(file, codec string) bool {
+// needsReEncode determines if a video with the given codec should be re-encoded based
+// on its bitrate, codec and the estimated size of the re-encoded video. probe is the
+// ffprobe result of file.
+func needsReEncode(file, codec string, probe mediatools.ProbeInfo) bool {
 	infoInput, err := os.Stat(file)
 	if err != nil {
 		log.Warnf("Error getting size of %s: %v", file, err)
 		return false
 	}
 
-	bitrate, bitrateErr := getVideoBitrate(file)
+	bitrate, bitrateErr := videoBitrate(file, probe)
 	if bitrateErr != nil {
 		log.Debugf("Error getting bitrate for %s: %v", file, bitrateErr)
 	}
 	// estimate the size of the reencoded video based on its resolution, framerate and duration
-	estimate, estimateErr := estimatedSizeOfReEncodedVideo(file)
+	estimate, estimateErr := estimatedReEncodedSize(probe)
 	if estimateErr != nil {
 		log.Debugf("Error estimating re-encoded size for %s: %v", file, estimateErr)
 	}
@@ -802,16 +787,14 @@ func reEncodeWorthIt(codec string, bitrate int, bitrateErr error, estimate int64
 	return (highBitrate || codecReason) && estimate < size
 }
 
-// The function estimates the size of a re-encoded video file based on its duration, resolution, and
-// framerate.
-func estimatedSizeOfReEncodedVideo(file string) (int64, error) {
-	// Get video duration
-	duration, err := getVideoDuration(file)
+// estimatedReEncodedSize estimates the size of the re-encoded video from the duration,
+// resolution and framerate in probe.
+func estimatedReEncodedSize(probe mediatools.ProbeInfo) (int64, error) {
+	duration, err := formatDuration(probe)
 	if err != nil {
 		return 0, err
 	}
-	// Get video resolution
-	width, height, err := getVideoResolution(file)
+	width, height, err := videoResolution(probe)
 	if err != nil {
 		return 0, err
 	}
@@ -819,9 +802,7 @@ func estimatedSizeOfReEncodedVideo(file string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-
-	// Get video framerate
-	framerate, err := getVideoFramerate(file)
+	framerate, err := videoFramerate(probe)
 	if err != nil {
 		return 0, err
 	}
@@ -948,28 +929,15 @@ type markerProbe struct {
 
 // probeMarker reads the format and stream tags and the duration of file.
 func probeMarker(file string) (markerProbe, error) {
-	out, err := exec.Command("ffprobe", "-v", "error",
-		showEntries, "format=duration:format_tags:stream_tags",
-		"-of", "json", "--", filepath.Clean(file)).Output()
+	probe, err := mediatools.Probe(context.Background(), file)
 	if err != nil {
-		return markerProbe{}, fmt.Errorf("ffprobe: %w", err)
+		return markerProbe{}, err
 	}
-	return parseMarkerProbe(out)
+	return markerFromProbe(probe), nil
 }
 
-func parseMarkerProbe(data []byte) (markerProbe, error) {
-	var probe struct {
-		Streams []struct {
-			Tags map[string]string `json:"tags"`
-		} `json:"streams"`
-		Format struct {
-			Duration string            `json:"duration"`
-			Tags     map[string]string `json:"tags"`
-		} `json:"format"`
-	}
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return markerProbe{}, fmt.Errorf("parsing ffprobe output: %w", err)
-	}
+// markerFromProbe reads the marker and the container duration from an ffprobe result.
+func markerFromProbe(probe mediatools.ProbeInfo) markerProbe {
 	m := markerProbe{tagged: hasMarker(probe.Format.Tags)}
 	for _, s := range probe.Streams {
 		m.tagged = m.tagged || hasMarker(s.Tags)
@@ -977,7 +945,7 @@ func parseMarkerProbe(data []byte) (markerProbe, error) {
 	if d, err := strconv.ParseFloat(probe.Format.Duration, 64); err == nil && d > 0 {
 		m.duration = d
 	}
-	return m, nil
+	return m
 }
 
 // hasMarker reports whether tags contain markerTag, whatever its value (tag names are
@@ -991,54 +959,33 @@ func hasMarker(tags map[string]string) bool {
 	return false
 }
 
-func getVideoCodec(file string) (string, error) {
-	cmd := exec.Command("ffprobe", "-v", "error", selectStreams, "v:0", showEntries, "stream=codec_name", "-of", "csv=p=0", "--", filepath.Clean(file))
-	output, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	log.Debugf("Video codec for %s: %s", file, output)
-	codec := strings.TrimSpace(string(output))
-	return codec, nil
-}
-
-// getVideoBitrate returns the bitrate of the first video stream of file in bit/s. Matroska
-// and WebM store no per-stream bitrate; then the BPS statistics tag (mkvmerge) is used, or
-// the sizes of the video packets are summed up. The container bitrate is never used: it
+// videoBitrate returns the bitrate of the first video stream of file in bit/s, from its
+// ffprobe result probe. Matroska and WebM store no per-stream bitrate; then the BPS
+// statistics tag (mkvmerge) is used, or the sizes of the video packets are summed up
+// (another ffprobe run, reading every packet). The container bitrate is never used: it
 // includes the audio, so a large audio track would make a low-bitrate video look high.
-func getVideoBitrate(file string) (int, error) {
-	out, err := exec.Command("ffprobe", "-v", "error", selectStreams, "v:0", showEntries, "stream=bit_rate:stream_tags", "-of", "json", "--", filepath.Clean(file)).Output()
-	if err != nil {
-		return 0, err
+func videoBitrate(file string, probe mediatools.ProbeInfo) (int, error) {
+	video, ok := probe.FirstStream("video")
+	if !ok {
+		return 0, errors.New("no video stream")
 	}
-	if bitrate, ok := parseStreamBitrate(out); ok {
+	if bitrate, ok := streamBitrate(video); ok {
 		return bitrate, nil
 	}
-	duration, err := getVideoDuration(file)
+	duration, err := formatDuration(probe)
 	if err != nil {
 		return 0, err
 	}
-	out, err = exec.Command("ffprobe", "-v", "error", selectStreams, "v:0", showEntries, "packet=size", "-of", "csv=p=0", "--", filepath.Clean(file)).Output()
+	out, err := exec.Command("ffprobe", "-v", "error", selectStreams, "v:0", showEntries, "packet=size", "-of", "csv=p=0", "--", filepath.Clean(file)).Output()
 	if err != nil {
 		return 0, err
 	}
 	return packetBitrate(out, duration)
 }
 
-// parseStreamBitrate returns the bitrate of the stream in ffprobe's JSON output for
-// "stream=bit_rate:stream_tags": its bit_rate, else its BPS tag ("BPS", "BPS-eng"). ok is
-// false if neither is a positive number.
-func parseStreamBitrate(data []byte) (bitrate int, ok bool) {
-	var probe struct {
-		Streams []struct {
-			BitRate string            `json:"bit_rate"`
-			Tags    map[string]string `json:"tags"`
-		} `json:"streams"`
-	}
-	if json.Unmarshal(data, &probe) != nil || len(probe.Streams) == 0 {
-		return 0, false
-	}
-	st := probe.Streams[0]
+// streamBitrate returns the bitrate of the stream: its bit_rate, else its BPS tag ("BPS",
+// "BPS-eng"). ok is false if neither is a positive number.
+func streamBitrate(st mediatools.Stream) (bitrate int, ok bool) {
 	if b, err := strconv.Atoi(st.BitRate); err == nil && b > 0 {
 		return b, true
 	}
@@ -1083,48 +1030,19 @@ func packetBitrate(sizes []byte, duration float64) (int, error) {
 	return int(float64(total) * 8 / duration), nil
 }
 
-func getVideoResolution(file string) (int, int, error) {
-	cmd := exec.Command(
-		"ffprobe",
-		"-v", "error",
-		selectStreams, "v:0",
-		showEntries, "stream=width,height",
-		"-of", "csv=p=0",
-		"--",
-		filepath.Clean(file),
-	)
-	output, err := cmd.Output()
-	if err != nil {
-		return 0, 0, err
+// videoResolution returns the size of the first video stream in probe.
+func videoResolution(probe mediatools.ProbeInfo) (int, int, error) {
+	video, ok := probe.FirstStream("video")
+	if !ok {
+		return 0, 0, errors.New("no video stream")
 	}
-	resolution := strings.Split(strings.TrimSpace(string(output)), ",")
-	if len(resolution) != 2 {
-		return 0, 0, fmt.Errorf("unexpected resolution format: %s", output)
-	}
-	width, err := strconv.Atoi(resolution[0])
-	if err != nil {
-		return 0, 0, err
-	}
-	height, err := strconv.Atoi(resolution[1])
-	if err != nil {
-		return 0, 0, err
-	}
-	return width, height, nil
+	return video.Width, video.Height, nil
 }
 
-func getVideoFramerate(file string) (float64, error) {
-	cmd := exec.Command("ffprobe",
-		"-v", "error",
-		selectStreams, "v:0",
-		showEntries, "stream=r_frame_rate",
-		"-of", "csv=p=0",
-		"--",
-		filepath.Clean(file))
-	output, err := cmd.Output()
-	if err != nil {
-		return 0, err
-	}
-	return parseFramerate(string(output))
+// videoFramerate returns the frame rate of the first video stream in probe.
+func videoFramerate(probe mediatools.ProbeInfo) (float64, error) {
+	video, _ := probe.FirstStream("video")
+	return parseFramerate(video.RFrameRate)
 }
 
 // parseFramerate parses ffprobe's r_frame_rate ("30000/1001").
@@ -1147,20 +1065,8 @@ func parseFramerate(output string) (float64, error) {
 	return float64(numerator) / float64(denominator), nil
 }
 
-func getVideoDuration(file string) (float64, error) {
-	cmd := exec.Command("ffprobe",
-		"-v", "error",
-		showEntries, "format=duration",
-		"-of", "default=noprint_wrappers=1:nokey=1",
-		"--",
-		filepath.Clean(file))
-	output, err := cmd.Output()
-	if err != nil {
-		return 0, err
-	}
-	duration, err := strconv.ParseFloat(strings.TrimSpace(string(output)), 64)
-	if err != nil {
-		return 0, err
-	}
-	return duration, nil
+// formatDuration returns the container duration in probe ("N/A" or a missing one is an
+// error; 0 is not).
+func formatDuration(probe mediatools.ProbeInfo) (float64, error) {
+	return strconv.ParseFloat(strings.TrimSpace(probe.Format.Duration), 64)
 }

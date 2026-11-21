@@ -1,4 +1,6 @@
-// Package mediatools finds ffmpeg and ffprobe and checks that their version is new enough.
+// Package mediatools finds ffmpeg and ffprobe and checks that their version is new enough,
+// probes media files with one ffprobe call (Probe) and caps the tool output kept in memory
+// (OutputCap).
 package mediatools
 
 import (

@@ -648,13 +648,13 @@ func TestNeedsRemoveAudioSeesPlannedTxt(t *testing.T) {
 	makeMedia(t, video, "-c:v", "libx264", "-crf", "35", "-c:a", "aac")
 
 	ops := fsops.New(true)
-	if needsRemoveAudio(ops, song, video) {
+	if needsRemoveAudio(ops, song, video, probeOf(video)) {
 		t.Error("before the planned fix: needsRemoveAudio = true, but #MP3 names the video")
 	}
 	if _, err := ops.WriteFileAtomic(txt, []byte("#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")); err != nil {
 		t.Fatal(err)
 	}
-	if !needsRemoveAudio(ops, song, video) {
+	if !needsRemoveAudio(ops, song, video, probeOf(video)) {
 		t.Error("with the planned txt: needsRemoveAudio = false, want true")
 	}
 	if !isVideoReferenced(ops, song, video) || isVideoReferenced(nil, song, video) {
@@ -673,7 +673,7 @@ func TestHiddenAudioReferenceKeepsVideoAudio(t *testing.T) {
 	video := filepath.Join(song, "video.mp4")
 	makeMedia(t, video, "-c:v", "libx264", "-crf", "35", "-c:a", "aac")
 
-	if needsRemoveAudio(nil, song, video) {
+	if needsRemoveAudio(nil, song, video, probeOf(video)) {
 		t.Error("needsRemoveAudio = true for a hidden #MP3 reference")
 	}
 	ops := fsops.New(false)

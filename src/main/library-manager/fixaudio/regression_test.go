@@ -238,17 +238,17 @@ func TestParseProbeProfileAndMarker(t *testing.T) {
 		json string
 		want audioInfo
 	}{
-		{"profile", `{"streams":[{"codec_name":"aac","profile":"HE-AAC","channels":2,"bit_rate":"48000"}]}`,
+		{"profile", `{"streams":[{"codec_type":"audio","codec_name":"aac","profile":"HE-AAC","channels":2,"bit_rate":"48000"}]}`,
 			audioInfo{Codec: "aac", Profile: "HE-AAC", Channels: 2, Bitrate: 48000}},
-		{"marker in stream tags, any case", `{"streams":[{"codec_name":"vorbis","channels":2,"tags":{"sanitizer_normalized":"-3.0dB"}}]}`,
+		{"marker in stream tags, any case", `{"streams":[{"codec_type":"audio","codec_name":"vorbis","channels":2,"tags":{"sanitizer_normalized":"-3.0dB"}}]}`,
 			audioInfo{Codec: "vorbis", Channels: 2, Normalized: true}},
-		{"marker in format tags", `{"streams":[{"codec_name":"mp3","channels":2}],"format":{"tags":{"SANITIZER_NORMALIZED":"-3.0dB"}}}`,
+		{"marker in format tags", `{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":2}],"format":{"tags":{"SANITIZER_NORMALIZED":"-3.0dB"}}}`,
 			audioInfo{Codec: "mp3", Channels: 2, Normalized: true}},
-		{"unrelated tags", `{"streams":[{"codec_name":"mp3","channels":2,"tags":{"title":"x"}}],"format":{"tags":{"SANITIZER_VIDEO":"1","artist":"y"}}}`,
+		{"unrelated tags", `{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":2,"tags":{"title":"x"}}],"format":{"tags":{"SANITIZER_VIDEO":"1","artist":"y"}}}`,
 			audioInfo{Codec: "mp3", Channels: 2}},
-		{"negative and garbage bitrates ignored", `{"streams":[{"codec_name":"mp3","channels":1,"bit_rate":"-5"}],"format":{"bit_rate":"x"}}`,
+		{"negative and garbage bitrates ignored", `{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":1,"bit_rate":"-5"}],"format":{"bit_rate":"x"}}`,
 			audioInfo{Codec: "mp3", Channels: 1}},
-		{"zero stream bitrate falls back", `{"streams":[{"codec_name":"mp3","channels":1,"bit_rate":"0"}],"format":{"bit_rate":"64000"}}`,
+		{"zero stream bitrate falls back", `{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":1,"bit_rate":"0"}],"format":{"bit_rate":"64000"}}`,
 			audioInfo{Codec: "mp3", Channels: 1, Bitrate: 64000}},
 	}
 	for _, tt := range tests {
@@ -262,7 +262,7 @@ func TestParseProbeProfileAndMarker(t *testing.T) {
 			}
 		})
 	}
-	if _, err := parseProbe([]byte(`{"streams":[{"codec_name":"mp3","channels":-1}]}`)); err == nil {
+	if _, err := parseProbe([]byte(`{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":-1}]}`)); err == nil {
 		t.Error("negative channel count accepted")
 	}
 }

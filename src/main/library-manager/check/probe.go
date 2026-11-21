@@ -1,7 +1,7 @@
 package check
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -30,36 +30,29 @@ func capStderr() *mediatools.OutputCap { return mediatools.NewOutputCap(maxStder
 // left behind by many cutting tools. The guess can be off by a factor of two or more.
 const estimatedMsg = "Estimating duration from bitrate"
 
-// probeMedia runs ffprobe on path (an absolute path, so it never looks like an option)
-// and returns the container duration, the stream types, the audio bitrate and the video
-// size and bitrate. An estimated duration is
-// replaced by a measured one (measureDuration); if that fails, DurationEstimated is set.
-// An error wrapping errToolFailed means ffprobe could not run; any other error means the
-// file is unreadable.
+// probeMedia runs ffprobe on path (an absolute path) and returns the container duration,
+// the stream types, the audio bitrate and the video size and bitrate. An estimated
+// duration is replaced by a measured one (measureDuration); if that fails,
+// DurationEstimated is set. An error wrapping errToolFailed means ffprobe could not run;
+// any other error means the file is unreadable.
 func probeMedia(path string) (mediaInfo, error) {
-	// Warning level, to see estimatedMsg; stderr only counts as an error with a non-zero exit.
-	cmd := exec.Command("ffprobe", "-v", "warning",
-		"-show_entries", "format=duration,bit_rate:stream=codec_type,codec_name,bit_rate,width,height:stream_tags=BPS,BPS-eng:stream_disposition=attached_pic",
-		"-of", "json", path)
-	stderr := capStderr()
-	cmd.Stderr = stderr
-	out, err := cmd.Output()
+	probe, err := mediatools.Probe(context.Background(), path)
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			msg := toolMessage(stderr.Head(), path, 2)
+		var probeErr *mediatools.ProbeError
+		switch {
+		case errors.As(err, &probeErr):
+			msg := toolMessage(probe.Log, path, 2)
 			if msg == "" {
-				msg = err.Error()
+				msg = probeErr.Err.Error()
 			}
 			return mediaInfo{}, errors.New(msg)
+		case errors.Is(err, mediatools.ErrNotRun):
+			return mediaInfo{}, fmt.Errorf("%w: %v", errToolFailed, err)
 		}
-		return mediaInfo{}, fmt.Errorf("%w: ffprobe: %v", errToolFailed, err)
+		return mediaInfo{}, err // unparsable output
 	}
-	info, err := parseProbe(out)
-	if err != nil {
-		return info, err
-	}
-	if info.HasAudio && strings.Contains(stderr.Head(), estimatedMsg) {
+	info := fromProbe(probe)
+	if info.HasAudio && strings.Contains(probe.Log, estimatedMsg) {
 		if d, ok := measureDuration(path); ok {
 			info.DurationSec, info.HasDuration = d, true
 		} else {
@@ -97,36 +90,14 @@ func parseProgressDuration(out string) (float64, bool) {
 	return sec, ok
 }
 
-// parseProbe parses the JSON output of probeMedia.
-func parseProbe(data []byte) (mediaInfo, error) {
-	var probe struct {
-		Streams []struct {
-			CodecType string `json:"codec_type"`
-			BitRate   string `json:"bit_rate"`
-			Width     int    `json:"width"`
-			Height    int    `json:"height"`
-			Tags      struct {
-				BPS    string `json:"BPS"`
-				BPSEng string `json:"BPS-eng"`
-			} `json:"tags"`
-			Disposition struct {
-				AttachedPic int `json:"attached_pic"`
-			} `json:"disposition"`
-		} `json:"streams"`
-		Format struct {
-			Duration string `json:"duration"`
-			BitRate  string `json:"bit_rate"`
-		} `json:"format"`
-	}
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return mediaInfo{}, fmt.Errorf("parsing ffprobe output: %w", err)
-	}
+// fromProbe extracts what check uses from an ffprobe result.
+func fromProbe(probe mediatools.ProbeInfo) mediaInfo {
 	var info mediaInfo
 	for _, s := range probe.Streams {
 		switch s.CodecType {
 		case "audio":
 			if !info.HasAudio {
-				info.AudioBitrate = parseBitrate(s.BitRate)
+				info.AudioBitrate = mediatools.ParseBitrate(s.BitRate)
 			}
 			info.HasAudio = true
 		case "video":
@@ -137,10 +108,10 @@ func parseProbe(data []byte) (mediaInfo, error) {
 			if info.VideoHeight == 0 && s.Width > 0 && s.Height > 0 {
 				info.VideoWidth, info.VideoHeight = s.Width, s.Height
 				// Matroska/WebM streams carry no bit_rate; mkvmerge writes a BPS tag.
-				info.VideoBitrate = parseBitrate(s.BitRate)
-				for _, tag := range []string{s.Tags.BPS, s.Tags.BPSEng} {
+				info.VideoBitrate = mediatools.ParseBitrate(s.BitRate)
+				for _, tag := range []string{"BPS", "BPS-eng"} {
 					if info.VideoBitrate == 0 {
-						info.VideoBitrate = parseBitrate(tag)
+						info.VideoBitrate = mediatools.ParseBitrate(tagFold(s.Tags, tag))
 					}
 				}
 			}
@@ -149,25 +120,25 @@ func parseProbe(data []byte) (mediaInfo, error) {
 	// Streams in some containers (Ogg, Matroska, WebM) carry no bit_rate; the container
 	// rate is then the audio rate, unless a video stream is part of it.
 	if info.HasAudio && info.AudioBitrate == 0 && info.VideoHeight == 0 {
-		info.AudioBitrate = parseBitrate(probe.Format.BitRate)
+		info.AudioBitrate = mediatools.ParseBitrate(probe.Format.BitRate)
 	}
 	// Likewise the container rate is the video rate of a file without audio.
 	if !info.HasAudio && info.VideoHeight > 0 && info.VideoBitrate == 0 {
-		info.VideoBitrate = parseBitrate(probe.Format.BitRate)
+		info.VideoBitrate = mediatools.ParseBitrate(probe.Format.BitRate)
 	}
 	// "N/A" or missing for streams without a known length.
-	if d, err := strconv.ParseFloat(probe.Format.Duration, 64); err == nil && d > 0 {
-		info.DurationSec, info.HasDuration = d, true
-	}
-	return info, nil
+	info.DurationSec, info.HasDuration = mediatools.ParseSeconds(probe.Format.Duration)
+	return info
 }
 
-// parseBitrate parses an ffprobe bit_rate ("128000", "N/A", ""); 0 if unknown.
-func parseBitrate(s string) int64 {
-	if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
-		return n
+// tagFold returns the value of the tag key, matched case-insensitively.
+func tagFold(tags map[string]string, key string) string {
+	for k, v := range tags {
+		if strings.EqualFold(k, key) {
+			return v
+		}
 	}
-	return 0
+	return ""
 }
 
 // decodeCheck decodes the whole file with ffmpeg. decodeErr is set if ffmpeg failed,

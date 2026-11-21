@@ -457,7 +457,7 @@ func TestPlan(t *testing.T) {
 	}{{"1282x720", 23}, {"1280x720", 28}, {"320x240", 28}} {
 		video := filepath.Join(song, "v"+tt.size+".avi")
 		makeMediaFrom(t, video, "testsrc=size="+tt.size+":rate=25:duration=0.2", "-c:v", "mpeg4", "-q:v", "1", "-an")
-		pl, ok := p.plan(song, video)
+		pl, ok := p.planFile(song, video)
 		if want := (encodePlan{reEncode: true, crf: tt.crf}); !ok || pl != want {
 			t.Errorf("plan(%s) = %+v, %v; want %+v, true", tt.size, pl, ok, want)
 		}
@@ -465,13 +465,13 @@ func TestPlan(t *testing.T) {
 
 	garbage := filepath.Join(song, "garbage.avi")
 	writeFile(t, garbage, strings.Repeat("garbage", 200))
-	if pl, ok := p.plan(song, garbage); !ok || !pl.reEncode || pl.resize || pl.removeAudio {
+	if pl, ok := p.planFile(song, garbage); !ok || !pl.reEncode || pl.resize || pl.removeAudio {
 		t.Errorf("plan(garbage) = %+v, %v; want a re-encode attempt", pl, ok)
 	}
 
 	audioOnly := filepath.Join(song, "audio.mp4")
 	makeMedia(t, audioOnly, "-vn", "-c:a", "aac")
-	if pl, ok := p.plan(song, audioOnly); ok || pl != (encodePlan{}) {
+	if pl, ok := p.planFile(song, audioOnly); ok || pl != (encodePlan{}) {
 		t.Errorf("plan(audio-only mp4) = %+v, %v; want nothing to do", pl, ok)
 	}
 	if st := p.ops.Stats(); st != (fsops.Stats{}) {
@@ -531,7 +531,7 @@ func TestNeedsRemoveAudio(t *testing.T) {
 			writeFile(t, filepath.Join(song, "empty.mp3"), "")
 			video := filepath.Join(song, "video.mp4")
 			writeFile(t, video, readFile(t, map[bool]string{false: withAudio, true: silent}[tt.silent]))
-			if got := needsRemoveAudio(nil, song, video); got != tt.want {
+			if got := needsRemoveAudio(nil, song, video, probeOf(video)); got != tt.want {
 				t.Errorf("needsRemoveAudio = %v, want %v", got, tt.want)
 			}
 		})
@@ -542,7 +542,7 @@ func TestNeedsRemoveAudio(t *testing.T) {
 		writeFile(t, filepath.Join(song, "song.mp3"), "audio")
 		video := filepath.Join(song, "video.mp4")
 		writeFile(t, video, readFile(t, withAudio))
-		if needsRemoveAudio(nil, song, video) {
+		if needsRemoveAudio(nil, song, video, probeOf(video)) {
 			t.Error("needsRemoveAudio = true without a song txt")
 		}
 	})
