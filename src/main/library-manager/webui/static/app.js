@@ -1069,11 +1069,14 @@ function organizeTable(v) {
 
 const R = "�";
 
+// fits is the server's check (webui/repair.go: fits and handleRepairApply): the same
+// letters, each � one other character that is no blank, control character, [, ] or #
+// (they would break the words file).
 function fits(word, form) {
   const w = [...word];
   const f = [...form];
   if (w.length !== f.length || !word.includes(R)) return false;
-  return w.every((c, i) => (c === R ? f[i] !== R && !/\s/.test(f[i]) : c.toLowerCase() === f[i].toLowerCase()));
+  return w.every((c, i) => (c === R ? f[i] !== R && !/[\s\p{Cc}[\]#]/u.test(f[i]) : c.toLowerCase() === f[i].toLowerCase()));
 }
 
 const choiceKey = (path, word) => `${path}\n${word}`;
