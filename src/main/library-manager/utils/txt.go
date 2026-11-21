@@ -247,11 +247,11 @@ var ErrTxtProblem = errors.New("song txt has an encoding problem and is never re
 
 // ReplaceFileReference changes every file tag (#MP3, #AUDIO, #VIDEO, #COVER, ...) of the
 // song txt in dir whose value is oldName (also matching case- and NFC-insensitively) to
-// newName. Other lines are never touched. The file is written atomically, and only if a
-// reference was replaced, which is reported as replaced. A txt that DecodeTxt does not read
-// as UTF-8 without a Problem is left untouched (ErrTxtNotUTF8, ErrTxtProblem). The txt is
-// found and read through ops, so in a dry run the replacement applies to the content
-// earlier modules planned.
+// newName, written in NFC. Other lines are never touched. The file is written atomically,
+// and only if a reference was replaced, which is reported as replaced. A txt that DecodeTxt
+// does not read as UTF-8 without a Problem, before or after the change, is left untouched
+// (ErrTxtNotUTF8, ErrTxtProblem). The txt is found and read through ops, so in a dry run
+// the replacement applies to the content earlier modules planned.
 func ReplaceFileReference(ops *fsops.Ops, dir, oldName, newName string) (replaced bool, err error) {
 	txt, err := FindSongTxt(ops, dir)
 	if err != nil {
@@ -264,14 +264,14 @@ func ReplaceFileReference(ops *fsops.Ops, dir, oldName, newName string) (replace
 	// Valid UTF-8 bytes are not enough: DecodeTxt may read them as CP1252 (accidental
 	// UTF-8) or with a Problem (stale #ENCODING, NUL bytes), and such a file is never
 	// rewritten; fixtxt leaves it alone too.
-	switch d := DecodeTxt(raw); {
-	case d.Problem != "":
-		return false, fmt.Errorf("%s: %w: %s", txt, ErrTxtProblem, d.Problem)
-	case d.Encoding != EncUTF8:
-		return false, fmt.Errorf("%s: %w", txt, ErrTxtNotUTF8)
+	if err := rewritableUTF8(txt, raw); err != nil {
+		return false, err
 	}
 
 	want := normalizeName(oldName)
+	// A name read from disk may be NFD (macOS); its combining marks alone are no clean
+	// UTF-8 evidence for DecodeTxt, while the NFC letters are.
+	newName = norm.NFC.String(newName)
 	lines := strings.SplitAfter(string(raw), "\n")
 	for i, line := range lines {
 		body := strings.TrimRight(line, "\r\n")
@@ -297,6 +297,23 @@ func ReplaceFileReference(ops *fsops.Ops, dir, oldName, newName string) (replace
 	if !replaced {
 		return false, nil
 	}
-	_, err = ops.WriteFileAtomic(txt, []byte(strings.Join(lines, "")))
+	out := []byte(strings.Join(lines, ""))
+	// The new name may not fit the file either (a Cyrillic name under a stale #ENCODING).
+	if err := rewritableUTF8(txt, out); err != nil {
+		return false, err
+	}
+	_, err = ops.WriteFileAtomic(txt, out)
 	return err == nil, err
+}
+
+// rewritableUTF8 returns nil if DecodeTxt reads content, the content of txt, as UTF-8
+// without a Problem, else ErrTxtProblem or ErrTxtNotUTF8 naming txt.
+func rewritableUTF8(txt string, content []byte) error {
+	switch d := DecodeTxt(content); {
+	case d.Problem != "":
+		return fmt.Errorf("%s: %w: %s", txt, ErrTxtProblem, d.Problem)
+	case d.Encoding != EncUTF8:
+		return fmt.Errorf("%s: %w", txt, ErrTxtNotUTF8)
+	}
+	return nil
 }

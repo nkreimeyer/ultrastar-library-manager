@@ -302,3 +302,42 @@ func TestReplaceFileReferenceRefusesDecodeProblem(t *testing.T) {
 		t.Errorf("clean UTF-8 file = %q", got)
 	}
 }
+
+// A txt that spells a name in NFC for a file whose name on disk is NFD (made on macOS)
+// must stay readable after the rewrite: written as given, the NFD mark U+0308 is the txt's
+// only non-ASCII, which DecodeTxt reads as likely CP1252 (and with #ENCODING:CP1252 as a
+// stale tag), and fixtxt would leave the song alone from then on.
+func TestReplaceFileReferenceNFDNewNameKeepsTxtClean(t *testing.T) {
+	nfc, nfd := "Mädchen", "Mädchen"
+	for _, header := range []string{"#TITLE:t\n#ARTIST:a\n", "#TITLE:t\n#ARTIST:a\n#ENCODING:CP1252\n"} {
+		content := header + "#VIDEO:" + nfc + ".avi\n: 0 1 2 x\nE\n"
+		if d := DecodeTxt([]byte(content)); d.Problem != "" || d.Encoding != EncUTF8 {
+			t.Fatalf("fixture %q: %s, problem %q", content, d.Encoding, d.Problem)
+		}
+		dir := t.TempDir()
+		txt := filepath.Join(dir, "song.txt")
+		writeFile(t, txt, content)
+		replaced, err := ReplaceFileReference(fsops.New(false), dir, nfd+".avi", nfd+".mp4")
+		got, _ := os.ReadFile(txt)
+		if !replaced || err != nil || string(got) != header+"#VIDEO:"+nfc+".mp4\n: 0 1 2 x\nE\n" {
+			t.Errorf("replaced=%v err=%v file=%q; want the reference in NFC", replaced, err, got)
+		}
+		if d := DecodeTxt(got); d.Problem != "" || d.Encoding != EncUTF8 {
+			t.Errorf("rewritten %q: %s, problem %q", got, d.Encoding, d.Problem)
+		}
+	}
+}
+
+// A rewrite that would make DecodeTxt read the txt with a Problem or as another encoding
+// is refused: here a Cyrillic new name under a stale #ENCODING:CP1252.
+func TestReplaceFileReferenceRefusesResultWithProblem(t *testing.T) {
+	content := "#TITLE:t\n#ARTIST:a\n#ENCODING:CP1252\n#VIDEO:v.avi\n: 0 1 2 x\nE\n"
+	dir := t.TempDir()
+	txt := filepath.Join(dir, "song.txt")
+	writeFile(t, txt, content)
+	replaced, err := ReplaceFileReference(fsops.New(false), dir, "v.avi", "видео.mp4")
+	got, _ := os.ReadFile(txt)
+	if replaced || !errors.Is(err, ErrTxtProblem) || string(got) != content {
+		t.Errorf("replaced=%v err=%v file=%q; want ErrTxtProblem and the file unchanged", replaced, err, got)
+	}
+}

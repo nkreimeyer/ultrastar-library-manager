@@ -11,6 +11,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/utils"
 )
 
 // probeVideo returns ffprobe's csv line for the given stream entries of the first video
@@ -615,4 +616,33 @@ func TestConversionKeepsOriginalOfProblemTxt(t *testing.T) {
 		t.Errorf("song folder = %v, want song.txt and video.avi", got)
 	}
 	assertNoTempFiles(t, songDir)
+}
+
+// A video whose name on disk is NFD (made on macOS) and a txt that spells it in NFC: the
+// converted name goes into the txt in NFC, so DecodeTxt still reads it as clean UTF-8
+// (an NFD mark as the txt's only non-ASCII is a Problem, and fixtxt would skip the song).
+func TestConversionOfNFDNameKeepsTxtClean(t *testing.T) {
+	requireFFmpeg(t)
+	cfg, songDir, _ := newLibrary(t, false)
+	song := filepath.Join(songDir, "A - S")
+	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:Mädchen.avi\n: 0 4 0 La\nE\n")
+	makeMedia(t, filepath.Join(song, "Mädchen.avi"), "-c:v", "mpeg4", "-q:v", "1", "-an")
+
+	ops := fsops.New(false)
+	if err := Run(cfg, ops); err != nil {
+		t.Fatal(err)
+	}
+	if st := ops.Stats(); st.Failed != 0 || st.Removed != 1 {
+		t.Errorf("stats = %+v, want the original removed and no failure", st)
+	}
+	txt := readFile(t, filepath.Join(song, "song.txt"))
+	if want := "#TITLE:S\n#ARTIST:A\n#VIDEO:Mädchen.mp4\n: 0 4 0 La\nE\n"; txt != want {
+		t.Errorf("txt = %q, want %q", txt, want)
+	}
+	if d := utils.DecodeTxt([]byte(txt)); d.Problem != "" {
+		t.Errorf("rewritten txt has a Problem: %s", d.Problem)
+	}
+	if got := dirNames(t, song); !slices.Equal(got, []string{"Mädchen.mp4", "song.txt"}) {
+		t.Errorf("song folder = %v", got)
+	}
 }
