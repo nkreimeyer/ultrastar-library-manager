@@ -68,6 +68,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               Host/Origin/JSON checks, CSP, routes),
                               jobs.go (one job at a time, logrus hook, SSE /api/job/events), system.go (tools, folder lister),
                               organize.go (validate/analyse/exclude/apply/history/undo),
+                              remove.go (the Remove task: validate/analyse/apply over organize.Remove, patterns as text; apply
+                              re-plans as a dry run and stops if the removed songs differ; undo is the shared organize undo),
                               tidy.go (the tidy-up options and stepRun: the steps of one job on one ops),
                               static/ (index.html, style.css, app.js: embedded, no build step)
   organize/                   organize/dedupe/add: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey, StripCopySuffix),

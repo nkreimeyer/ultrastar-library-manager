@@ -53,6 +53,7 @@ type Server struct {
 	mu        sync.Mutex
 	tokenUsed bool // the start URL signed a browser in already
 	organize  map[string]*organizeAnalysis
+	removal   *removeAnalysis // the newest remove check
 	nextID    int
 }
 
@@ -120,6 +121,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/job/events", s.handleJobEvents)
 	s.mux.HandleFunc("POST /api/job/cancel", s.handleJobCancel)
 	s.mux.HandleFunc("POST /api/organize/validate", s.handleOrganizeValidate)
+	s.mux.HandleFunc("POST /api/remove/validate", s.handleRemoveValidate)
+	s.mux.HandleFunc("POST /api/remove/analyse", s.handleRemoveAnalyse)
+	s.mux.HandleFunc("GET /api/remove/analysis", s.handleRemoveAnalysis)
+	s.mux.HandleFunc("POST /api/remove/apply", s.handleRemoveApply)
 	s.mux.HandleFunc("POST /api/organize/analyse", s.handleOrganizeAnalyse)
 	s.mux.HandleFunc("GET /api/organize/analysis", s.handleOrganizeAnalysis)
 	s.mux.HandleFunc("POST /api/organize/exclude", s.handleOrganizeExclude)

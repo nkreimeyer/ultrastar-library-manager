@@ -368,3 +368,5 @@ dialog::backdrop { background: rgb(20 24 48 / 0.45); }
   .song-line { flex-direction: column; gap: 0.25rem; }
   .row { flex-wrap: wrap; }
 }
+
+textarea { width: 100%; max-width: var(--measure); font: 0.9rem/1.4 var(--mono); padding: 0.5rem 0.6rem; border: 1px solid var(--line); border-radius: var(--radius-m); background: var(--raised); color: var(--ink); resize: vertical; }
