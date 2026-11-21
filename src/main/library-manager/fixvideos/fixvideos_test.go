@@ -191,6 +191,41 @@ func TestWriteCorruptedReportDropsStaleEntries(t *testing.T) {
 	}
 }
 
+// Regression: a dry run rewrote the persistent report and dropped the entry of a video an
+// earlier module would move away, though that video is still on disk and still corrupted.
+// A dry run runs no ffmpeg, so it leaves the report as it is, stale entries included.
+func TestDryRunKeepsCorruptedReport(t *testing.T) {
+	p, songDir, outDir := newProcessor(t, true)
+	song := filepath.Join(songDir, "Song")
+	moved := filepath.Join(song, "moved.avi") // cleanup would move it to extra-files
+	fixed := filepath.Join(song, "fixed.avi") // journaled as checked: readable
+	gone := filepath.Join(song, "gone.avi")   // converted or removed
+	still := filepath.Join(song, "still.avi")
+	for _, f := range []string{moved, fixed, still} {
+		writeFile(t, f, "v "+f)
+	}
+	if err := p.journal.Add(journalChecked, fixed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.ops.MoveInto(moved, p.cfg.ExtraFilesDir(), "Song/moved.avi"); err != nil {
+		t.Fatal(err)
+	}
+	report := filepath.Join(outDir, corruptedReportName)
+	old := strings.Join([]string{fixed, gone, moved, still}, "\n") + "\n"
+	writeFile(t, report, old)
+
+	for _, f := range []string{moved, fixed, still} {
+		p.processVideoFile(song, f)
+	}
+	p.writeCorruptedReport()
+	if got := readFile(t, report); got != old {
+		t.Errorf("dry run rewrote the report:\n got %q\nwant %q", got, old)
+	}
+	if st := p.ops.Stats(); st.Failed != 0 {
+		t.Errorf("Failed = %d, want 0", st.Failed)
+	}
+}
+
 // --- tests that need ffmpeg -------------------------------------------------------------
 
 func TestReEncodeAviToMp4(t *testing.T) {

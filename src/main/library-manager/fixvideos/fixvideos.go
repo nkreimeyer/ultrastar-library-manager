@@ -873,11 +873,12 @@ func (p *processor) markReadable(file string) {
 // writeCorruptedReport merges the videos flagged in this run with the entries of an
 // existing report and writes them sorted and deduplicated. Entries of earlier runs are
 // dropped if this run found the video readable (fixed, replaced, tagged) or the file no
-// longer exists (converted, removed, moved; in a dry run also a file an earlier module
-// would move away); the others stay, because a video this run did not try to read (a
-// blocked conversion, another library writing to the same out dir, a dry run, which runs
-// no ffmpeg) may still be corrupted. Nothing is written if there is neither a report nor a
-// flagged video.
+// longer exists (converted, removed, moved); the others stay, because a video this run did
+// not try to read (a blocked conversion, another library writing to the same out dir) may
+// still be corrupted. Nothing is written if there is neither a report nor a flagged video.
+// A dry run never rewrites the report: it runs no ffmpeg, so it flags nothing, and the
+// entries it would drop (including files an earlier module would move away, which are
+// still on disk and still corrupted) are only logged.
 func (p *processor) writeCorruptedReport() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -888,11 +889,13 @@ func (p *processor) writeCorruptedReport() {
 	switch {
 	case err == nil:
 		for _, line := range strings.Split(string(existing), "\n") {
-			line = strings.TrimSpace(line)
-			if _, ok := p.readable[line]; line == "" || ok {
+			if line = strings.TrimSpace(line); line == "" {
 				continue
 			}
-			if _, err := os.Lstat(line); errors.Is(err, os.ErrNotExist) || p.ops.WouldBeMoved(line) {
+			if why := p.staleReason(line); why != "" {
+				if p.cfg.DryRun {
+					log.Infof("Dry run: %s would be dropped from %s: %s", line, corruptedReportName, why)
+				}
 				continue
 			}
 			entries[line] = struct{}{}
@@ -913,9 +916,30 @@ func (p *processor) writeCorruptedReport() {
 	if err == nil && data == string(existing) {
 		return
 	}
+	if p.cfg.DryRun {
+		log.Infof("Dry run: not updating %s; it would list %d video(s)", path, len(entries))
+		return
+	}
 	if err := p.ops.WriteReport(path, []byte(data)); err != nil {
 		log.Errorf("%v", err)
 	}
+}
+
+// staleReason returns why an entry of an earlier corrupted-files report is out of date, or
+// "" if it stays: this run found the video readable, or the file no longer exists. In a
+// dry run a file an earlier module would move away counts as gone too (the real run will
+// not find it), which only matters for the dry run's log: a dry run never rewrites the report.
+func (p *processor) staleReason(file string) string {
+	if _, ok := p.readable[file]; ok {
+		return "this run found it readable"
+	}
+	if _, err := os.Lstat(file); errors.Is(err, os.ErrNotExist) {
+		return "it no longer exists"
+	}
+	if p.ops.WouldBeMoved(file) {
+		return "an earlier module would move it away"
+	}
+	return ""
 }
 
 // Internal Utility Functions -------------------------------------------------------------------------------
