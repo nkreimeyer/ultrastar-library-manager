@@ -7,6 +7,8 @@ variables:
 
 default:
   image: $GO_IMAGE
+  # Only runners with the Docker executor: a shell runner ignores image: and has no Go.
+  tags: [docker]
   cache:
     key:
       files: [src/main/library-manager/go.sum]
