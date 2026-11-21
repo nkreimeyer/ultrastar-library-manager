@@ -769,8 +769,15 @@ async function onJobEnd(j) {
           S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`);
           S.view = "review";
           S.notice = { kind: "bad", title: "Something changed since you checked, so nothing was moved", text: "Here is the new plan. Look through it again before you move anything.", details: advanced() ? j.details : null };
+        } else if (j.stats?.moved && resultFolders(j)) {
+          // Some songs moved before it failed: offer the undo.
+          S.done = { kind: "organize", job: j, stopped: true, cfg: resultFolders(j) };
+          S.view = "done";
+          S.notice = failed("Moving did not finish");
         } else {
-          S.view = "review";
+          // After a reload S.org is not loaded: the result names the analysis.
+          if (!S.org && j.result?.analysis) S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`);
+          S.view = S.org ? "review" : "setup";
           S.notice = failed("Moving did not finish");
         }
         break;
@@ -794,7 +801,7 @@ async function onJobEnd(j) {
         break;
       case "repair-apply":
         if (j.state === "failed") {
-          S.view = "review";
+          S.view = S.rep ? "review" : "setup"; // after a reload S.rep is not loaded
           S.notice = failed("Repairing did not finish");
         } else {
           S.done = { kind: "repair", job: j, stopped: j.state === "cancelled" };
@@ -804,11 +811,12 @@ async function onJobEnd(j) {
       default:
         S.view = "setup";
     }
+    render();
   } catch (e) {
     S.view = "setup";
     S.notice = { kind: "bad", title: e.message };
+    render();
   }
-  render();
   window.scrollTo(0, 0);
 }
 
@@ -1273,9 +1281,9 @@ function viewDone() {
       ? `${plural(st.moved, "song folder was", "song folders were")} moved before you stopped. Undo puts them back.`
       : `${plural(st.moved, "song folder", "song folders")} moved.`));
     if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "move", "moves")} failed`, text: advanced() ? "The log below says why." : "Switch to Advanced to see the log." }));
-    add(frag, h("p", null, "Set-aside songs are in ", h("span", { class: "path" }, d.cfg.outDir), ". Look through them before you delete anything."));
+    if (d.cfg) add(frag, h("p", null, "Set-aside songs are in ", h("span", { class: "path" }, d.cfg.outDir), ". Look through them before you delete anything."));
     add(frag, h("div", { class: "actions" },
-      st.moved ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Undo this run") : null,
+      st.moved && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Undo this run") : null,
       again));
   } else if (d.kind === "undo") {
     const stopped = j.state === "cancelled";
