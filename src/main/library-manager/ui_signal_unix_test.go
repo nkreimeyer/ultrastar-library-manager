@@ -3,6 +3,7 @@
 package main
 
 import (
+	"os"
 	"os/signal"
 	"syscall"
 	"testing"
@@ -19,6 +20,11 @@ func TestUIStopsOnSIGHUP(t *testing.T) {
 	oldOpen := openBrowser
 	t.Cleanup(func() { openBrowser = oldOpen })
 	openBrowser = func(string) error { started <- struct{}{}; return nil }
+	// The process was not started with SIGHUP ignored; an earlier test's signal.Ignore
+	// would still show in signal.Ignored.
+	oldIgnored := signalIgnored
+	t.Cleanup(func() { signalIgnored = oldIgnored })
+	signalIgnored = func(os.Signal) bool { return false }
 
 	done := make(chan int, 1)
 	go func() { done <- runWithArgs(t, "ui") }()

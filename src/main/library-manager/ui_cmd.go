@@ -44,12 +44,16 @@ var openBrowser = func(url string) error {
 func stopSignals() []os.Signal {
 	var sigs []os.Signal
 	for _, sig := range []os.Signal{os.Interrupt, syscall.SIGHUP} {
-		if !signal.Ignored(sig) {
+		if !signalIgnored(sig) {
 			sigs = append(sigs, sig)
 		}
 	}
 	return append(sigs, syscall.SIGTERM)
 }
+
+// signalIgnored is signal.Ignored. Tests replace it: once a test has ignored SIGHUP,
+// signal.Ignored keeps reporting it even after signal.Reset.
+var signalIgnored = signal.Ignored
 
 // uiStop is closed by tests to stop the UI; nil = wait for a signal.
 var uiStop chan struct{}
