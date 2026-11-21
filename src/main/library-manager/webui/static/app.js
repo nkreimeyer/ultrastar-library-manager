@@ -66,6 +66,10 @@ const TASKS = {
     title: "Add new songs to my library",
     desc: "Bring songs from other folders into the library. Songs it already has are compared, and only the best version is kept.",
   },
+  originals: {
+    title: "Free up space from audio backups",
+    desc: "Evening out the volume keeps a copy of every changed audio file. Look at how much space they take, and delete them once you are happy with the result.",
+  },
   reports: {
     title: "Read the reports of earlier runs",
     desc: "Open the lists the tools wrote: what was planned or moved, songs with encoding problems, missing files and check results.",
@@ -97,6 +101,7 @@ const PHASES = {
   audio: "Evening out the volume",
   undo: "Moving songs back",
   restore: "Putting songs back",
+  delete: "Deleting the backups",
 };
 
 // The tidy-up options, in groups. Every option goes to the server as it is (tidyOptions).
@@ -152,6 +157,7 @@ const JOB_TITLES = {
   "organize-apply": "Moving songs",
   "organize-undo": "Undoing the last run",
   "setaside-restore": "Putting songs back",
+  "originals-delete": "Deleting the backups",
   "check-analyse": "Checking the songs. Nothing is changed.",
   "check-apply": "Checking and setting aside broken songs",
   "remove-analyse": "Checking first. Nothing is changed yet.",
@@ -164,6 +170,7 @@ const STOP_HINTS = {
   "organize-undo": "Stopping finishes the current move; undo again to move back the rest.",
   "remove-apply": "Stopping finishes the current move; undo puts back what was moved.",
   "setaside-restore": "Stopping finishes the current move; undo takes back what was put back.",
+  "originals-delete": "Stopping keeps the backups not deleted yet. What is deleted is gone.",
   "check-apply": "Stopping finishes the current move. Nothing is moved if you stop before the check is done.",
 };
 
@@ -200,6 +207,7 @@ const S = {
   rem: null, // remove review view
   rmKeep: new Set(), // songs (paths) of the remove review the reviewer keeps
   chk: null, // check report view
+  originals: null, // the originals/ folder: { config, dir, files, bytes, largest }
   reports: null, // report viewer: { config, files, shown: { name, text, truncated } }
   aside: null, // set-aside browser: { config, items }
   pick: new Set(), // keys (section/rel) of the items chosen to put back
@@ -241,6 +249,9 @@ function render() {
       break;
     case "reports":
       content = viewReports();
+      break;
+    case "originals":
+      content = viewOriginals();
       break;
     default:
       content = viewSetup();
@@ -545,7 +556,7 @@ function organizeRequest(withTidy) {
   if (S.task === "check") {
     return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "", deep: advanced() && S.f.deep };
   }
-  if (S.task === "restore" || S.task === "reports") return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "" };
+  if (S.task === "restore" || S.task === "reports" || S.task === "originals") return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "" };
   return {
     tidy: withTidy && S.task === "dedupe" ? tidyRequest() : undefined,
     mode: S.task,
@@ -575,7 +586,7 @@ async function validate() {
     return;
   }
   try {
-    const res = await post(`/api/${{ remove: "remove", check: "check", restore: "setaside", reports: "setaside" }[S.task] || "organize"}/validate`, organizeRequest());
+    const res = await post(`/api/${{ remove: "remove", check: "check", restore: "setaside", reports: "setaside", originals: "setaside" }[S.task] || "organize"}/validate`, organizeRequest());
     if (seq !== validateSeq) return;
     S.resolved = res;
     S.resolveError = null;
@@ -609,7 +620,7 @@ function updateResolved() {
   } else if (S.resolved) {
     const out = S.resolved.outDir;
     el.replaceChildren(
-      S.task === "check" ? "The reports go to " : S.task === "restore" || S.task === "reports" ? "Looking in " : "Set-aside songs, reports and the record for undoing go to ",
+      S.task === "check" ? "The reports go to " : S.task === "restore" || S.task === "reports" || S.task === "originals" ? "Looking in " : "Set-aside songs, reports and the record for undoing go to ",
       h("span", { class: "path" }, out),
       ".",
     );
@@ -659,6 +670,9 @@ function viewSetup() {
     case "reports":
       fields.append(folderField("Your library", "library", "The reports are in its output folder."));
       break;
+    case "originals":
+      fields.append(folderField("Your library", "library", "The backups are in its output folder."));
+      break;
     case "remove":
       fields.append(folderField("Your library", "library", "The folder that holds your songs. The songs you name are moved out of it."));
       fields.append(patternsField());
@@ -689,12 +703,12 @@ function viewSetup() {
       render();
       window.scrollTo(0, 0);
     } }, "Next")
-    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: S.task === "restore" ? loadAside : S.task === "reports" ? () => openReports(organizeRequest()) : startAnalysis },
-      S.task === "check" ? "Check songs" : S.task === "restore" ? "Look" : S.task === "reports" ? "Show reports" : "Check first"),
+    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: S.task === "restore" ? loadAside : S.task === "reports" ? () => openReports(organizeRequest()) : S.task === "originals" ? () => openOriginals(organizeRequest()) : startAnalysis },
+      S.task === "check" ? "Check songs" : S.task === "restore" ? "Look" : S.task === "reports" ? "Show reports" : S.task === "originals" ? "Look" : "Check first"),
   h("span", { class: "muted small" }, S.task === "dedupe" ? "Next you choose what to tidy up."
     : S.task === "check" ? "Nothing in the library is changed. It can take a while for a big library."
     : S.task === "restore" ? "You choose what to put back on the next page."
-    : S.task === "reports" ? "Nothing is changed."
+    : S.task === "reports" || S.task === "originals" ? "Nothing is changed yet."
     : "Nothing is changed yet. You see what would happen and decide then."),
   ));
   if (advanced()) {
@@ -752,6 +766,63 @@ async function loadAside() {
   }
   render();
   window.scrollTo(0, 0);
+}
+
+const bytesText = (n) => {
+  const units = ["bytes", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1000 && i < units.length - 1) {
+    n /= 1000;
+    i++;
+  }
+  return `${i ? n.toFixed(n < 10 ? 1 : 0) : n} ${units[i]}`;
+};
+
+async function openOriginals(cfg) {
+  try {
+    S.originals = await post("/api/originals/list", { library: cfg.library, out: cfg.out ?? cfg.outDir });
+    rememberLibrary(S.originals.config.library);
+    S.view = "originals";
+    S.notice = null;
+  } catch (e) {
+    S.notice = { kind: "bad", title: e.message, details: e.details };
+  }
+  render();
+  window.scrollTo(0, 0);
+}
+
+function viewOriginals() {
+  const o = S.originals;
+  const frag = h("div");
+  add(frag, h("h1", null, o.files ? "Backups of the evened-out audio" : "No backups"));
+  add(frag, noticeBox(S.notice));
+  add(frag, h("p", { class: "muted" }, "In ", h("span", { class: "path" }, o.dir), "."));
+  if (o.files) {
+    add(frag, h("p", null, `${plural(o.files, "audio file", "audio files")} take ${bytesText(o.bytes)}. They are the files as they were before the volume was evened out.`));
+    add(frag, h("p", null, "Deleting them frees the space, but then there is no way back to the unprocessed audio. The songs in your library are not touched."));
+    if (advanced()) {
+      add(frag, h("h2", null, o.files > o.largest.length ? `The ${o.largest.length} largest` : "Files"),
+        h("ul", { class: "history" }, o.largest.map((f) => h("li", null, h("span", { class: "path" }, f.rel), h("span", { class: "num" }, bytesText(f.bytes))))));
+    }
+  } else {
+    add(frag, h("p", null, "Nothing is kept there: either the volume was never evened out for this library, or the backups are deleted already."));
+  }
+  add(frag, h("div", { class: "actions" },
+    o.files ? h("button", { class: "btn primary", type: "button", onclick: async () => {
+      const ok = await confirmDialog(`Delete ${plural(o.files, "backup file", "backup files")}?`, [
+        `${bytesText(o.bytes)} are freed. This cannot be undone.`,
+        "Only the copies in the output folder are deleted, nothing in your library.",
+      ], "Delete the backups");
+      if (ok) startJob("/api/originals/delete", { library: o.config.library, out: o.config.outDir });
+    } }, `Delete the backups (${bytesText(o.bytes)})`) : null,
+    h("button", { class: "btn", type: "button", onclick: () => openOriginals(o.config) }, "Look again"),
+    h("button", { class: "btn", type: "button", onclick: () => {
+      S.view = "setup";
+      S.notice = null;
+      render();
+      validate();
+    } }, "Back")));
+  return frag;
 }
 
 // openReports lists the reports of the output folder of cfg ({ library, out } or a result's
@@ -1050,6 +1121,11 @@ async function onJobEnd(j) {
           S.view = S.org ? "review" : "setup";
           S.notice = failed("Moving did not finish");
         }
+        break;
+      case "originals-delete":
+        S.done = { kind: "organize", originals: true, job: j, stopped: j.state === "cancelled", cfg: resultFolders(j) || S.originals?.config };
+        S.view = "done";
+        if (j.state === "failed") S.notice = failed("Not everything could be deleted");
         break;
       case "setaside-restore":
         S.done = { kind: "organize", restore: true, job: j, stopped: j.state === "cancelled", cfg: resultFolders(j) || S.aside?.config };
@@ -1668,6 +1744,12 @@ function viewDone() {
     add(frag, h("div", { class: "actions" },
       songsMoved && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Put back the set-aside songs") : null,
       reports, again));
+  } else if (d.originals) {
+    add(frag, h("h1", null, d.stopped ? "Stopped part-way" : st.failed ? "Not everything could be deleted" : "Done"));
+    add(frag, noticeBox(S.notice));
+    add(frag, h("p", null, `${plural(st.removed, "backup file", "backup files")} deleted${d.stopped ? " before you stopped" : ""}.`));
+    if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "file", "files")} could not be deleted`, text: advanced() ? "The log below says why." : "Switch to Advanced to see the log." }));
+    add(frag, h("div", { class: "actions" }, again));
   } else if (d.restore) {
     add(frag, h("h1", null, d.stopped ? "Stopped part-way" : j.state === "done" && !st.failed ? "Done" : "Not everything could be put back"));
     add(frag, noticeBox(S.notice));

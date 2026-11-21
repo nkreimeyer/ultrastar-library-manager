@@ -122,6 +122,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/job/events", s.handleJobEvents)
 	s.mux.HandleFunc("POST /api/job/cancel", s.handleJobCancel)
 	s.mux.HandleFunc("POST /api/organize/validate", s.handleOrganizeValidate)
+	s.mux.HandleFunc("POST /api/originals/list", s.handleOriginalsList)
+	s.mux.HandleFunc("POST /api/originals/delete", s.handleOriginalsDelete)
 	s.mux.HandleFunc("POST /api/reports/list", s.handleReportsList)
 	s.mux.HandleFunc("POST /api/reports/read", s.handleReportsRead)
 	s.mux.HandleFunc("POST /api/setaside/validate", s.handleSetAsideValidate)
