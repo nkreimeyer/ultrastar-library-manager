@@ -3,6 +3,7 @@ package repairtxt
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,7 +12,8 @@ import (
 )
 
 // A dot in the folder name is no extension: "Herbert feat. X - Männer" spells the title
-// (nameFill) and the lyrics (localLex) as well as "Herbert - Männer" does.
+// (nameFill) and the lyrics (localLex) as well as "Herbert - Männer" does. localLex alone
+// repairs the title here too; TestNameFillFolderNameWithDot checks the tag fill.
 func TestRunFolderNameWithDotIsEvidence(t *testing.T) {
 	base := t.TempDir()
 	lib := filepath.Join(base, "lib")
@@ -63,5 +65,28 @@ func TestNameFillWholeNameOnly(t *testing.T) {
 	txt := "#TITLE:X\n#ARTIST:Y\n#MP3:Caf" + R + ".mp3\n: 0 2 0 la\nE\n"
 	if _, got := planText(t, &planner{lex: corpus("")}, txt, "Café.mp3", "Cafè.mp3.bak"); !strings.Contains(got, "#MP3:Café.mp3\n") {
 		t.Errorf("#MP3 not repaired from the existing file:\n%s", got)
+	}
+}
+
+// The tag fill sees the folder name uncut, the file names without their extension (the
+// localLex half of TestRunFolderNameWithDotIsEvidence would repair the title on its own).
+func TestNameFillFolderNameWithDot(t *testing.T) {
+	in := songInput{folder: "Herbert feat. X - Männer", names: []string{"Männer.mp3", "x.y.jpg"}}
+	if got, want := in.nameTexts(false), []string{"Herbert feat. X - Männer", "Männer", "x.y"}; !slices.Equal(got, want) {
+		t.Errorf("nameTexts(false) = %q, want %q", got, want)
+	}
+	if got, want := in.nameTexts(true), []string{"Herbert feat. X - Männer", "Männer.mp3", "x.y.jpg"}; !slices.Equal(got, want) {
+		t.Errorf("nameTexts(true) = %q, want %q", got, want)
+	}
+	folderOnly := songInput{folder: "Herbert feat. X - Männer"}
+	if fill, ok := nameFill([]rune("M"+R+"nner"), folderOnly.nameTexts(false), false); !ok || string(fill) != "ä" {
+		t.Errorf("fill = %q, %v; want ä", string(fill), ok)
+	}
+
+	// Only the folder decides: the song's own "Mönner" ties the word-level evidence.
+	txt := songText("#TITLE:M"+R+"nner\n#ARTIST:A\n#MP3:a.mp3\n#BPM:300\n", "die Mönner", "la la")
+	fp := (&planner{lex: corpus("")}).plan(songInput{raw: []byte(txt), song: mustParse(txt), folder: "Dr. Alban - Männer"})
+	if got := string(fp.apply([]byte(txt))); !strings.Contains(got, "#TITLE:Männer\n") {
+		t.Errorf("#TITLE not repaired from the folder name:\n%s", got)
 	}
 }
