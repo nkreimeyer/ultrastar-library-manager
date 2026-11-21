@@ -121,8 +121,8 @@ func (c *collector) leftUnchanged() {
 // that is obvious (utils.TagsFromFolderName). Every fill is added to filled_tags.txt for
 // review (the report keeps the fills of earlier runs), and a tag that cannot be filled is
 // noted in missing_files.txt. Songs without a cover or background, or with several audio
-// files to choose #MP3 from, are listed in missing_files.txt. Folders are processed
-// concurrently, in batches.
+// (video) files to choose #MP3 (#VIDEO) from, are listed in missing_files.txt. Folders are
+// processed concurrently, in batches.
 func Run(cfg config.Config, ops *fsops.Ops) error {
 	folders, err := utils.GetAllSongFolders(ops, cfg.SongDir)
 	if err != nil {
@@ -420,11 +420,8 @@ func fixTxtLines(lines []string, rootDir string, files songFiles) ([]string, []s
 
 	info := getSongInfoFromTxtFile(lines)
 	nameLines, filled, notes := fillNameTags(lines, rootDir, &info)
-	audio := preferTaggedAudio(rootDir, lines, chooseAudio(rootDir, lines, files, info))
-	video := fileChoice{candidates: len(files.video)}
-	if len(files.video) > 0 {
-		video.name = files.video[0]
-	}
+	video := chooseVideo(rootDir, lines, files, info)
+	audio := preferTaggedAudio(rootDir, lines, chooseAudio(rootDir, lines, files, info, video))
 	// Images with the wrong shape for their tag are replaced; unreadable ones are re-detected.
 	forceUpdateCover, forceUpdateBackground, info := checkDimensionsOfImagesTagged(rootDir, info)
 	upd := tagUpdates{
@@ -443,12 +440,19 @@ func fixTxtLines(lines []string, rootDir string, files songFiles) ([]string, []s
 	}
 
 	updatedLines := make([]string, len(lines))
-	foundTagFlags, audioUnresolved := updateTagsInLines(rootDir, lines, updatedLines, files, audio, video, upd)
+	foundTagFlags, audioUnresolved, videoUnresolved := updateTagsInLines(rootDir, lines, updatedLines, files, audio, video, upd)
 
 	if (audioUnresolved || !isFlagSet(foundTagFlags, flagAudio)) && len(audio.ambiguous) > 0 {
 		log.Warnf("Several audio files in %s, cannot choose #MP3: %q", rootDir, audio.ambiguous)
 		notes = append(notes, fmt.Sprintf("Several audio files, cannot choose #MP3 in %s: %s",
 			rootDir, strings.Join(audio.ambiguous, ", ")))
+	}
+	// Without audio candidates the audio tag takes the video choice, so this note covers
+	// an #MP3 left out for the same reason.
+	if (videoUnresolved || !isFlagSet(foundTagFlags, flagVideo)) && len(video.ambiguous) > 0 {
+		log.Warnf("Several video files in %s, cannot choose #VIDEO: %q", rootDir, video.ambiguous)
+		notes = append(notes, fmt.Sprintf("Several video files, cannot choose #VIDEO in %s: %s",
+			rootDir, strings.Join(video.ambiguous, ", ")))
 	}
 
 	// Add the missing file tags, inserting them as line 2.
@@ -536,8 +540,9 @@ type fileChoice struct {
 // #VOCALS or #INSTRUMENTAL are not candidates. A single candidate is used. Of several, the
 // one named like the song txt, the folder or "<#ARTIST> - <#TITLE>" is used; otherwise
 // there is no choice and the candidates are returned as ambiguous. Without any candidate
-// the first video is used: it carries the audio, and UltraStar needs an audio tag.
-func chooseAudio(rootDir string, lines []string, files songFiles, info SongInfo) fileChoice {
+// the video choice is used (none if it is ambiguous): the video carries the audio, and
+// UltraStar needs an audio tag.
+func chooseAudio(rootDir string, lines []string, files songFiles, info SongInfo, video fileChoice) fileChoice {
 	stems := map[string]bool{}
 	for _, tag := range []string{"#VOCALS", "#INSTRUMENTAL"} {
 		if onDisk, _, found := utils.ResolveFileName(rootDir, getTagValue(lines, tag)); found {
@@ -554,15 +559,49 @@ func chooseAudio(rootDir string, lines []string, files songFiles, info SongInfo)
 	choice := fileChoice{candidates: len(candidates)}
 	switch len(candidates) {
 	case 0:
-		if len(files.video) > 0 {
-			choice.name = files.video[0]
-		}
+		choice.name = video.name
 		return choice
 	case 1:
 		choice.name = candidates[0]
 		return choice
 	}
+	if choice.name = preferredFile(rootDir, candidates, files, info); choice.name == "" {
+		choice.ambiguous = candidates
+	}
+	return choice
+}
 
+// chooseVideo picks the file for a missing or wrong #VIDEO tag (and the audio tag of a
+// song without audio files, see chooseAudio). A single video is used. Of several, the one
+// an existing #VIDEO, #MP3 or #AUDIO line names (in this order) is used, then the one
+// named like the song txt, the folder or "<#ARTIST> - <#TITLE>"; otherwise there is no
+// choice and the videos are returned as ambiguous (the first by name would be a guess:
+// "Song (lyrics).mp4" before "Song.mp4").
+func chooseVideo(rootDir string, lines []string, files songFiles, info SongInfo) fileChoice {
+	choice := fileChoice{candidates: len(files.video)}
+	switch len(files.video) {
+	case 0:
+		return choice
+	case 1:
+		choice.name = files.video[0]
+		return choice
+	}
+	for _, tag := range []string{"#VIDEO", "#MP3", "#AUDIO"} {
+		if onDisk, _, found := utils.ResolveFileName(rootDir, getTagValue(lines, tag)); found && slices.Contains(files.video, onDisk) {
+			choice.name = onDisk
+			return choice
+		}
+	}
+	if choice.name = preferredFile(rootDir, files.video, files, info); choice.name == "" {
+		choice.ambiguous = files.video
+	}
+	return choice
+}
+
+// preferredFile returns the only one of candidates named (without extension) like the
+// song txt, else the only one named like the folder, else the only one named
+// "<#ARTIST> - <#TITLE>", and "" if no preference picks exactly one.
+func preferredFile(rootDir string, candidates []string, files songFiles, info SongInfo) string {
 	preferred := []string{stem(files.txtName), filepath.Base(rootDir)}
 	if info.Artist != "" && info.Title != "" {
 		preferred = append(preferred, info.Artist+" - "+info.Title)
@@ -575,12 +614,10 @@ func chooseAudio(rootDir string, lines []string, files songFiles, info SongInfo)
 			}
 		}
 		if len(matches) == 1 {
-			choice.name = matches[0]
-			return choice
+			return matches[0]
 		}
 	}
-	choice.ambiguous = candidates
-	return choice
+	return ""
 }
 
 // preferTaggedAudio resolves an ambiguous audio choice with the txt itself: if an #MP3 or
@@ -642,11 +679,11 @@ func resolveFileTag(rootDir, value string, choice fileChoice, isKind func(string
 
 // updateTagsInLines copies lines to updatedLines (which must have the same length),
 // rewriting the file tags that need it. Lines that are not rewritten are copied unchanged.
-// It returns the flags of the file tags that were found, and whether the audio tag needs a
-// new value that audio does not provide.
-func updateTagsInLines(rootDir string, lines, updatedLines []string, files songFiles, audio, video fileChoice, upd tagUpdates) (int, bool) {
+// It returns the flags of the file tags that were found, and whether the audio (video) tag
+// needs a new value that audio (video) does not provide.
+func updateTagsInLines(rootDir string, lines, updatedLines []string, files songFiles, audio, video fileChoice, upd tagUpdates) (int, bool, bool) {
 	var found int
-	audioUnresolved := false
+	audioUnresolved, videoUnresolved := false, false
 	rewrite := func(i int, tag, value string) {
 		updatedLines[i] = tag + ":" + value + "\n"
 		log.Debugf("Updated %s in %s to %s", tag, rootDir, value)
@@ -664,9 +701,11 @@ func updateTagsInLines(rootDir string, lines, updatedLines []string, files songF
 			audioUnresolved = audioUnresolved || unresolved
 		case hasTag(line, "#VIDEO"):
 			found = setFlag(found, flagVideo)
-			if v, ok, _ := resolveFileTag(rootDir, tagValue(line), video, utils.IsVideoFile); ok {
+			v, ok, unresolved := resolveFileTag(rootDir, tagValue(line), video, utils.IsVideoFile)
+			if ok {
 				rewrite(i, "#VIDEO", v)
 			}
+			videoUnresolved = videoUnresolved || unresolved
 		case hasTag(line, "#VOCALS"), hasTag(line, "#INSTRUMENTAL"):
 			// Stems are never chosen or inserted, only spelled exactly like the file on disk.
 			tag, value := splitTag(line)
@@ -685,7 +724,7 @@ func updateTagsInLines(rootDir string, lines, updatedLines []string, files songF
 			}
 		}
 	}
-	return found, audioUnresolved
+	return found, audioUnresolved, videoUnresolved
 }
 
 // parseTagLine splits a header line the way players and the songtxt parser read it:

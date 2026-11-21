@@ -353,11 +353,49 @@ func TestRunStemsOnlyNoVideo(t *testing.T) {
 	}
 }
 
-// Of several videos the first by name is used, for #VIDEO and for the #MP3 of a video-only song.
-func TestRunChoosesFirstVideo(t *testing.T) {
-	got, _, _ := fixSong(t, "Song", "song.txt", map[string]string{"b.mp4": "v", "a.mp4": "v"}, nil)
-	if !strings.Contains(got, "#MP3:a.mp4\n#VIDEO:a.mp4\n") {
-		t.Errorf("want a.mp4 for #MP3 and #VIDEO:\n%s", got)
+// Regression: of several videos the first by name was used for a missing or stale #VIDEO,
+// without a report, so "Song (lyrics).mp4" won over "Song.mp4" and cleanup then moved
+// Song.mp4 away. The video is chosen like the audio (txt, folder, "Artist - Title" name);
+// without a preferred one nothing is inserted (also no #MP3 of a video-only song) and the
+// folder is listed in missing_files.txt.
+func TestRunChoosesVideoLikeAudio(t *testing.T) {
+	videos := map[string]string{"Song (lyrics).mp4": "v", "Song.mp4": "v", "song.mp3": "a"}
+	got, report, _ := fixSong(t, "X", "Song.txt", videos, nil)
+	if !strings.Contains(got, "#VIDEO:Song.mp4\n") || strings.Contains(report, "#VIDEO") {
+		t.Errorf("want #VIDEO:Song.mp4 (named like the txt):\n%s\nreport:\n%s", got, report)
+	}
+	got, _, _ = fixSong(t, "X", "x.txt", map[string]string{"Artist - Song (lyrics).mp4": "v", "Artist - Song.mp4": "v"},
+		[]string{"#VIDEO:gone.mp4"})
+	if !strings.Contains(got, "#VIDEO:Artist - Song.mp4\n") {
+		t.Errorf("stale #VIDEO not replaced by the artist - title video:\n%s", got)
+	}
+
+	got, report, _ = fixSong(t, "X", "x.txt", map[string]string{"b.mp4": "v", "a.mp4": "v"}, nil)
+	if strings.Contains(got, "#VIDEO:") || strings.Contains(got, "#MP3:") ||
+		!strings.Contains(report, "Several video files, cannot choose #VIDEO in ") || !strings.Contains(report, "a.mp4, b.mp4") {
+		t.Errorf("ambiguous videos: want no tag and a report:\n%s\nreport:\n%s", got, report)
+	}
+	got, report, _ = fixSong(t, "X", "x.txt", map[string]string{"b.mp4": "v", "a.mp4": "v"}, []string{"#VIDEO:gone.mp4"})
+	if !strings.Contains(got, "#VIDEO:gone.mp4\n") || !strings.Contains(report, "cannot choose #VIDEO") {
+		t.Errorf("ambiguous stale #VIDEO: want it kept and reported:\n%s\nreport:\n%s", got, report)
+	}
+	// An existing #VIDEO decides the #MP3 of a video-only song, and an #MP3 naming a video
+	// decides #VIDEO; neither is reported.
+	got, report, _ = fixSong(t, "X", "x.txt", map[string]string{"b.mp4": "v", "a.mp4": "v"}, []string{"#VIDEO:b.mp4"})
+	if !strings.Contains(got, "#MP3:b.mp4\n") || strings.Contains(report, "#VIDEO") {
+		t.Errorf("#MP3 should follow #VIDEO:\n%s\nreport:\n%s", got, report)
+	}
+	got, report, _ = fixSong(t, "X", "x.txt", map[string]string{"b.mp4": "v", "a.mp4": "v"}, []string{"#MP3:b.mp4"})
+	if !strings.Contains(got, "#VIDEO:b.mp4\n") || strings.Contains(report, "#VIDEO") {
+		t.Errorf("#VIDEO should follow #MP3:\n%s\nreport:\n%s", got, report)
+	}
+}
+
+// A single video is used for #VIDEO and for the #MP3 of a video-only song.
+func TestRunChoosesOnlyVideo(t *testing.T) {
+	got, _, _ := fixSong(t, "Song", "song.txt", map[string]string{"b.mp4": "v"}, nil)
+	if !strings.Contains(got, "#MP3:b.mp4\n#VIDEO:b.mp4\n") {
+		t.Errorf("want b.mp4 for #MP3 and #VIDEO:\n%s", got)
 	}
 }
 
