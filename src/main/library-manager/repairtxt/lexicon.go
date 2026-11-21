@@ -30,8 +30,6 @@ var allowedRune = func() map[rune]bool {
 	return m
 }()
 
-const utf8RuneError = '\uFFFD'
-
 // punctRunes are the punctuation characters a lost byte may stand for. Other signs of
 // the codepages ("³", "¿" in "Za¿ó³æ") mostly come from mis-decoded text in the corpus.
 var punctRunes = func() map[rune]bool {
