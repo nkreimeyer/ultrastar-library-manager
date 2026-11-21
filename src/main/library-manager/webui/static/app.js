@@ -920,6 +920,21 @@ function viewRunning() {
   return box;
 }
 
+// etaText estimates the time left in the current phase from its pace so far ("" while it
+// is too early to say). The clock restarts with every phase and job.
+function etaText(j) {
+  const now = Date.now();
+  if (!S.eta || S.eta.job !== j.id || S.eta.phase !== j.phase || j.done < S.eta.done) S.eta = { job: j.id, phase: j.phase, t0: now, done: j.done, d0: j.done };
+  S.eta.done = j.done;
+  const doneHere = j.done - S.eta.d0;
+  const secs = (now - S.eta.t0) / 1000;
+  if (!(j.total > 0) || doneHere < 3 || secs < 5 || j.done >= j.total) return "";
+  const left = (secs / doneHere) * (j.total - j.done);
+  if (left < 45) return "less than a minute left";
+  if (left < 3600) return `about ${Math.round(left / 60)} min left`;
+  return `about ${Math.floor(left / 3600)} h ${Math.round((left % 3600) / 60)} min left`;
+}
+
 function updateRunning() {
   const j = S.job;
   const lyric = document.getElementById("lyric");
@@ -939,6 +954,8 @@ function updateRunning() {
   if (!j.dryRun && j.stats?.written) parts.push(`${plural(j.stats.written, "file", "files")} written`);
   if (!j.dryRun && j.stats?.replaced) parts.push(`${plural(j.stats.replaced, "file", "files")} converted`);
   if (j.stats?.failed) parts.push(`${plural(j.stats.failed, "problem", "problems")}`);
+  const eta = etaText(j);
+  if (eta) parts.push(eta);
   document.getElementById("counter").textContent = parts.join(", ");
 }
 
