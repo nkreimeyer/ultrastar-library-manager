@@ -3,10 +3,8 @@ package check
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"math"
 	"math/rand"
 	"os"
@@ -20,20 +18,8 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
-
-func writeFiles(t *testing.T, root string, files map[string]string) {
-	t.Helper()
-	for rel, content := range files {
-		p := filepath.Join(root, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
 
 func newConfig(t *testing.T, lib string, dry bool) config.Config {
 	t.Helper()
@@ -87,34 +73,6 @@ func findSong(t *testing.T, r report, path string) songReport {
 	return songReport{}
 }
 
-func snapshot(t *testing.T, root string) string {
-	t.Helper()
-	var sb strings.Builder
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(&sb, "%s %v %v", path, info.Mode(), info.ModTime().UnixNano())
-		if d.Type().IsRegular() {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(&sb, " %x", sha256.Sum256(data))
-		}
-		sb.WriteString("\n")
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return sb.String()
-}
-
 // withoutFFmpeg hides ffmpeg and ffprobe, so only the txt and file checks run.
 func withoutFFmpeg(t *testing.T) { t.Setenv("PATH", t.TempDir()) }
 
@@ -130,7 +88,7 @@ const heicHeader = "\x00\x00\x00\x18ftypheic\x00\x00\x00\x00\x00\x00\x00\x00"
 func txtLibrary(t *testing.T) string {
 	lib := filepath.Join(t.TempDir(), "songs")
 	latin := song("M\xe4dchen.mp3", 10)
-	writeFiles(t, lib, map[string]string{
+	testutil.WriteFiles(t, lib, map[string]string{
 		// CRLF and old-Mac CR line endings: the raw CP1252 name must still be found.
 		"Cat/LatinCRLF/song.txt":       strings.ReplaceAll(latin, "\n", "\r\n"),
 		"Cat/LatinCRLF/M\xe4dchen.mp3": "x",
@@ -148,7 +106,7 @@ func txtLibrary(t *testing.T) string {
 		"Cat/CP1250/song.txt":  "#TITLE:Za\xbf\xf3\xb3\xe6\n#ARTIST:A\n#MP3:\xf8\xedk\xe1m.mp3\n#BPM:300\n" + notes(10),
 		"Cat/CP1250/říkám.mp3": "x",
 	})
-	writeFiles(t, lib, map[string]string{
+	testutil.WriteFiles(t, lib, map[string]string{
 		"Good/song.txt":            song("song.mp3", 10),
 		"Good/song.mp3":            "x",
 		"Cat/Broken/song.txt":      song("missing.mp3", 10),
@@ -171,7 +129,7 @@ func txtLibrary(t *testing.T) string {
 func TestRunWithoutFFprobe(t *testing.T) {
 	withoutFFmpeg(t)
 	lib := txtLibrary(t)
-	before := snapshot(t, lib)
+	before := testutil.Snapshot(t, lib)
 	cfg := newConfig(t, lib, false)
 	ops, r := run(t, cfg, Options{Deep: true})
 
@@ -203,7 +161,7 @@ func TestRunWithoutFFprobe(t *testing.T) {
 	if st := ops.Stats(); st != (fsops.Stats{}) {
 		t.Errorf("stats = %+v, want nothing done and nothing failed", st)
 	}
-	if after := snapshot(t, lib); after != before {
+	if after := testutil.Snapshot(t, lib); after != before {
 		t.Errorf("check modified the library")
 	}
 	if _, err := os.Stat(cfg.InvalidDir()); !os.IsNotExist(err) {
@@ -226,10 +184,10 @@ func TestRunMoveBroken(t *testing.T) {
 	lib := txtLibrary(t)
 
 	// Dry run: planned, library and out dir untouched apart from the reports.
-	before := snapshot(t, lib)
+	before := testutil.Snapshot(t, lib)
 	dry := newConfig(t, lib, true)
 	ops, r := run(t, dry, Options{MoveBroken: true})
-	if after := snapshot(t, lib); after != before {
+	if after := testutil.Snapshot(t, lib); after != before {
 		t.Errorf("dry-run modified the library")
 	}
 	if _, err := os.Stat(dry.InvalidDir()); !os.IsNotExist(err) {
@@ -292,7 +250,7 @@ func TestRunConcurrentDeterministic(t *testing.T) {
 			files[dir+"/song.mp3"] = "x"
 		}
 	}
-	writeFiles(t, lib, files)
+	testutil.WriteFiles(t, lib, files)
 	cfg := newConfig(t, lib, false)
 	_, r := run(t, cfg, Options{})
 	first := [2][]byte{}
@@ -320,30 +278,8 @@ func TestRunConcurrentDeterministic(t *testing.T) {
 
 // --- ffmpeg tests -------------------------------------------------------------------
 
-func requireFFmpeg(t *testing.T) {
-	t.Helper()
-	for _, tool := range []string{"ffmpeg", "ffprobe"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s not found", tool)
-		}
-	}
-}
-
-// lavfi runs ffmpeg to generate a test file.
-func lavfi(t *testing.T, out string, args ...string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command("ffmpeg", append(append([]string{"-v", "error", "-y"}, args...), out)...)
-	if b, err := cmd.CombinedOutput(); err != nil {
-		// Typically an ffmpeg build without libx264 or libmp3lame.
-		t.Skipf("cannot generate test media with ffmpeg %v: %v\n%s", args, err, b)
-	}
-}
-
 func sine(t *testing.T, out string, sec float64) {
-	lavfi(t, out, "-f", "lavfi", "-i", fmt.Sprintf("sine=d=%g", sec))
+	testutil.GenerateMediaAt(t, out, "-f", "lavfi", "-i", fmt.Sprintf("sine=d=%g", sec))
 }
 
 func testVideo(t *testing.T, out string, sec float64, withAudio bool) {
@@ -351,16 +287,16 @@ func testVideo(t *testing.T, out string, sec float64, withAudio bool) {
 	if withAudio {
 		args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("sine=d=%g", sec), "-c:a", "aac")
 	}
-	lavfi(t, out, append(args, "-c:v", "libx264", "-pix_fmt", "yuv420p")...)
+	testutil.GenerateMediaAt(t, out, append(args, "-c:v", "libx264", "-pix_fmt", "yuv420p")...)
 }
 
 // A Matroska video whose BPS tag carries a language: check reads the bitrate fixvideos
 // decides on (both use mediatools.VideoBitrate), so organize's comparison with
 // fixvideos.BitrateThreshold matches what fixvideos will do with the video.
 func TestProbeMediaVideoBitrateFromLanguageBPSTag(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	mkv := filepath.Join(t.TempDir(), "v.mkv")
-	lavfi(t, mkv, "-f", "lavfi", "-i", "testsrc=d=1:s=64x64:r=10", "-f", "lavfi", "-i", "sine=d=1",
+	testutil.GenerateMediaAt(t, mkv, "-f", "lavfi", "-i", "testsrc=d=1:s=64x64:r=10", "-f", "lavfi", "-i", "sine=d=1",
 		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "libvorbis", "-metadata:s:v:0", "BPS-ger=4500000")
 	info, err := probeMedia(context.Background(), mkv)
 	if err != nil || info.VideoBitrate != 4500000 || !info.HasAudio {
@@ -375,10 +311,10 @@ func garbage(n int) string {
 }
 
 func TestRunMedia(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	lib := filepath.Join(t.TempDir(), "songs")
 	// 10 notes end at 1.9 s.
-	writeFiles(t, lib, map[string]string{
+	testutil.WriteFiles(t, lib, map[string]string{
 		"Healthy/song.txt":      "#VIDEO:v.mp4\n#COVER:c.jpg\n" + song("a.mp3", 10),
 		"Past/song.txt":         song("a.ogg", 10),
 		"Garbage/song.txt":      song("a.mp3", 10),
@@ -389,7 +325,7 @@ func TestRunMedia(t *testing.T) {
 	})
 	sine(t, filepath.Join(lib, "Healthy", "a.mp3"), 3)
 	testVideo(t, filepath.Join(lib, "Healthy", "v.mp4"), 3, false)
-	lavfi(t, filepath.Join(lib, "Healthy", "c.jpg"), "-f", "lavfi", "-i", "color=c=red:s=32x32", "-frames:v", "1")
+	testutil.GenerateMediaAt(t, filepath.Join(lib, "Healthy", "c.jpg"), "-f", "lavfi", "-i", "color=c=red:s=32x32", "-frames:v", "1")
 	sine(t, filepath.Join(lib, "Past", "a.ogg"), 0.5)
 	testVideo(t, filepath.Join(lib, "VideoOnly", "v.mp4"), 3, true)
 	testVideo(t, filepath.Join(lib, "VideoNoAudio", "v.mp4"), 3, false)
@@ -397,7 +333,7 @@ func TestRunMedia(t *testing.T) {
 	testVideo(t, filepath.Join(lib, "ShortVideo", "v.mp4"), 2, false)
 
 	cfg := newConfig(t, lib, false)
-	before := snapshot(t, lib)
+	before := testutil.Snapshot(t, lib)
 	ops, r := run(t, cfg, Options{})
 	want := map[string][]string{
 		"Past":         {"error:notes-past-audio"},
@@ -434,7 +370,7 @@ func TestRunMedia(t *testing.T) {
 	if ops.Stats().Moved != 3 {
 		t.Errorf("planned moves = %d, want 3", ops.Stats().Moved)
 	}
-	if after := snapshot(t, lib); after != before {
+	if after := testutil.Snapshot(t, lib); after != before {
 		t.Errorf("library modified")
 	}
 	if _, err := os.Stat(dry.InvalidDir()); !os.IsNotExist(err) {
@@ -443,9 +379,9 @@ func TestRunMedia(t *testing.T) {
 }
 
 func TestRunDeep(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	lib := filepath.Join(t.TempDir(), "songs")
-	writeFiles(t, lib, map[string]string{"Song/song.txt": song("a.flac", 10)})
+	testutil.WriteFiles(t, lib, map[string]string{"Song/song.txt": song("a.flac", 10)})
 	full := filepath.Join(t.TempDir(), "full.flac")
 	sine(t, full, 5)
 	data, err := os.ReadFile(full)
@@ -453,7 +389,7 @@ func TestRunDeep(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A truncated flac: the header still claims 5 s, decoding fails in the middle.
-	writeFiles(t, lib, map[string]string{"Song/a.flac": string(data[:len(data)/2])})
+	testutil.WriteFiles(t, lib, map[string]string{"Song/a.flac": string(data[:len(data)/2])})
 
 	cfg := newConfig(t, lib, false)
 	if _, r := run(t, cfg, Options{}); len(r.Songs) != 0 || r.Deep {
@@ -468,31 +404,17 @@ func TestRunDeep(t *testing.T) {
 	}
 }
 
-// chmodUnreadable removes all permissions from path and skips the test if the file can
-// still be read (running as root).
-func chmodUnreadable(t *testing.T, path string) {
-	t.Helper()
-	if err := os.Chmod(path, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(path, 0o644) })
-	if f, err := os.Open(path); err == nil {
-		f.Close()
-		t.Skip("permissions are not enforced (running as root?)")
-	}
-}
-
 // A referenced file without read permission is an operation failure of the run, not a
 // broken song: no finding, not moved, and counted once.
 func TestRunUnreadableFile(t *testing.T) {
 	withoutFFmpeg(t)
 	lib := filepath.Join(t.TempDir(), "songs")
-	writeFiles(t, lib, map[string]string{
+	testutil.WriteFiles(t, lib, map[string]string{
 		"Song/song.txt": "#COVER:c.png\n" + song("a.mp3", 10),
 		"Song/a.mp3":    "x",
 		"Song/c.png":    "\x89PNG\r\n\x1a\n not a real png",
 	})
-	chmodUnreadable(t, filepath.Join(lib, "Song", "c.png"))
+	testutil.ChmodUnreadable(t, filepath.Join(lib, "Song", "c.png"))
 	ops, r := run(t, newConfig(t, lib, false), Options{MoveBroken: true})
 	if len(r.Songs) != 0 || r.Checked != 1 {
 		t.Errorf("report = %+v, want no findings", r)
@@ -503,11 +425,11 @@ func TestRunUnreadableFile(t *testing.T) {
 }
 
 func TestRunUnreadableMedia(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	lib := filepath.Join(t.TempDir(), "songs")
-	writeFiles(t, lib, map[string]string{"Song/song.txt": song("a.mp3", 10)})
+	testutil.WriteFiles(t, lib, map[string]string{"Song/song.txt": song("a.mp3", 10)})
 	sine(t, filepath.Join(lib, "Song", "a.mp3"), 3)
-	chmodUnreadable(t, filepath.Join(lib, "Song", "a.mp3"))
+	testutil.ChmodUnreadable(t, filepath.Join(lib, "Song", "a.mp3"))
 	ops, r := run(t, newConfig(t, lib, false), Options{MoveBroken: true, Deep: true})
 	if len(r.Songs) != 0 {
 		t.Errorf("findings = %+v, want none", r.Songs)
@@ -523,16 +445,16 @@ func TestRunUnreadableMedia(t *testing.T) {
 // A VBR mp3 without Xing header that starts loud: ffprobe estimates its 60 s as about
 // half of that. The real length is measured, so notes up to 50 s are fine.
 func TestRunEstimatedDuration(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	lib := filepath.Join(t.TempDir(), "songs")
 	mp3 := filepath.Join(lib, "Song", "a.mp3")
-	lavfi(t, mp3, "-f", "lavfi", "-i", "anoisesrc=d=20:a=0.5", "-f", "lavfi", "-i", "anullsrc=d=40",
+	testutil.GenerateMediaAt(t, mp3, "-f", "lavfi", "-i", "anoisesrc=d=20:a=0.5", "-f", "lavfi", "-i", "anullsrc=d=40",
 		"-filter_complex", "[0][1]concat=n=2:v=0:a=1", "-c:a", "libmp3lame", "-q:a", "2", "-write_xing", "0")
 	if out, _ := exec.Command("ffprobe", "-v", "warning", "-i", mp3).CombinedOutput(); !strings.Contains(string(out), estimatedMsg) {
 		t.Skipf("this ffprobe does not estimate the duration: %s", out)
 	}
 	// BPM 300: beat 990 + 10 ends at 50 s.
-	writeFiles(t, lib, map[string]string{"Song/song.txt": "#TITLE:T\n#ARTIST:A\n#MP3:a.mp3\n#BPM:300\n" + padNoEnd(0) + ": 990 10 0 x\nE\n"})
+	testutil.WriteFiles(t, lib, map[string]string{"Song/song.txt": "#TITLE:T\n#ARTIST:A\n#MP3:a.mp3\n#BPM:300\n" + padNoEnd(0) + ": 990 10 0 x\nE\n"})
 	info, err := probeMedia(context.Background(), mp3)
 	if err != nil || info.DurationEstimated || math.Abs(info.DurationSec-60) > 0.5 {
 		t.Errorf("probeMedia = %+v, %v, want a measured 60 s", info, err)
@@ -601,7 +523,7 @@ func TestRunMissingNameTagsHint(t *testing.T) {
 	lib := filepath.Join(t.TempDir(), "songs")
 	pool := filepath.Join(t.TempDir(), "pool")
 	noArtist := "#TITLE:Hypa Hypa\n#MP3:song.mp3\n#BPM:300\n" + notes(10)
-	writeFiles(t, lib, map[string]string{
+	testutil.WriteFiles(t, lib, map[string]string{
 		"Electric Callboy - Hypa Hypa/song.txt":  noArtist,
 		"Electric Callboy - Hypa Hypa/song.mp3":  "x",
 		"Hypa Hypa - Electric Callboy/song.txt":  noArtist,
@@ -613,7 +535,7 @@ func TestRunMissingNameTagsHint(t *testing.T) {
 		"Latin1 Name - Hypa Hypa/M\xe4dchen.jpg": "x",
 		"Linked Txt - Hypa Hypa/song.mp3":        "x",
 	})
-	writeFiles(t, pool, map[string]string{"song.txt": noArtist})
+	testutil.WriteFiles(t, pool, map[string]string{"song.txt": noArtist})
 	if err := os.Symlink(filepath.Join(pool, "song.txt"), filepath.Join(lib, "Linked Txt - Hypa Hypa", "song.txt")); err != nil {
 		t.Skipf("symlinks not supported: %v", err)
 	}
@@ -621,7 +543,7 @@ func TestRunMissingNameTagsHint(t *testing.T) {
 	wantMsg := "#ARTIST is missing or empty; fixtxt fills it from the folder name: Electric Callboy"
 	for _, dry := range []bool{true, false} {
 		t.Run(fmt.Sprintf("dry=%v", dry), func(t *testing.T) {
-			before := snapshot(t, lib)
+			before := testutil.Snapshot(t, lib)
 			_, r := run(t, newConfig(t, lib, dry), Options{MoveBroken: dry})
 			s := findSong(t, r, fillable)
 			if len(s.Findings) != 1 || s.Findings[0].Severity != SevError || s.Findings[0].Message != wantMsg {
@@ -645,7 +567,7 @@ func TestRunMissingNameTagsHint(t *testing.T) {
 				}
 			}
 			if dry {
-				if after := snapshot(t, lib); after != before {
+				if after := testutil.Snapshot(t, lib); after != before {
 					t.Error("dry run modified the library")
 				}
 			}
@@ -662,7 +584,7 @@ func TestRunDryRunReadsPlannedTxt(t *testing.T) {
 	withoutFFmpeg(t)
 	lib := filepath.Join(t.TempDir(), "songs")
 	dir := filepath.Join(lib, "Electric Callboy - Hypa Hypa")
-	writeFiles(t, lib, map[string]string{
+	testutil.WriteFiles(t, lib, map[string]string{
 		"Electric Callboy - Hypa Hypa/song.txt": "#TITLE:Hypa Hypa\n#MP3:old.mp3\n#BPM:300\n" + notes(10),
 		"Electric Callboy - Hypa Hypa/song.mp3": "x",
 		"Electric Callboy - Hypa Hypa/copy.txt": "#TITLE:Hypa Hypa\n#BPM:300\n",
@@ -677,7 +599,7 @@ func TestRunDryRunReadsPlannedTxt(t *testing.T) {
 	for _, planned := range []bool{true, false} {
 		t.Run(fmt.Sprintf("planned=%v", planned), func(t *testing.T) {
 			cfg := newConfig(t, lib, true)
-			before := snapshot(t, lib)
+			before := testutil.Snapshot(t, lib)
 			ops := fsops.New(true)
 			if planned {
 				if _, err := ops.MoveInto(filepath.Join(dir, "copy.txt"), cfg.ExtraFilesDir(), "copy.txt"); err != nil {
@@ -709,7 +631,7 @@ func TestRunDryRunReadsPlannedTxt(t *testing.T) {
 					t.Errorf("without the plan: %+v, want broken copy.txt, moved", s)
 				}
 			}
-			if after := snapshot(t, lib); after != before {
+			if after := testutil.Snapshot(t, lib); after != before {
 				t.Error("dry run modified the library")
 			}
 		})

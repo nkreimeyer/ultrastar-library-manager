@@ -13,20 +13,18 @@ import (
 	"unicode/utf8"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // fakeTools makes PATH a fresh folder holding only the given shell scripts (name ->
 // body after the shebang). It returns the folder.
 func fakeTools(t *testing.T, scripts map[string]string) string {
 	t.Helper()
-	dir := t.TempDir()
+	full := map[string]string{}
 	for name, body := range scripts {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		full[name] = "#!/bin/sh\n" + body
 	}
-	t.Setenv("PATH", dir)
-	return dir
+	return testutil.FakeTools(t, full)
 }
 
 // brokenTool is an executable that cannot be started (its interpreter does not exist):
@@ -148,7 +146,7 @@ func TestDecodeCheckFakeTools(t *testing.T) {
 }
 
 func TestDecodeCheckGarbage(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	path := filepath.Join(t.TempDir(), "x.mp3")
 	if err := os.WriteFile(path, []byte(garbage(4000)), 0o644); err != nil {
 		t.Fatal(err)
@@ -299,7 +297,7 @@ func TestNewInspectorOldTools(t *testing.T) {
 func TestRunReferenceNotAFile(t *testing.T) {
 	withoutFFmpeg(t)
 	lib := filepath.Join(t.TempDir(), "songs")
-	writeFiles(t, lib, map[string]string{
+	testutil.WriteFiles(t, lib, map[string]string{
 		"Folder/song.txt":         song("song.mp3", 10),
 		"Folder/song.mp3/inner.x": "x",
 		"Dangling/song.txt":       song("song.mp3", 10),
@@ -323,7 +321,7 @@ func TestRunReferenceNotAFile(t *testing.T) {
 func TestRunToolCannotStart(t *testing.T) {
 	newLib := func(t *testing.T) string {
 		lib := filepath.Join(t.TempDir(), "songs")
-		writeFiles(t, lib, map[string]string{"Song/song.txt": song("a.mp3", 10), "Song/a.mp3": "x"})
+		testutil.WriteFiles(t, lib, map[string]string{"Song/song.txt": song("a.mp3", 10), "Song/a.mp3": "x"})
 		return lib
 	}
 	t.Run("ffprobe", func(t *testing.T) {
@@ -360,7 +358,7 @@ func TestObserveFilesProbeOnce(t *testing.T) {
 	fakeTools(t, map[string]string{"ffprobe": "[ \"$1\" = -version ] || echo call >> '" + logFile + "'\n" +
 		printJSON(`{"streams":[{"codec_type":"video","width":64,"height":48},{"codec_type":"audio"}],"format":{"duration":"2.0"}}`, "")})
 	lib := filepath.Join(t.TempDir(), "songs")
-	writeFiles(t, lib, map[string]string{
+	testutil.WriteFiles(t, lib, map[string]string{
 		"Song/song.txt": "#VIDEO:x.png\n#COVER:x.png\n" + song("x.png", 10),
 		"Song/x.png":    "\x89PNG\r\n\x1a\n not a real png",
 	})
@@ -389,7 +387,7 @@ func TestObserveFilesProbeOnce(t *testing.T) {
 func TestRunMoveBrokenFails(t *testing.T) {
 	withoutFFmpeg(t)
 	lib := filepath.Join(t.TempDir(), "songs")
-	writeFiles(t, lib, map[string]string{"Broken/song.txt": song("missing.mp3", 10)})
+	testutil.WriteFiles(t, lib, map[string]string{"Broken/song.txt": song("missing.mp3", 10)})
 	cfg := newConfig(t, lib, false)
 	if err := os.WriteFile(cfg.InvalidDir(), []byte("in the way"), 0o644); err != nil {
 		t.Fatal(err)
@@ -550,7 +548,7 @@ func TestAnalyzeDuetSmallerMessageLater(t *testing.T) {
 func TestInspectSymlinkedTxt(t *testing.T) {
 	withoutFFmpeg(t)
 	lib := filepath.Join(t.TempDir(), "songs")
-	writeFiles(t, lib, map[string]string{"Song/real.data": song("a.mp3", 10), "Song/a.mp3": "x"})
+	testutil.WriteFiles(t, lib, map[string]string{"Song/real.data": song("a.mp3", 10), "Song/a.mp3": "x"})
 	if err := os.Symlink("real.data", filepath.Join(lib, "Song", "song.txt")); err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +572,7 @@ func TestInspectStoppedByContext(t *testing.T) {
 		"ffmpeg":  isVersion + "PATH=/usr/bin:/bin\ntouch " + marker + "\nsleep 10\n",
 	})
 	lib := t.TempDir()
-	writeFiles(t, lib, map[string]string{"S/song.txt": song("song.mp3", 10), "S/song.mp3": "x"})
+	testutil.WriteFiles(t, lib, map[string]string{"S/song.txt": song("song.mp3", 10), "S/song.mp3": "x"})
 	stopped := func(f []Finding) bool {
 		for _, c := range codes(f) {
 			if strings.HasSuffix(c, ":"+codeUnreadableMedia) || strings.HasSuffix(c, ":"+codeDecodeError) {

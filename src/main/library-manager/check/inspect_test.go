@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 func TestParseProbeBitrateAndSize(t *testing.T) {
@@ -171,7 +172,7 @@ func TestSongWarnings(t *testing.T) {
 func TestInspect(t *testing.T) {
 	withoutFFmpeg(t)
 	lib := t.TempDir()
-	writeFiles(t, lib, map[string]string{
+	testutil.WriteFiles(t, lib, map[string]string{
 		"Good/song.txt":     "#COVER:c.jpg\n#VERSION:1.0.0\n" + song("song.mp3", 10),
 		"Good/song.mp3":     "x",
 		"Good/c.jpg":        heicHeader,
@@ -185,7 +186,7 @@ func TestInspect(t *testing.T) {
 		"Suspicious/a.mp3":  "x",
 		"Suspicious/v.webm": "x",
 	})
-	chmodUnreadable(t, filepath.Join(lib, "Unreadable", "s.txt"))
+	testutil.ChmodUnreadable(t, filepath.Join(lib, "Unreadable", "s.txt"))
 	ops := fsops.New(false)
 	insp, notes := NewInspector(context.Background(), ops, true)
 	if !reflect.DeepEqual(notes, []string{noteNoFFprobe, noteNoFFmpeg}) || insp.MediaChecked() || insp.DeepChecked() {
@@ -240,7 +241,7 @@ func TestInspect(t *testing.T) {
 func TestInspectReadsPlannedTxt(t *testing.T) {
 	withoutFFmpeg(t)
 	lib := t.TempDir()
-	writeFiles(t, lib, map[string]string{"S/song.txt": song("gone.mp3", 10), "S/song.mp3": "x"})
+	testutil.WriteFiles(t, lib, map[string]string{"S/song.txt": song("gone.mp3", 10), "S/song.mp3": "x"})
 	ops := fsops.New(true)
 	if _, err := ops.WriteFileAtomic(filepath.Join(lib, "S", "song.txt"), []byte(song("song.mp3", 10))); err != nil {
 		t.Fatal(err)
@@ -253,12 +254,12 @@ func TestInspectReadsPlannedTxt(t *testing.T) {
 }
 
 func TestInspectMedia(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	lib := t.TempDir()
 	dir := filepath.Join(lib, "S")
-	lavfi(t, filepath.Join(dir, "a.mp3"), "-f", "lavfi", "-i", "sine=d=2", "-c:a", "libmp3lame", "-b:a", "192k")
-	lavfi(t, filepath.Join(dir, "v.mp4"), "-f", "lavfi", "-i", "testsrc=d=2:s=96x64:r=10", "-c:v", "libx264", "-pix_fmt", "yuv420p")
-	writeFiles(t, lib, map[string]string{"S/song.txt": "#VIDEO:v.mp4\n" + song("a.mp3", 10)})
+	testutil.GenerateMediaAt(t, filepath.Join(dir, "a.mp3"), "-f", "lavfi", "-i", "sine=d=2", "-c:a", "libmp3lame", "-b:a", "192k")
+	testutil.GenerateMediaAt(t, filepath.Join(dir, "v.mp4"), "-f", "lavfi", "-i", "testsrc=d=2:s=96x64:r=10", "-c:v", "libx264", "-pix_fmt", "yuv420p")
+	testutil.WriteFiles(t, lib, map[string]string{"S/song.txt": "#VIDEO:v.mp4\n" + song("a.mp3", 10)})
 
 	insp, notes := NewInspector(context.Background(), fsops.New(false), false)
 	if len(notes) != 0 || !insp.MediaChecked() || insp.DeepChecked() {

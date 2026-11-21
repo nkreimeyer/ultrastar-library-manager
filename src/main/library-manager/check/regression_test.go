@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // A negative #GAP moves the first note before the audio just like a negative beat does:
@@ -72,13 +74,13 @@ func TestVideoOnlyAttachedPicWarns(t *testing.T) {
 
 // The same with real files: an mp3 with an embedded cover named by #VIDEO.
 func TestRunVideoIsAudioWithCover(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	lib := filepath.Join(t.TempDir(), "songs")
-	writeFiles(t, lib, map[string]string{"Song/song.txt": "#VIDEO:v.mp3\n" + song("a.mp3", 10)})
+	testutil.WriteFiles(t, lib, map[string]string{"Song/song.txt": "#VIDEO:v.mp3\n" + song("a.mp3", 10)})
 	cover := filepath.Join(t.TempDir(), "cover.jpg")
-	lavfi(t, cover, "-f", "lavfi", "-i", "color=c=red:s=32x32", "-frames:v", "1")
+	testutil.GenerateMediaAt(t, cover, "-f", "lavfi", "-i", "color=c=red:s=32x32", "-frames:v", "1")
 	sine(t, filepath.Join(lib, "Song", "a.mp3"), 30)
-	lavfi(t, filepath.Join(lib, "Song", "v.mp3"), "-f", "lavfi", "-i", "sine=d=2", "-i", cover,
+	testutil.GenerateMediaAt(t, filepath.Join(lib, "Song", "v.mp3"), "-f", "lavfi", "-i", "sine=d=2", "-i", cover,
 		"-map", "0:a", "-map", "1:v", "-c:v", "mjpeg", "-disposition:v", "attached_pic", "-id3v2_version", "3")
 	_, r := run(t, newConfig(t, lib, false), Options{})
 	if got, want := songCodes(r), map[string][]string{"Song": {"warning:no-video-stream"}}; !reflect.DeepEqual(got, want) {
