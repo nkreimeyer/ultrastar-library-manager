@@ -25,11 +25,17 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   config/                     Config{SongDir, OutDir, DryRun}: path validation, output layout, marker file;
                               organize.go: OrganizeConfig{Sources (tier, label), Library, OutDir}; NewDedupe, NewAdd
   fsops/                      the ONLY place that modifies files: dry-run (planned writes/moves visible via ReadFile), atomic writes, moves, stats;
-                              MoveTo (exact target, ordered dry-run moves), AppendJournal, RemoveEmptyDir (undo)
+                              MoveTo (exact target, ordered dry-run moves), AppendJournal, RemoveEmptyDir (undo),
+                              WriteJSONReport/MarshalReport (the one JSON report encoding)
   utils/decode.go             txt decoding (DecodeTxt): UTF-16/UTF-8/#ENCODING/CP1250/CP1252, "when in doubt, Problem"
   utils/txt.go                header tags, song-txt lookup, file references
   utils/folders.go            song folder discovery (GetAllSongFolders)
   utils/utils.go              media type checks, non-UTF-8 media names
+  utils/language.go           #LANGUAGE names -> codes: LanguageCodes (prefix table languagePrefixes, first match
+                              wins, empty code = stop; whole words notLanguageNames), KnownLanguageCode;
+                              shared by repairtxt and DecodeTxt's CP1250 choice
+  utils/parallel.go           ForEachParallel: the one worker pool (Parallel{Workers, Progress, OnPanic}),
+                              ctx stops new items, a panic is recovered per item
   utils/songname.go           TagsFromFolderName: obvious #ARTIST/#TITLE fills from "Artist - Title" folder names
   utils/image.go              image headers (JPEG/PNG/GIF via stdlib, own BMP/WebP readers), cover/background choice
   songtxt/                    UltraStar txt parser (tags, notes, breaks, duets, RELATIVE, B lines, BeatToMs); pure;
@@ -41,15 +47,18 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   fixvideos/                  ffmpeg: re-encode to H.264 mp4, downscale to fit 1920x1080, strip audio, flag corrupt files (tagged, idempotent)
   fixaudio/                   ffmpeg: downmix to stereo, peak-normalize to -3 dB, originals kept (tagged, idempotent)
   journal/                    content-fingerprint journal for media formats that cannot carry a marker tag
-  mediatools/                 Detect: ffmpeg/ffprobe on PATH, "-version" parsed (releases, N-… and date git builds), >= 5.1
+  mediatools/                 mediatools.go: Detect, Lookup, Require (ffmpeg/ffprobe on PATH, "-version" parsed: releases,
+                              N-… and date git builds; >= 5.1); probe.go: Probe (one ffprobe JSON call -> ProbeInfo),
+                              FirstStream/HasStream, HasTag (marker tags), VideoBitrate (the one bitrate rule);
+                              output.go: OutputCap/CombinedOutput (head 16 KiB + tail 48 KiB of ffmpeg output)
   webui/                      browser UI: server.go (single-use token -> session cookie lm_session_<port>, CheckAddr,
                               Host/Origin/JSON checks, CSP, routes),
                               jobs.go (one job at a time, logrus hook, SSE /api/job/events), system.go (tools, folder lister),
                               organize.go (validate/analyse/exclude/apply/history/undo), repair.go (analyse/apply, choices ->
                               <out>/ui-reviewed-words.txt), static/ (index.html, style.css, app.js: embedded, no build step)
   repairtxt/                  repair of U+FFFD-damaged txts: lexicon.go (corpus per language: words, edge forms,
-                              bigrams, char 4/5-grams, punctuation classes), language.go (#LANGUAGE codes, naive
-                              Bayes detection), text.go (tag/lyric segments with byte offsets), resolve.go (evidence
+                              bigrams, char 4/5-grams, punctuation classes), language.go (naive Bayes language
+                              detection; the #LANGUAGE codes come from utils.LanguageCodes), text.go (tag/lyric segments with byte offsets), resolve.go (evidence
                               levels, case), plan.go + words.go (per-file planning), wordlist.go, lyrics.go (lrclib.net
                               client with cache), repair.go (Run, fffd_repair.txt/.json)
   organize/                   organize/dedupe/add: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey, StripCopySuffix),
@@ -57,7 +66,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               remove.go (Pattern, ParsePatternFile, planRemove (pure), Remove, remove_plan.json/.txt),
                               similar.go (Profile, findSimilar, similarJoin, review evidence),
                               quality.go (keeper order), plan.go (MakePlan, orderMoves; pure), organize.go (Run, Undo),
-                              journal.go (organize-journal.jsonl), report.go (organize_plan.json/.txt)
+                              journal.go (organize-journal.jsonl), report.go (organize_plan.json/.txt;
+                              writeReportFiles also writes remove_plan.*)
 old/                          legacy Python/shell (duplicate detection by folder name, fuzzy txt compare)
 test-assets/                  local fixture library (gitignored, not in the repo)
 ```
@@ -66,7 +76,9 @@ Dependencies: `logrus` and `golang.org/x/text` (charmaps, UTF-16, Unicode normal
 CI: `.github/workflows/build.yml` and `.gitlab-ci.yml` run gofmt, vet and `go test -race` (with ffmpeg),
 then cross-build linux/windows/darwin amd64 with `CGO_ENABLED=0`; tags `v*` make a release. Keep the
 module free of cgo so this keeps working.
-Runtime needs `ffmpeg` ≥ 5.1 and `ffprobe` on PATH for `-m` and `-a`.
+Runtime needs `ffmpeg` ≥ 5.1 and `ffprobe` on PATH for `-m` and `-a` (enforced: `mediatools.Require`
+makes the module's `Run` fail, exit 1); `-k` and organize use what they find (an older version with a
+warning and a report note).
 
 ## Build, run, test
 
@@ -107,7 +119,9 @@ Same exit codes and leftover-argument rule.
   a failure. This is what makes dry-run, atomic writes and the summary/exit code work.
 - **Never delete.** Removed files go to `cfg.ExtraFilesDir()`, and broken folders to
   `cfg.InvalidDir()`, using `ops.MoveInto(src, dir, cfg.RelPath(...))` so the library structure
-  is mirrored. Reports go to `ops.WriteReport(cfg.ReportPath(name), …)` with sorted content.
+  is mirrored. Reports go to `ops.WriteReport(cfg.ReportPath(name), …)` with sorted content;
+  JSON reports to `ops.WriteJSONReport(cfg.ReportPath(name), v)` (no HTML escaping, two-space
+  indent, one trailing newline), never `json.Marshal` + `WriteReport`.
   The only exception is fixvideos (see "Design decisions"), which deletes the original of a
   conversion with `ops.Remove`, and only after the txt references the new file. organize
   moves only (`<out>/duplicates/<label>/`, `<out>/invalid/<label>/`, the library), journals
@@ -174,7 +188,12 @@ Same exit codes and leftover-argument rule.
 - `utils.DecodeTxt`: any NUL byte is a Problem (BOM-less UTF-16 is still decoded, so the
   header stays readable). With an `#ENCODING` tag, only "clean" UTF-8 sequences count as
   mixed-encoding evidence, and in non-Latin codepages an isolated 2-byte sequence never does.
-  `#LANGUAGE` names are diacritic-folded (`Čeština`, `Română`).
+  A non-UTF-8 txt without `#ENCODING` is read as CP1250 when `utils.LanguageCodes` of its
+  `#LANGUAGE` names pl, cs, sk, hu, hr, sl, ro or bs (`cp1250Languages`); the value is tried
+  as it is (if valid UTF-8) and decoded as CP1250, and is split on `/ , & + ; | ( )` and
+  blanks (`Polish & English`, `Polski (PL)` count). Names that only start like one of those
+  languages have stop entries and keep CP1252 (Romani, Romansh, Romaji, Roma, Polka, Polari,
+  Polynesian, Hunsrik, Rumba, …).
 - fsops: a move across file systems (`isCrossDevice`: EXDEV, on Windows also
   ERROR_NOT_SAME_DEVICE; GOOS is a parameter so the Windows rule is tested on Linux) first
   checks that src can be renamed (fails cleanly if
@@ -189,10 +208,19 @@ Same exit codes and leftover-argument rule.
   logged by the modules. In a dry run, the targets of `MoveInto`/`CopyInto` count as taken
   (a second move to the same name gets ` (2)`, as in a real run), and the merge decision
   sees folders emptied or put in place by planned moves (`plannedDirs`).
-- Concurrency: fixtxt and cleanup run batches of 100 goroutines, one batch after another.
-  fixaudio uses a worker pool of min(16, NumCPU) over folders, and fixvideos one of 4 workers
-  over video files. Per-run state lives in a collector or processor struct with a mutex (no
-  globals). `fsops` serializes target-name reservation.
+- Concurrency: every module pool is `utils.ForEachParallel(ctx, items, utils.Parallel{Workers,
+  Progress, OnPanic}, fn)`. Workers: fixtxt and cleanup 100 over folders (the size of the old
+  batches, now a pool), fixaudio, check and organize (inspection, remove's tag reading)
+  min(16, NumCPU) over folders, fixvideos 4 over video files, repair `Options.Workers`
+  (default 16) for scan and planning. It never starts more goroutines than items; once ctx is
+  done no item starts and it returns ctx.Err() (nil = every item ran); Progress calls are
+  serialized. A panic in fn is recovered and logged with the item and stack, then OnPanic
+  runs: modules log the song and call `ops.Fail()`, and the other songs still run, so fn must
+  release locks with defer. Fatal runtime errors (concurrent map writes, OOM) are not
+  recoverable. A song whose organize inspection panics stays in place as unreadable (in
+  remove it never matches); a repair txt whose planning panics is not written. Per-run state
+  lives in a collector or processor struct with a mutex (no globals). `fsops` serializes
+  target-name reservation.
 - Moving a folder onto an existing target merges it in two cases: this run already moved
   something below that target (a leftover category whose songs were just moved), or the
   folder is empty. A song folder colliding with one from an earlier run gets ` (2)`.
@@ -305,8 +333,16 @@ Same exit codes and leftover-argument rule.
   fixtxt's `removeDuplicateTags` also keeps the last and only looks at the header). Songs
   whose txt has a decode Problem are reported but never moved by `-move-broken`.
   `mediaInfo.HasVideo` means a moving video stream (attached cover art does not count).
-  `VideoBitrate` comes from the stream `bit_rate`, else its `BPS`/`BPS-eng` tag (Matroska),
-  else the container rate of a file without audio; 0 = unknown.
+  `VideoBitrate` comes from `mediatools.VideoBitrate`, the rule check and fixvideos share
+  (organize compares it with `fixvideos.BitrateThreshold`): the stream `bit_rate`, else its
+  BPS statistics tag (a plain `BPS` in any case first, then `BPS-<lang>` tags in sorted
+  order), else the container `bit_rate` of a file without an audio stream; 0 = unknown.
+  fixvideos measures packet sizes (an extra ffprobe run) only when the rule gives 0. Media
+  are probed once per file (`mediatools.Probe`, one ffprobe JSON call); separate runs remain
+  only for measurements (packet sizes, astats, check's duration measuring and decode). Marker
+  tags (`SANITIZER_*`) count on the container or any stream (`ProbeInfo.HasTag`). Captured
+  ffmpeg output that is only logged or searched keeps its first 16 KiB and last 48 KiB
+  (`mediatools.CombinedOutput`; check quotes the first 64 KiB).
 - webui: one job at a time, because the modules log through the global logrus logger and the
   job's log is what a hook collects while it runs (never log while holding `jobRunner.mu`). The
   analysis keeps `organize.Review` (candidates, plan, `Replan`); exclusions replan with
@@ -327,7 +363,9 @@ Same exit codes and leftover-argument rule.
   before listening (exit 2), a listen failure exits 1. The UI's words file is rewritten
   (`writeChoices`): an earlier spelling that fits the same damaged word in that folder's
   section is dropped. Tests: `webui/*_test.go` run the real server with `httptest` against temp libraries;
-  `ui_cmd_test.go` stubs `openBrowser` in `init` (no test may open a browser).
+  `ui_cmd_test.go` stubs `openBrowser` in `init` (no test may open a browser). `runSafely`
+  turns a panic in the job goroutine into a job error, and a panic in a module's pool counts
+  in the job's `Stats.Failed`; a panic in any other goroutine still ends the program.
 - organize: when a keeper from another source cannot reach the library, the library's own
   copies of that song stay in place (not moved to duplicates/). The report's duplicate and
   invalid `Dest` is the actual target (with ` (2)`), also in dry runs. Moves a stopped run or
@@ -644,7 +682,6 @@ Next slices:
 - CLI: subcommands (`fixtxt`, `cleanup`, `video`, `audio`, `dedupe`, `check`, `organize`) or
   at least opt-in destructive modules, progress output (n/total, ETA), and an undo journal
   for moves and txt edits (not for re-encoded media, see "Design decision").
-- Concurrency: worker pools for fixtxt and cleanup as well (fixaudio and fixvideos are done).
 - Audio: loudness normalization (`loudnorm`, EBU R128) instead of peak normalization.
 - CI: `go vet`, `staticcheck` and `go test -race`.
 

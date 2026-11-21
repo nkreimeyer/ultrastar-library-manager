@@ -11,9 +11,10 @@ detection) and is kept for reference only.
 ## Requirements
 
 - Go 1.24+ to build
-- `ffmpeg` and `ffprobe` on `PATH` (only for the video `-m` and audio `-a` modules and the
-  media checks of `-k` and `organize`; without ffprobe, `-k` checks only the txt files and
-  `organize` cannot compare video and audio quality)
+- `ffmpeg` and `ffprobe` 5.1 or newer on `PATH` (only for the video `-m` and audio `-a`
+  modules and the media checks of `-k` and `organize`; `-m` and `-a` refuse to run with a
+  missing or older version; without ffprobe, `-k` checks only the txt files and `organize`
+  cannot compare video and audio quality, and with an older version they warn)
 
 ## Build
 
