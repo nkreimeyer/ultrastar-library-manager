@@ -44,6 +44,10 @@ type Server struct {
 	version string
 	mux     *http.ServeMux
 	jobs    *jobRunner
+	// closed is closed by Close: the event streams end, so http.Server.Shutdown does not
+	// wait for them.
+	closed    chan struct{}
+	closeOnce sync.Once
 
 	mu        sync.Mutex
 	tokenUsed bool // the start URL signed a browser in already
@@ -65,7 +69,7 @@ func New(addr, version string) (*Server, error) {
 	_, port, _ := net.SplitHostPort(addr)
 	s := &Server{
 		addr: addr, token: randomHex(16), session: randomHex(32), cookie: "lm_session_" + port, version: version,
-		mux: http.NewServeMux(), jobs: newJobRunner(),
+		mux: http.NewServeMux(), jobs: newJobRunner(), closed: make(chan struct{}),
 		organize: map[string]*organizeAnalysis{}, repair: map[string]*repairAnalysis{},
 	}
 	s.routes()
@@ -79,8 +83,11 @@ func (s *Server) StartURL() string {
 	return "http://" + s.addr + "/?token=" + s.token
 }
 
-// Close cancels a running job and waits for it to end.
-func (s *Server) Close() { s.jobs.close() }
+// Close ends the event streams, cancels a running job and waits for it to end.
+func (s *Server) Close() {
+	s.closeOnce.Do(func() { close(s.closed) })
+	s.jobs.close()
+}
 
 func randomHex(n int) string {
 	b := make([]byte, n)

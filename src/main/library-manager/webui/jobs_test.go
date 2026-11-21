@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -321,5 +322,32 @@ func TestJobEventsResumeAfterReconnect(t *testing.T) {
 	}
 	if _, got := firstLog("j0/2"); got != "0:line 0 1:line 1 2:line 2" {
 		t.Errorf("reconnect from another job: lines %s", got)
+	}
+}
+
+// Close ends the open event streams, so the HTTP server's Shutdown does not wait for them.
+func TestCloseEndsEventStreams(t *testing.T) {
+	s := newTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", s.base+"/api/job/events", nil)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	ended := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(io.Discard, resp.Body)
+		ended <- err
+	}()
+	s.srv.Close()
+	select {
+	case err := <-ended:
+		if err != nil {
+			t.Errorf("stream: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the event stream is still open after Close")
 	}
 }

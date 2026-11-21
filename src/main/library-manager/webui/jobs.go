@@ -293,6 +293,8 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-s.closed:
+			return
 		case <-tick.C:
 		}
 	}
