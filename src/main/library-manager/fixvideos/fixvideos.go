@@ -938,25 +938,11 @@ func probeMarker(file string) (markerProbe, error) {
 
 // markerFromProbe reads the marker and the container duration from an ffprobe result.
 func markerFromProbe(probe mediatools.ProbeInfo) markerProbe {
-	m := markerProbe{tagged: hasMarker(probe.Format.Tags)}
-	for _, s := range probe.Streams {
-		m.tagged = m.tagged || hasMarker(s.Tags)
-	}
+	m := markerProbe{tagged: probe.HasTag(markerTag)}
 	if d, err := strconv.ParseFloat(probe.Format.Duration, 64); err == nil && d > 0 {
 		m.duration = d
 	}
 	return m
-}
-
-// hasMarker reports whether tags contain markerTag, whatever its value (tag names are
-// case-insensitive, and some muxers change their case).
-func hasMarker(tags map[string]string) bool {
-	for k := range tags {
-		if strings.EqualFold(k, markerTag) {
-			return true
-		}
-	}
-	return false
 }
 
 // videoBitrate returns the bitrate of the first video stream of file in bit/s, from its

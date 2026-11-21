@@ -244,6 +244,10 @@ func TestParseProbeProfileAndMarker(t *testing.T) {
 			audioInfo{Codec: "vorbis", Channels: 2, Normalized: true}},
 		{"marker in format tags", `{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":2}],"format":{"tags":{"SANITIZER_NORMALIZED":"-3.0dB"}}}`,
 			audioInfo{Codec: "mp3", Channels: 2, Normalized: true}},
+		// The marker counts wherever the probe shows it, as for fixvideos' marker
+		// (mediatools.ProbeInfo.HasTag); it used to count only on the first audio stream.
+		{"marker in the tags of another stream", `{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":2},{"codec_type":"video","tags":{"SANITIZER_NORMALIZED":"-3.0dB"}}]}`,
+			audioInfo{Codec: "mp3", Channels: 2, Normalized: true}},
 		{"unrelated tags", `{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":2,"tags":{"title":"x"}}],"format":{"tags":{"SANITIZER_VIDEO":"1","artist":"y"}}}`,
 			audioInfo{Codec: "mp3", Channels: 2}},
 		{"negative and garbage bitrates ignored", `{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":1,"bit_rate":"-5"}],"format":{"bit_rate":"x"}}`,
@@ -264,15 +268,6 @@ func TestParseProbeProfileAndMarker(t *testing.T) {
 	}
 	if _, err := parseProbe([]byte(`{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":-1}]}`)); err == nil {
 		t.Error("negative channel count accepted")
-	}
-}
-
-func TestHasTag(t *testing.T) {
-	if !hasTag(map[string]string{"a": "1", "Sanitizer_Normalized": ""}, normalizedTag) {
-		t.Error("mixed-case tag not found")
-	}
-	if hasTag(map[string]string{"SANITIZER_NORMALIZED_X": "1"}, normalizedTag) || hasTag(nil, normalizedTag) {
-		t.Error("tag found where there is none")
 	}
 }
 

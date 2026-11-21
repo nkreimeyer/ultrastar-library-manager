@@ -180,3 +180,30 @@ func VideoBitrate(probe ProbeInfo, s Stream) int64 {
 	}
 	return 0
 }
+
+// HasTag reports whether the container or any of the streams carries the tag name,
+// whatever its value. Tag names are matched case-insensitively: some muxers change their
+// case (Ogg/Vorbis comments, MP4 with use_metadata_tags). This is how the media modules
+// recognize the marker tags they write (SANITIZER_VIDEO, SANITIZER_NORMALIZED): ffmpeg
+// stores the global "-metadata" in the container or, for formats with per-stream
+// comments (Ogg), in the stream, and nothing but these modules writes the names.
+func (p ProbeInfo) HasTag(name string) bool {
+	if hasKey(p.Format.Tags, name) {
+		return true
+	}
+	for _, s := range p.Streams {
+		if hasKey(s.Tags, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasKey(tags map[string]string, name string) bool {
+	for k := range tags {
+		if strings.EqualFold(k, name) {
+			return true
+		}
+	}
+	return false
+}

@@ -333,16 +333,6 @@ func probeAudio(path string) (audioInfo, error) {
 	return audioFromProbe(probe)
 }
 
-// hasTag reports whether tags contains name (tag names are case-insensitive).
-func hasTag(tags map[string]string, name string) bool {
-	for k := range tags {
-		if strings.EqualFold(k, name) {
-			return true
-		}
-	}
-	return false
-}
-
 // audioFromProbe describes the first audio stream of probe.
 func audioFromProbe(probe mediatools.ProbeInfo) (audioInfo, error) {
 	s, ok := probe.FirstStream("audio")
@@ -353,7 +343,7 @@ func audioFromProbe(probe mediatools.ProbeInfo) (audioInfo, error) {
 		return audioInfo{}, errors.New("unknown channel count")
 	}
 	info := audioInfo{Codec: s.CodecName, Profile: s.Profile, Channels: s.Channels, SampleFmt: s.SampleFmt,
-		Normalized: hasTag(s.Tags, normalizedTag) || hasTag(probe.Format.Tags, normalizedTag)}
+		Normalized: probe.HasTag(normalizedTag)}
 	for _, br := range []string{s.BitRate, probe.Format.BitRate} {
 		if n, err := strconv.Atoi(br); err == nil && n > 0 {
 			info.Bitrate = n

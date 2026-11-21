@@ -339,3 +339,45 @@ func TestVideoBitrate(t *testing.T) {
 		})
 	}
 }
+
+func TestHasTag(t *testing.T) {
+	tests := []struct {
+		json string
+		want bool
+	}{
+		{`{"format":{"tags":{"a":"1","Sanitizer_Normalized":""}}}`, true},
+		{`{"streams":[{"tags":{"title":"x"}},{"tags":{"sanitizer_normalized":"-3.0dB"}}]}`, true},
+		{`{"streams":[{"tags":{"SANITIZER_NORMALIZED_X":"1"}}],"format":{"tags":{"XSANITIZER_NORMALIZED":"1"}}}`, false},
+		{`{"streams":[{}],"format":{}}`, false},
+		{`{}`, false},
+	}
+	for _, tt := range tests {
+		p, err := ParseProbe([]byte(tt.json))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := p.HasTag("SANITIZER_NORMALIZED"); got != tt.want {
+			t.Errorf("HasTag in %s = %v, want %v", tt.json, got, tt.want)
+		}
+	}
+}
+
+// The marker tags the modules write are found in real files: in the container (mp4 with
+// use_metadata_tags) and in the stream (Ogg comments).
+func TestHasTagInFiles(t *testing.T) {
+	requireFFmpeg(t)
+	f := probeFixtures(t)
+	for name, tag := range map[string]string{"tagged.mp4": "SANITIZER_VIDEO", "tagged.ogg": "SANITIZER_NORMALIZED"} {
+		p, err := Probe(context.Background(), f[name])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !p.HasTag(tag) || p.HasTag("SANITIZER_OTHER") {
+			t.Errorf("%s: HasTag(%s) = %v, want only that tag", name, tag, p.HasTag(tag))
+		}
+	}
+	p, err := Probe(context.Background(), f["h264.mp4"])
+	if err != nil || p.HasTag("SANITIZER_VIDEO") {
+		t.Errorf("h264.mp4: HasTag = true or %v, want no marker", err)
+	}
+}
