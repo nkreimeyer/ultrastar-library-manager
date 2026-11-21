@@ -145,8 +145,9 @@ func (r *jobRunner) start(id, kind string, ops *fsops.Ops, fn func(ctx context.C
 }
 
 // runSafely turns a panic in the job's own goroutine into a job error, so the UI keeps
-// running. A panic in a goroutine a module starts (its worker pools) is not caught here and
-// still ends the program.
+// running. The modules' worker pools (utils.ForEachParallel) recover a panic per song
+// themselves: it is logged, counted as a failure in the job's stats and the job goes on.
+// A panic in any other goroutine is not caught here and still ends the program.
 func runSafely(ctx context.Context, c jobControl, fn func(context.Context, jobControl) (any, error)) (res any, err error) {
 	defer func() {
 		if p := recover(); p != nil {

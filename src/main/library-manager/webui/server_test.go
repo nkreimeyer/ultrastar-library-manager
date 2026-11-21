@@ -20,6 +20,7 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/utils"
 )
 
 const R = "�"
@@ -361,6 +362,22 @@ func TestJobsBusyCancelAndLogs(t *testing.T) {
 	s.srv.jobs.start("x3", "test", fsops.New(true), func(context.Context, jobControl) (any, error) { panic("boom") })
 	if j := s.wait(); j.State != stateFailed || !strings.Contains(j.Error, "boom") {
 		t.Errorf("panic: %+v", j)
+	}
+	// A panic in a module's worker pool costs only that item: it is counted as a failure
+	// and the job finishes.
+	ran := 0
+	s.srv.jobs.start("x4", "test", fsops.New(true), func(ctx context.Context, c jobControl) (any, error) {
+		ops := c.j.ops
+		err := utils.ForEachParallel(ctx, []int{0, 1, 2}, utils.Parallel{Workers: 1, OnPanic: func(int, any) { ops.Fail() }}, func(i, _ int) {
+			if i == 1 {
+				panic("worker boom")
+			}
+			ran++
+		})
+		return nil, err
+	})
+	if j := s.wait(); j.State != stateDone || j.Stats.Failed != 1 || ran != 2 {
+		t.Errorf("panic in a pool: %+v, %d other items ran", j, ran)
 	}
 }
 
