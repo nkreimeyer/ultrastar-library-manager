@@ -577,7 +577,7 @@ func (p *planner) plan(in songInput) *filePlan {
 			continue
 		}
 		if seg.tag != "" {
-			if fill, ok := nameFill(seg.runes, in.names, fileTags[seg.tag]); ok {
+			if fill, ok := nameFill(seg.runes, in.nameTexts(fileTags[seg.tag]), fileTags[seg.tag]); ok {
 				after := []rune(string(seg.runes))
 				for k, i := range replIdx {
 					after[i] = fill[k]

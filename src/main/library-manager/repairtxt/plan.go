@@ -55,10 +55,11 @@ type filePlan struct {
 
 // songInput is what the planner knows about one damaged txt.
 type songInput struct {
-	raw   []byte // valid UTF-8
-	song  *songtxt.Song
-	names []string // names of the other files in the song folder
-	refs  []string // extra reference texts (fetched lyrics)
+	raw    []byte // valid UTF-8
+	song   *songtxt.Song
+	folder string   // name of the song folder
+	names  []string // names of the other files in the song folder
+	refs   []string // extra reference texts (fetched lyrics)
 	// own is the txt before an earlier repair (its oldest copy in originals/, else nil):
 	// the song's own undamaged words are taken from it, so that run's repairs are no
 	// evidence for this one.
@@ -108,7 +109,7 @@ func (p *planner) languages(song *songtxt.Song, segs []segment) ([]string, strin
 	return codes, how
 }
 
-// localLex builds the song's own word list: the file names of its folder, the reference
+// localLex builds the song's own word list: its folder and file names, the reference
 // texts and its undamaged words. An ASCII apostrophe of a reference text is read as the
 // song's own apostrophe (songApostrophe): a lost byte can only have been a non-ASCII one, so
 // "j'espère" in the lyrics is the "j’espère" of "j�esp�re".
@@ -118,8 +119,8 @@ func localLex(in songInput, segs []segment) *langLex {
 		w, _ := textStats([]rune(norm.NFC.String(s)))
 		l.add(w, nil)
 	}
-	for _, n := range in.names {
-		add(strings.TrimSuffix(n, filepath.Ext(n)))
+	for _, n := range in.nameTexts(false) {
+		add(n)
 	}
 	apo := string(songApostrophe(segs))
 	for _, r := range in.refs {
@@ -133,6 +134,23 @@ func localLex(in songInput, segs []segment) *langLex {
 	}
 	l.finalize()
 	return l
+}
+
+// nameTexts returns the folder name and the file names, the latter without their
+// extension unless whole is set. A folder name is never cut at a dot: "Dr. Alban - Männer"
+// has no extension.
+func (in songInput) nameTexts(whole bool) []string {
+	var texts []string
+	if in.folder != "" {
+		texts = append(texts, in.folder)
+	}
+	for _, n := range in.names {
+		if !whole {
+			n = strings.TrimSuffix(n, filepath.Ext(n))
+		}
+		texts = append(texts, n)
+	}
+	return texts
 }
 
 // songApostrophe is the non-ASCII apostrophe the song's lyrics use most (’ if none).
@@ -215,19 +233,15 @@ func wildMatch(p, s []rune) bool {
 	return true
 }
 
-// nameFill returns the runes at the U+FFFD positions of value taken from the file names
-// that contain it (the whole name with whole = true, else any substring of the name
-// without its extension). All matches must agree (case-insensitively); the first match
-// gives the case. A name equal to value as it is (a file really named with U+FFFD) means
-// there is nothing to repair.
+// nameFill returns the runes at the U+FFFD positions of value taken from the names that
+// contain it (songInput.nameTexts: the whole name with whole = true, else any substring).
+// All matches must agree (case-insensitively); the first match gives the case. A name
+// equal to value as it is (a file really named with U+FFFD) means there is nothing to
+// repair.
 func nameFill(value []rune, names []string, whole bool) ([]rune, bool) {
 	var fill []rune
 	for _, n := range names {
-		n = norm.NFC.String(n)
-		if !whole {
-			n = strings.TrimSuffix(n, filepath.Ext(n))
-		}
-		rs := []rune(n)
+		rs := []rune(norm.NFC.String(n))
 		if whole && string(rs) == string(value) {
 			return nil, false
 		}

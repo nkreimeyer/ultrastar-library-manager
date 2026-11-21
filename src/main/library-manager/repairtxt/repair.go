@@ -92,6 +92,7 @@ type damagedTxt struct {
 	path, rel string
 	raw       []byte
 	song      *songtxt.Song
+	folder    string // name of the song folder
 	names     []string
 	// own is the oldest copy in <out>/originals/ (nil if none): the song's own evidence
 	// comes from it, so words repaired by an earlier run are no evidence.
@@ -140,13 +141,13 @@ type Report struct {
 	UnmatchedSections []string `json:"unmatched_sections,omitempty"`
 }
 
-// listNames returns the names of the entries of dir (hidden ones left out) plus the
-// folder's own name: all of them may spell the song's words correctly.
+// listNames returns the names of the entries of dir (hidden ones left out): like the
+// folder's own name, they may spell the song's words correctly.
 func listNames(dir string) []string {
-	names := []string{filepath.Base(dir)}
+	var names []string
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return names
+		return nil
 	}
 	for _, e := range entries {
 		if !utils.IsHidden(e.Name()) {
@@ -246,7 +247,7 @@ func scan(ctx context.Context, cfg config.Config, ops *fsops.Ops, lex *Lexicon, 
 					if skip != "" {
 						skipped = append(skipped, Skipped{rel, skip})
 					} else {
-						damaged = append(damaged, damagedTxt{path: txt, rel: rel, raw: raw, song: song, names: listNames(dir), own: oldestOriginal(cfg, rel)})
+						damaged = append(damaged, damagedTxt{path: txt, rel: rel, raw: raw, song: song, folder: filepath.Base(dir), names: listNames(dir), own: oldestOriginal(cfg, rel)})
 					}
 					mu.Unlock()
 				}
@@ -285,7 +286,7 @@ func planAll(ctx context.Context, p *planner, damaged []damagedTxt, refs map[int
 					continue
 				}
 				d := damaged[i]
-				plans[i] = p.plan(songInput{raw: d.raw, song: d.song, names: d.names, refs: refs[i], own: d.own, songWords: d.songWords})
+				plans[i] = p.plan(songInput{raw: d.raw, song: d.song, folder: d.folder, names: d.names, refs: refs[i], own: d.own, songWords: d.songWords})
 				progress(PhasePlan, int(planned.Add(1)), total)
 			}
 		}()
