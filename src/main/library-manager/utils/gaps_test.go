@@ -296,23 +296,6 @@ func TestMediaFileHelpers(t *testing.T) {
 	}
 }
 
-func TestSplitIntoBatchesEdges(t *testing.T) {
-	if got := SplitIntoBatches([]int{}, 2); !reflect.DeepEqual(got, [][]int{{}}) {
-		t.Errorf("empty input: %v", got)
-	}
-	if got := SplitIntoBatches([]int{1, 2}, 2); !reflect.DeepEqual(got, [][]int{{1, 2}}) {
-		t.Errorf("len == batchSize: %v", got)
-	}
-	b := SplitIntoBatches([]int{1, 2, 3}, 2)
-	if len(b) != 2 || cap(b[0]) != 2 {
-		t.Fatalf("batches %v, cap %d", b, cap(b[0]))
-	}
-	_ = append(b[0], 9)
-	if b[1][0] != 3 {
-		t.Errorf("appending to a batch overwrote the next one: %v", b)
-	}
-}
-
 // TestGetAllSongFoldersEdges: hidden media is no content, and output folders below the
 // song dir are skipped without making their parent a song.
 func TestGetAllSongFoldersEdges(t *testing.T) {

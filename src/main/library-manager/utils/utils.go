@@ -101,13 +101,3 @@ func IsImageFile(filename string) bool {
 	}
 	return false
 }
-
-// SplitIntoBatches splits items into consecutive batches of at most batchSize items.
-func SplitIntoBatches[T any](items []T, batchSize int) [][]T {
-	var batches [][]T
-	for batchSize < len(items) {
-		items, batches = items[batchSize:], append(batches, items[0:batchSize:batchSize])
-	}
-	batches = append(batches, items)
-	return batches
-}

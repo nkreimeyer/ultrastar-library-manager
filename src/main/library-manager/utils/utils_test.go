@@ -386,14 +386,6 @@ func TestGetAllSongFoldersSkipsUnreadableAndPlannedMoves(t *testing.T) {
 	}
 }
 
-func TestSplitIntoBatches(t *testing.T) {
-	got := SplitIntoBatches([]int{1, 2, 3, 4, 5}, 2)
-	want := [][]int{{1, 2}, {3, 4}, {5}}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("SplitIntoBatches = %v, want %v", got, want)
-	}
-}
-
 // Every module calls GetAllSongFolders with the same ops; an unreadable song txt or folder
 // must be skipped (not mistaken for a broken song) and counted only once per run.
 func TestGetAllSongFoldersCountsUnreadableOnce(t *testing.T) {

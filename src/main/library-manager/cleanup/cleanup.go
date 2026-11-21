@@ -5,13 +5,13 @@
 package cleanup
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
 	"github.com/nkreimeyer/library-manager/config"
@@ -21,12 +21,15 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// batchSize is the number of song folders cleaned up concurrently.
-const batchSize = 100
+// workers is the number of song folders cleaned up concurrently. It is the size of the
+// batches the module used before its worker pool, so no more folders (and their open
+// files) are worked on at the same time than before; the work is file I/O, not CPU.
+const workers = 100
 
 // Run performs the cleanup on every song folder below cfg.SongDir. It only returns an
 // error if the library cannot be read at all; per-song problems are logged and counted
-// by ops.
+// by ops. A panic in one folder is logged and counted as a failure, and the other folders
+// are still cleaned up.
 func Run(cfg config.Config, ops *fsops.Ops) error {
 	entries, err := utils.GetAllSongFolders(ops, cfg.SongDir)
 	if err != nil {
@@ -35,17 +38,13 @@ func Run(cfg config.Config, ops *fsops.Ops) error {
 
 	validEntries := filterEntries(cfg, ops, entries)
 
-	for _, batch := range utils.SplitIntoBatches(validEntries, batchSize) {
-		var wg sync.WaitGroup
-		for _, entry := range batch {
-			wg.Add(1)
-			go func(entry string) {
-				defer wg.Done()
-				cleanupDirectory(cfg, ops, entry)
-			}(entry)
-		}
-		wg.Wait()
-	}
+	_ = utils.ForEachParallel(context.Background(), validEntries, utils.Parallel{
+		Workers: workers,
+		OnPanic: func(i int, _ any) {
+			log.Errorf("cleanup: %s not finished: internal error (logged above)", validEntries[i])
+			ops.Fail()
+		},
+	}, func(_ int, entry string) { cleanupDirectory(cfg, ops, entry) })
 	return nil
 }
 
