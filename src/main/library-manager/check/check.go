@@ -10,6 +10,7 @@ package check
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -77,7 +78,8 @@ type checker struct {
 
 // Run checks every song folder below cfg.SongDir and writes the reports. It returns an
 // error only if the library cannot be listed or a report cannot be written; findings are
-// not failures.
+// not failures. A panic while checking one folder is logged and counted as a failure (the
+// folder is not in the report), and the other folders are still checked.
 func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 	folders, err := utils.GetAllSongFolders(ops, cfg.SongDir)
 	if err != nil {
@@ -86,7 +88,13 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 
 	insp, notes := NewInspector(ops, opts.Deep)
 	c := &checker{cfg: cfg}
-	forEachParallel(folders, workers, func(folder string) {
+	_ = utils.ForEachParallel(context.Background(), folders, utils.Parallel{
+		Workers: workers,
+		OnPanic: func(i int, _ any) {
+			log.Errorf("check: %s not checked: internal error (logged above)", folders[i])
+			ops.Fail()
+		},
+	}, func(_ int, folder string) {
 		res, err := insp.Inspect(folder)
 		if err != nil {
 			return // logged and counted by Inspect
@@ -126,27 +134,6 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 	log.Infof("Check: %d song(s) checked, %d broken, %d suspicious; see %s",
 		rep.Checked, rep.Broken, rep.Suspicious, cfg.ReportPath(reportTxt))
 	return nil
-}
-
-// forEachParallel calls fn for every item, using up to n goroutines.
-func forEachParallel[T any](items []T, n int, fn func(T)) {
-	n = max(1, min(n, len(items)))
-	queue := make(chan T)
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for range n {
-		go func() {
-			defer wg.Done()
-			for item := range queue {
-				fn(item)
-			}
-		}()
-	}
-	for _, item := range items {
-		queue <- item
-	}
-	close(queue)
-	wg.Wait()
 }
 
 func (c *checker) record(res songResult) {
@@ -268,9 +255,7 @@ func (i *Inspector) observeFile(path string, kind refKind) fileObs {
 	}
 	o.Probed, o.Media = true, info
 	if i.deep {
-		i.deepSem <- struct{}{}
-		decErr, decWarn, err := decodeCheck(path)
-		<-i.deepSem
+		decErr, decWarn, err := i.deepDecode(path)
 		if err != nil {
 			log.Errorf("Checking %s: %v", path, err)
 			i.ops.Fail()
@@ -279,6 +264,14 @@ func (i *Inspector) observeFile(path string, kind refKind) fileObs {
 		o.DecodeErr, o.DecodeWarn = decErr, decWarn
 	}
 	return o
+}
+
+// deepDecode runs decodeCheck in one of the maxDeepDecodes slots. The slot is released by
+// defer, so a panic the worker pool recovers does not keep it.
+func (i *Inspector) deepDecode(path string) (decodeErr, decodeWarn string, err error) {
+	i.deepSem <- struct{}{}
+	defer func() { <-i.deepSem }()
+	return decodeCheck(path)
 }
 
 // rawHeaderValues returns the undecoded values of the tag lines of a txt in a
