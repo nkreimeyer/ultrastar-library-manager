@@ -374,3 +374,5 @@ textarea { width: 100%; max-width: var(--measure); font: 0.9rem/1.4 var(--mono);
 .findings .sev-error::marker { color: var(--red); }
 .findings .sev-warning::marker { color: var(--gold-ink); }
 .report-text { max-height: 28rem; overflow: auto; padding: 0.75rem; border: 1px solid var(--line); border-radius: var(--radius-m); background: var(--raised); font: 0.8125rem/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.recent { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; align-items: baseline; margin: 0.4rem 0 0; max-width: var(--measure); }
+.recent .link { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

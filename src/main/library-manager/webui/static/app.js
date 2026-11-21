@@ -343,12 +343,46 @@ function folderInput(value, onChange, label) {
   return h("div", { class: "row" }, input, browse);
 }
 
+// The libraries used lately, newest first (in this browser only).
+const RECENT_MAX = 6;
+function recentLibraries() {
+  try {
+    const list = JSON.parse(localStorage.getItem("lm-recent") || "[]");
+    return Array.isArray(list) ? list.filter((p) => typeof p === "string" && p) : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberLibrary(path) {
+  path = (path || "").trim();
+  if (!path) return;
+  try {
+    localStorage.setItem("lm-recent", JSON.stringify([path, ...recentLibraries().filter((p) => p !== path)].slice(0, RECENT_MAX)));
+  } catch {
+    // storage full or blocked: the list is a convenience
+  }
+}
+
+function recentField(key) {
+  const recent = recentLibraries().filter((p) => p !== S.f[key].trim());
+  if (!recent.length) return null;
+  return h("div", { class: "recent", "aria-label": "Recent libraries" }, h("span", { class: "muted small" }, "Recent: "),
+    recent.map((p) => h("button", { class: "link path", type: "button", title: p, onclick: () => {
+      S.f[key] = p;
+      saveForm();
+      render();
+      validate();
+    } }, p)));
+}
+
 function folderField(label, key, hint) {
   return h(
     "div",
     { class: "field" },
     h("div", { class: "label" }, label),
     folderInput(S.f[key], (v) => setField(key, v), label),
+    key === "library" ? recentField(key) : null,
     hint ? h("p", { class: "hint" }, hint) : null,
   );
 }
@@ -686,6 +720,7 @@ async function startJob(path, body) {
   S.notice = null;
   try {
     const job = await post(path, body);
+    rememberLibrary(body?.library);
     S.job = job;
     S.waitingFor = job.id;
     S.view = "running";
@@ -706,6 +741,7 @@ async function loadAside() {
   }
   try {
     S.aside = await post("/api/setaside/list", organizeRequest());
+    rememberLibrary(S.aside.config.library);
     S.pick = new Set();
     S.open = new Set();
     S.view = "aside";
@@ -723,6 +759,7 @@ async function openReports(cfg) {
   try {
     const res = await post("/api/reports/list", { library: cfg.library, out: cfg.out ?? cfg.outDir });
     S.reports = { ...res, shown: null };
+    rememberLibrary(res.config.library);
     S.view = "reports";
     S.notice = null;
   } catch (e) {
