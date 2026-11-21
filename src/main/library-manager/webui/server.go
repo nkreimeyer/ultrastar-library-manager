@@ -53,7 +53,6 @@ type Server struct {
 	mu        sync.Mutex
 	tokenUsed bool // the start URL signed a browser in already
 	organize  map[string]*organizeAnalysis
-	repair    map[string]*repairAnalysis
 	nextID    int
 }
 
@@ -67,7 +66,7 @@ func New(addr, version string) (*Server, error) {
 	s := &Server{
 		addr: addr, token: randomHex(16), session: randomHex(32), cookie: "lm_session_" + port, version: version,
 		mux: http.NewServeMux(), jobs: newJobRunner(), closed: make(chan struct{}),
-		organize: map[string]*organizeAnalysis{}, repair: map[string]*repairAnalysis{},
+		organize: map[string]*organizeAnalysis{},
 	}
 	s.routes()
 	return s, nil
@@ -127,10 +126,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/organize/apply", s.handleOrganizeApply)
 	s.mux.HandleFunc("POST /api/organize/history", s.handleOrganizeHistory)
 	s.mux.HandleFunc("POST /api/organize/undo", s.handleOrganizeUndo)
-	s.mux.HandleFunc("POST /api/repair/validate", s.handleRepairValidate)
-	s.mux.HandleFunc("POST /api/repair/analyse", s.handleRepairAnalyse)
-	s.mux.HandleFunc("GET /api/repair/analysis", s.handleRepairAnalysis)
-	s.mux.HandleFunc("POST /api/repair/apply", s.handleRepairApply)
 }
 
 // ServeHTTP checks the Host, the session and (for POST) the origin, then routes.

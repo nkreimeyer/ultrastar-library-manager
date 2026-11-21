@@ -87,13 +87,3 @@ func LanguageCodes(value string) []string {
 	}
 	return codes
 }
-
-// KnownLanguageCode reports whether LanguageCodes can return code.
-func KnownLanguageCode(code string) bool {
-	for _, lp := range languagePrefixes {
-		if lp.code == code {
-			return true
-		}
-	}
-	return false
-}

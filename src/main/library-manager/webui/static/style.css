@@ -311,22 +311,6 @@ tr.excluded td { color: var(--muted); }
 .act-invalid { color: var(--red); }
 .act-left, .act-in-place { color: var(--muted); }
 
-/* Repair words */
-
-.word { margin: 0.75rem 0 1rem; }
-.context { font-size: 1.05rem; margin-bottom: 0.4rem; }
-.context mark { background: none; color: var(--red); font-weight: 700; text-decoration: underline wavy; text-underline-offset: 0.25em; }
-.choices { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
-.choice {
-  border: 1px solid var(--line); background: var(--raised); color: var(--ink);
-  border-radius: 999px; padding: 0.2rem 0.75rem; font-size: 0.95rem;
-}
-.choice[aria-pressed="true"] { background: var(--gold); border-color: var(--gold); color: #1c2140; font-weight: 600; }
-.choice small { color: inherit; opacity: 0.75; }
-.choices input[type="text"] { width: 11rem; font-family: var(--body); }
-.fixes { margin: 0.25rem 0 0; padding-left: 1.2rem; font-size: 0.9rem; }
-.fixes li { margin: 0.2rem 0; }
-
 details > summary { cursor: pointer; }
 details.plain > summary { color: var(--muted); font-size: 0.9rem; margin: 0.5rem 0; }
 

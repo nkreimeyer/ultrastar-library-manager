@@ -285,7 +285,7 @@ func IsBodyLine(line string) bool {
 // LineSpans returns the [start, end) byte range of every line of src, without its line
 // ending, in the numbering Parse uses: a leading BOM is skipped, and "\r\n", "\r" and "\n"
 // each end a line (line n is LineSpans(src)[n-1]). Code that maps Parse's line numbers
-// back to the raw bytes (check, repairtxt) uses it, so the numbers always agree.
+// back to the raw bytes (check) uses it, so the numbers always agree.
 func LineSpans(src []byte) [][2]int {
 	i := 0
 	if len(src) >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF {

@@ -235,8 +235,7 @@ func ResolveFileName(dir, name string) (onDisk string, exact, found bool) {
 }
 
 // fileTags are the header tags (upper-case keys) that reference files of the song folder,
-// in check's report order. ReplaceFileReference rewrites them, check observes them and
-// repair fills their values from the folder's file names.
+// in check's report order. ReplaceFileReference rewrites them and check observes them.
 var fileTags = []string{"AUDIO", "MP3", "VOCALS", "INSTRUMENTAL", "VIDEO", "COVER", "BACKGROUND"}
 
 // FileTags returns the header tags (upper-case keys) that reference files of the song

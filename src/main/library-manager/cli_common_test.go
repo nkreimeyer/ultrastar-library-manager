@@ -35,9 +35,9 @@ func runCaptured(t *testing.T, args ...string) (code int, output string, logs []
 	return code, buf.String(), logs
 }
 
-// cliFixture is a library with two songs, a source with one, a damaged song dir for repair
-// and a word list.
-func cliFixture(t *testing.T) (base, lib, src, rlib, wordlist string) {
+// cliFixture is a library with two songs, a source with one and a song dir for the main
+// command.
+func cliFixture(t *testing.T) (base, lib, src, rlib string) {
 	t.Helper()
 	t.Setenv("PATH", t.TempDir())                   // no ffprobe/ffmpeg: placeholder media are enough
 	base, err := filepath.EvalSymlinks(t.TempDir()) // the log shows resolved paths
@@ -57,17 +57,13 @@ func cliFixture(t *testing.T) (base, lib, src, rlib, wordlist string) {
 	song(filepath.Join(src, "ABBA - Waterloo"), "ABBA", "Waterloo", "wat")
 	song(filepath.Join(rlib, "A", "Bad"), "A", "Bad", "f�r")
 	song(filepath.Join(rlib, "A", "One"), "A", "One", "für")
-	wordlist = filepath.Join(base, "de.dic")
-	if err := os.WriteFile(wordlist, []byte("für\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	return
 }
 
 // A leftover argument is an error of every command: the message names the arguments, gives
 // the command's hint, and the usage follows.
 func TestLeftoverArgumentsPerCommand(t *testing.T) {
-	base, lib, src, rlib, _ := cliFixture(t)
+	base, lib, src, rlib := cliFixture(t)
 	out := filepath.Join(base, "out")
 	for _, tt := range []struct {
 		args       []string
@@ -83,8 +79,6 @@ func TestLeftoverArgumentsPerCommand(t *testing.T) {
 			"Usage: library-manager add -s "},
 		{[]string{"remove", "-l", lib, "-o", out, "-artist", "Elton", "x"}, "Quote names with spaces (-artist \"Elton John\"); bool flags must be written as -n=false.",
 			"Usage: library-manager remove -l <library> "},
-		{[]string{"repair", "-s", rlib, "-o", out, "x"}, "Bool flags must be written as -n=false.",
-			"Usage: library-manager repair -s <song-dir> "},
 	} {
 		code, output, logs := runCaptured(t, tt.args...)
 		want := "Error: unexpected arguments [\"x\"].\n" + tt.hint + "\n\n" + tt.head
@@ -103,7 +97,7 @@ func TestLeftoverArgumentsPerCommand(t *testing.T) {
 // -v sets the log level of every command; an unknown level is a usage error with one
 // line and no usage.
 func TestLogLevelPerCommand(t *testing.T) {
-	base, lib, src, rlib, _ := cliFixture(t)
+	base, lib, src, rlib := cliFixture(t)
 	out := filepath.Join(base, "out")
 	for _, args := range [][]string{
 		{"-s", rlib, "-o", out, "-n"},
@@ -112,7 +106,6 @@ func TestLogLevelPerCommand(t *testing.T) {
 		{"add", "-s", src, "-l", lib, "-o", out, "-n"},
 		{"remove", "-l", lib, "-o", out, "-n", "-artist", "Cher"},
 		{"organize", "-undo", "-o", out, "-n"},
-		{"repair", "-s", rlib, "-o", out, "-n"},
 	} {
 		code, output, _ := runCaptured(t, append(args, "-v", "loud")...)
 		if want := "Error: invalid log level \"loud\" (use debug, info, warn or error).\n"; code != exitUsage || output != want {
@@ -141,7 +134,7 @@ func containsAll(t *testing.T, what string, logs, want []string) {
 // remove -undo with only -o: a dry run plans the moves back, a real run makes them; both
 // end with the summary line.
 func TestRunRemoveUndoWithOutDir(t *testing.T) {
-	base, lib, _, _, _ := cliFixture(t)
+	base, lib, _, _ := cliFixture(t)
 	out := filepath.Join(base, "out")
 	code, _, logs := runCaptured(t, "remove", "-l", lib, "-o", out, "-artist", "Cher")
 	if code != exitOK {
@@ -174,7 +167,7 @@ func TestRunRemoveUndoWithOutDir(t *testing.T) {
 // The start and summary lines of each command, in a dry run and when the output folder
 // cannot be created (exit 1, nothing run).
 func TestCommandSummaryLines(t *testing.T) {
-	base, lib, src, rlib, wl := cliFixture(t)
+	base, lib, src, _ := cliFixture(t)
 	out := filepath.Join(base, "out")
 	file := filepath.Join(base, "file")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
@@ -187,9 +180,6 @@ func TestCommandSummaryLines(t *testing.T) {
 		{[]string{"organize", "-n", "-s", src, "-l", lib, "-o", out}, []string{
 			"Dry run: nothing will be moved (the plan report is written to the output dir)", "Output dir: " + out,
 			"Library: " + lib, "Source (tier 1): " + src, "Done (planned): 1 moved, 0 failed operations"}},
-		{[]string{"repair", "-n", "-s", rlib, "-o", out, "-wordlist", "de=" + wl}, []string{
-			"Dry run: no txt is changed (the report is written to the output dir)", "Song dir: " + rlib, "Output dir: " + out,
-			"Done (planned): 1 txts rewritten, 0 failed operations; see " + filepath.Join(out, "fffd_repair.txt")}},
 	} {
 		code, _, logs := runCaptured(t, tt.args...)
 		if code != exitOK {
@@ -201,7 +191,6 @@ func TestCommandSummaryLines(t *testing.T) {
 	for _, args := range [][]string{
 		{"organize", "-s", src, "-l", lib, "-o", bad},
 		{"remove", "-l", lib, "-o", bad, "-artist", "Cher"},
-		{"repair", "-s", rlib, "-o", bad},
 	} {
 		code, _, logs := runCaptured(t, args...)
 		want := "creating output dir: mkdir " + file + ": not a directory"
@@ -229,39 +218,10 @@ func TestUndoNeedsFolderPerCommand(t *testing.T) {
 	}
 }
 
-// The repair inputs are named by their flags in the CLI's errors.
-func TestRepairInputErrorsNameTheFlag(t *testing.T) {
-	base, _, _, rlib, wl := cliFixture(t)
-	out := filepath.Join(base, "out")
-	missing := filepath.Join(base, "missing.dic")
-	for _, tt := range []struct {
-		args []string
-		want string
-	}{
-		{[]string{"-wordlist", missing}, "Error: -wordlist: stat " + missing + ": "},
-		{[]string{"-wordlist", "de=" + missing}, "Error: -wordlist: stat " + missing + ": "},
-		{[]string{"-wordlist", wl, "-words", missing}, "Error: -words: stat " + missing + ": "},
-	} {
-		code, output, logs := runCaptured(t, append([]string{"repair", "-s", rlib, "-o", out}, tt.args...)...)
-		if code != exitUsage || !strings.HasPrefix(output, tt.want) || !strings.Contains(output, "\n\nUsage: library-manager repair ") || len(logs) != 0 {
-			t.Errorf("%q: exit %d, logs %q, output:\n%s\nwant prefix %q", tt.args, code, logs, output, tt.want)
-		}
-	}
-	cache := filepath.Join(rlib, "cache")
-	code, output, logs := runCaptured(t, "repair", "-s", rlib, "-o", out, "-lyrics", "-lyrics-cache", cache)
-	want := "-lyrics-cache: \"" + cache + "\" must not be inside the song dir "
-	if code != exitUsage || output != "" || len(logs) != 1 || !strings.HasPrefix(logs[0], want) {
-		t.Errorf("-lyrics-cache inside -s: exit %d, output %q, logs %q, want %q", code, output, logs, want)
-	}
-	if _, err := os.Stat(out); !os.IsNotExist(err) {
-		t.Errorf("an input error created the out dir: %v", err)
-	}
-}
-
 // A failed run names its command: remove logs "remove failed", the organize family
 // "organize failed".
 func TestFailedRunNamesCommand(t *testing.T) {
-	base, _, _, _, _ := cliFixture(t)
+	base, _, _, _ := cliFixture(t)
 	file := filepath.Join(base, "file")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)

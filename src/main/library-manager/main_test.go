@@ -474,71 +474,6 @@ func TestRunRemoveCommand(t *testing.T) {
 	}
 }
 
-func TestRunRepairCommand(t *testing.T) {
-	base := t.TempDir()
-	lib := filepath.Join(base, "lib")
-	write := func(rel, words string) {
-		dir := filepath.Join(lib, rel)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		txt := "#ARTIST:A\n#TITLE:" + filepath.Base(rel) + "\n#MP3:a.mp3\n#BPM:300\n"
-		for i, w := range strings.Fields(words) {
-			txt += fmt.Sprintf(": %d 2 0 %s \n", i*4, w)
-		}
-		for name, content := range map[string]string{"song.txt": txt + "E\n", "a.mp3": "x"} {
-			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	write("A/One", "für dich für mich für uns")
-	write("A/Two", "nur für dich")
-	write("A/Bad", "f�r dich")
-	wl := filepath.Join(base, "de.dic")
-	if err := os.WriteFile(wl, []byte("für\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	for _, tt := range []struct {
-		name string
-		args []string
-		want int
-	}{
-		{"no song dir", []string{"repair"}, exitUsage},
-		{"leftover argument", []string{"repair", "-s", lib, "-n", "false"}, exitUsage},
-		{"cache without lyrics", []string{"repair", "-s", lib, "-lyrics-cache", base}, exitUsage},
-		// The cache is written in dry runs too.
-		{"cache in the song dir", []string{"repair", "-s", lib, "-n", "-lyrics", "-lyrics-cache", filepath.Join(lib, "cache")}, exitUsage},
-		{"missing word list", []string{"repair", "-s", lib, "-wordlist", filepath.Join(base, "nope.dic")}, exitUsage},
-		{"missing words file", []string{"repair", "-s", lib, "-words", filepath.Join(base, "nope.txt")}, exitUsage},
-		{"unknown word list language", []string{"repair", "-s", lib, "-wordlist", "Klingon=" + wl}, exitUsage},
-		{"unknown word list code", []string{"repair", "-s", lib, "-wordlist", "ge=" + wl}, exitUsage},
-		{"missing song dir", []string{"repair", "-s", filepath.Join(base, "nope")}, exitUsage},
-		{"bad log level", []string{"repair", "-s", lib, "-v", "loud"}, exitUsage},
-		{"help", []string{"repair", "-h"}, exitOK},
-		{"dry run", []string{"repair", "-s", lib, "-n", "-wordlist", "de=" + wl}, exitOK},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := runWithArgs(t, tt.args...); got != tt.want {
-				t.Errorf("run(%q) = %d, want %d", tt.args, got, tt.want)
-			}
-		})
-	}
-	bad := filepath.Join(lib, "A", "Bad", "song.txt")
-	if b, _ := os.ReadFile(bad); !strings.Contains(string(b), "�") {
-		t.Fatal("the dry run repaired the txt")
-	}
-	if got := runWithArgs(t, "repair", "-s", lib, "-strict"); got != exitOK {
-		t.Fatalf("repair = %d", got)
-	}
-	if b, _ := os.ReadFile(bad); !strings.Contains(string(b), ": 0 2 0 für \n") {
-		t.Errorf("not repaired:\n%s", b)
-	}
-	if _, err := os.Stat(filepath.Join(base, "sanitizer-output", "originals", "A", "Bad", "song.txt")); err != nil {
-		t.Errorf("original not kept: %v", err)
-	}
-}
-
 // The usage names every subcommand.
 func TestUsageNamesSubcommands(t *testing.T) {
 	oldArgs, oldFlags := os.Args, flag.CommandLine
@@ -550,7 +485,7 @@ func TestUsageNamesSubcommands(t *testing.T) {
 	if got := run(); got != exitOK && got != exitUsage {
 		t.Fatalf("-h = %d", got)
 	}
-	for _, cmd := range []string{"organize", "dedupe", "add", "remove", "repair", "ui"} {
+	for _, cmd := range []string{"organize", "dedupe", "add", "remove", "ui"} {
 		if !strings.Contains(buf.String(), "library-manager "+cmd+" ") {
 			t.Errorf("usage does not name %q:\n%s", cmd, buf.String())
 		}

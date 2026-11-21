@@ -70,35 +70,24 @@ const TASKS = {
     title: "Build a new library from folders",
     desc: "Sort songs from one or more folders into a new library with a folder per first letter (A to Z, 0-9 and #).",
   },
-  repair: {
-    title: "Fix broken characters",
-    desc: "Repair lyrics where letters like ä, ö, ü or ß were lost and now show up as �.",
-  },
 };
 
 const PHASES = {
   inspect: "Checking songs",
   move: "Moving songs",
   undo: "Moving songs back",
-  scan: "Reading song files",
-  plan: "Working out the repairs",
-  lyrics: "Looking up lyrics online",
-  write: "Writing repaired files",
 };
 
 const JOB_TITLES = {
   "organize-analyse": "Checking first. Nothing is changed yet.",
   "organize-apply": "Moving songs",
   "organize-undo": "Undoing the last run",
-  "repair-analyse": "Looking for broken characters. Nothing is changed yet.",
-  "repair-apply": "Repairing files",
 };
 
 // What the Stop button does to a job that changes files (the others change nothing).
 const STOP_HINTS = {
   "organize-apply": "Stopping finishes the current move; undo puts back what was moved.",
   "organize-undo": "Stopping finishes the current move; undo again to move back the rest.",
-  "repair-apply": "Stopping finishes the current file; the files repaired so far stay repaired (their originals are kept).",
 };
 
 const emptyForm = () => ({
@@ -108,13 +97,6 @@ const emptyForm = () => ({
   priority: false,
   ignoreThe: false,
   deep: false,
-  songDir: "",
-  rout: "",
-  lyrics: false,
-  strict: false,
-  wordLists: [],
-  words: [],
-  lyricsCache: "",
 });
 
 function loadForm() {
@@ -135,9 +117,6 @@ const S = {
   waitingFor: null, // id of the job this page started or follows
   handled: new Set(),
   org: null, // organize review view
-  rep: null, // repair analysis
-  choices: new Map(), // path\nword -> form
-  skip: new Set(),
   open: new Set(), // open review sections
   notice: null,
   done: null,
@@ -149,7 +128,6 @@ const S = {
 };
 
 const advanced = () => S.mode === "advanced";
-const isOrganizeTask = () => S.task !== "repair";
 const saveForm = () => localStorage.setItem("lm-form", JSON.stringify(S.f));
 
 // ---------------------------------------------------------------- rendering
@@ -164,7 +142,7 @@ function render() {
       content = viewRunning();
       break;
     case "review":
-      content = S.task === "repair" ? viewRepairReview() : viewOrganizeReview();
+      content = viewOrganizeReview();
       break;
     case "done":
       content = viewDone();
@@ -352,32 +330,6 @@ function tiersField(label, hint) {
   return wrap;
 }
 
-function listField(label, key, hint, placeholder) {
-  const wrap = h("div", { class: "field" }, h("div", { class: "label" }, label));
-  S.f[key].forEach((v, i) => {
-    wrap.append(h("div", { class: "row" },
-      h("input", { type: "text", value: v, placeholder, "aria-label": `${label} ${i + 1}`, oninput: (e) => {
-        S.f[key][i] = e.target.value;
-        saveForm();
-        validateSoon();
-      } }),
-      h("button", { class: "btn", type: "button", onclick: () => {
-        S.f[key].splice(i, 1);
-        saveForm();
-        validateSoon();
-        render();
-      } }, "Remove"),
-    ), h("div", { style: { height: "0.4rem" } }));
-  });
-  wrap.append(h("button", { class: "link", type: "button", onclick: () => {
-    S.f[key].push("");
-    saveForm();
-    render();
-  } }, "Add one"));
-  if (hint) wrap.append(h("p", { class: "hint" }, hint));
-  return wrap;
-}
-
 function checkField(label, key, hint) {
   return h("label", { class: "check" },
     h("input", { type: "checkbox", checked: S.f[key], onchange: (e) => setField(key, e.target.checked) }),
@@ -455,18 +407,6 @@ function organizeRequest() {
   };
 }
 
-function repairRequest() {
-  return {
-    songDir: S.f.songDir.trim(),
-    out: advanced() ? S.f.rout.trim() : "",
-    lyrics: S.f.lyrics,
-    strict: advanced() && S.f.strict,
-    wordLists: advanced() ? S.f.wordLists.map((s) => s.trim()).filter(Boolean) : [],
-    words: advanced() ? S.f.words.map((s) => s.trim()).filter(Boolean) : [],
-    lyricsCache: advanced() && S.f.lyrics ? S.f.lyricsCache.trim() : "",
-  };
-}
-
 let validateTimer = 0;
 let validateSeq = 0;
 function validateSoon() {
@@ -476,8 +416,7 @@ function validateSoon() {
 
 async function validate() {
   const seq = ++validateSeq;
-  const empty = isOrganizeTask() ? !S.f.library.trim() : !S.f.songDir.trim();
-  if (empty) {
+  if (!S.f.library.trim()) {
     S.resolved = null;
     S.resolveError = null;
     S.history = null;
@@ -485,13 +424,11 @@ async function validate() {
     return;
   }
   try {
-    const res = isOrganizeTask()
-      ? await post("/api/organize/validate", organizeRequest())
-      : await post("/api/repair/validate", repairRequest());
+    const res = await post("/api/organize/validate", organizeRequest());
     if (seq !== validateSeq) return;
     S.resolved = res;
     S.resolveError = null;
-    if (isOrganizeTask() && advanced()) loadHistory();
+    if (advanced()) loadHistory();
   } catch (e) {
     if (seq !== validateSeq) return;
     S.resolved = null;
@@ -521,12 +458,12 @@ function updateResolved() {
   } else if (S.resolved) {
     const out = S.resolved.outDir;
     el.replaceChildren(
-      isOrganizeTask() ? "Set-aside songs, reports and the record for undoing go to " : "Reports and copies of the original files go to ",
+      "Set-aside songs, reports and the record for undoing go to ",
       h("span", { class: "path" }, out),
       ".",
     );
   } else {
-    el.replaceChildren(isOrganizeTask() ? "Pick the library folder to go on." : "Pick the song folder to go on.");
+    el.replaceChildren("Pick the library folder to go on.");
   }
 }
 
@@ -565,33 +502,17 @@ function viewSetup() {
       fields.append(tiersField("Folders to take songs from", "The songs are moved out of these folders."));
       fields.append(folderField("New library folder", "library", "Can be a new, empty folder."));
       break;
-    case "repair":
-      fields.append(folderField("Song folder", "songDir", "Every song below this folder is checked."));
-      fields.append(checkField("Also look up lyrics online", "lyrics", "Repairs more words. This sends the artist and title of each song that still has broken characters to lrclib.net."));
-      break;
   }
   if (advanced()) {
     const opts = h("section", { "aria-label": "Advanced options" }, h("h2", null, "Options"));
-    if (isOrganizeTask()) {
-      if (S.task !== "dedupe") {
-        opts.append(checkField("Priority decides first (-priority)", "priority", "A song from an earlier priority group always wins, before quality is compared."));
-        opts.append(checkField("Sort “The …” by the next word (-ignore-the)", "ignoreThe", "“The Beatles” goes into B instead of T."));
-      }
-      opts.append(checkField("Decode every media file completely (-deep)", "deep", "Finds damaged audio and video, but is slow."));
-      opts.append(h("div", { class: "field" }, h("div", { class: "label" }, "Output folder (-o)"),
-        folderInput(S.f.out, (v) => setField("out", v), "Output folder"),
-        h("p", { class: "hint" }, "Empty: organize-output next to the library.")));
-    } else {
-      opts.append(checkField("Only certain repairs (-strict)", "strict", "Best guesses are listed but not written."));
-      opts.append(listField("Word lists (-wordlist)", "wordLists", "One file per line, optionally with a language: de=/path/to/de.txt", "de=/path/to/words.txt"));
-      opts.append(listField("Reviewed spellings (-words)", "words", "Files with one word per line; [Artist - Title] sections apply to one song.", "/path/to/words.txt"));
-      if (S.f.lyrics) opts.append(h("div", { class: "field" }, h("div", { class: "label" }, "Lyrics cache (-lyrics-cache)"),
-        folderInput(S.f.lyricsCache, (v) => setField("lyricsCache", v), "Lyrics cache"),
-        h("p", { class: "hint" }, "Empty: lyrics-cache in the output folder.")));
-      opts.append(h("div", { class: "field" }, h("div", { class: "label" }, "Output folder (-o)"),
-        folderInput(S.f.rout, (v) => setField("rout", v), "Output folder"),
-        h("p", { class: "hint" }, "Empty: sanitizer-output next to the song folder.")));
+    if (S.task !== "dedupe") {
+      opts.append(checkField("Priority decides first (-priority)", "priority", "A song from an earlier priority group always wins, before quality is compared."));
+      opts.append(checkField("Sort “The …” by the next word (-ignore-the)", "ignoreThe", "“The Beatles” goes into B instead of T."));
     }
+    opts.append(checkField("Decode every media file completely (-deep)", "deep", "Finds damaged audio and video, but is slow."));
+    opts.append(h("div", { class: "field" }, h("div", { class: "label" }, "Output folder (-o)"),
+      folderInput(S.f.out, (v) => setField("out", v), "Output folder"),
+      h("p", { class: "hint" }, "Empty: organize-output next to the library.")));
     fields.append(opts);
   }
   add(frag, fields);
@@ -600,7 +521,7 @@ function viewSetup() {
     h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: startAnalysis }, "Check first"),
     h("span", { class: "muted small" }, "Nothing is changed yet. You see what would happen and decide then."),
   ));
-  if (advanced() && isOrganizeTask()) {
+  if (advanced()) {
     add(frag, h("h2", null, "Earlier runs"), h("div", { id: "history" }, historyList()));
   }
   queueMicrotask(updateResolved);
@@ -636,8 +557,7 @@ async function startJob(path, body) {
 }
 
 function startAnalysis() {
-  if (isOrganizeTask()) startJob("/api/organize/analyse", organizeRequest());
-  else startJob("/api/repair/analyse", repairRequest());
+  startJob("/api/organize/analyse", organizeRequest());
 }
 
 function undo(library, out) {
@@ -786,27 +706,6 @@ async function onJobEnd(j) {
         S.done = { kind: "undo", job: j, cfg: resultFolders(j) };
         S.view = "done";
         if (j.state === "failed") S.notice = failed("Undo did not finish");
-        break;
-      case "repair-analyse":
-        if (j.state === "done") {
-          S.rep = await get(`/api/repair/analysis?id=${encodeURIComponent(j.result.analysis)}`);
-          S.choices = new Map();
-          S.skip = new Set();
-          S.open = new Set();
-          S.view = "review";
-        } else {
-          S.view = "setup";
-          S.notice = j.state === "cancelled" ? { kind: "", title: "Stopped. Nothing was changed." } : failed("The check did not finish");
-        }
-        break;
-      case "repair-apply":
-        if (j.state === "failed") {
-          S.view = S.rep ? "review" : "setup"; // after a reload S.rep is not loaded
-          S.notice = failed("Repairing did not finish");
-        } else {
-          S.done = { kind: "repair", job: j, stopped: j.state === "cancelled" };
-          S.view = "done";
-        }
         break;
       default:
         S.view = "setup";
@@ -1074,193 +973,6 @@ function organizeTable(v) {
   return wrap;
 }
 
-// ---------------------------------------------------------------- repair review
-
-const R = "�";
-
-// fits is the server's check (webui/repair.go: fits and handleRepairApply): the same
-// letters, each � one other character that is no blank, control character, [, ] or #
-// (they would break the words file).
-function fits(word, form) {
-  const w = [...word];
-  const f = [...form];
-  if (w.length !== f.length || !word.includes(R)) return false;
-  return w.every((c, i) => (c === R ? f[i] !== R && !/[\s\p{Cc}[\]#]/u.test(f[i]) : c.toLowerCase() === f[i].toLowerCase()));
-}
-
-const choiceKey = (path, word) => `${path}\n${word}`;
-const folderOf = (path) => {
-  const parts = path.split(/[\\/]/);
-  return parts.length > 1 ? parts[parts.length - 2] : path;
-};
-
-function parseCandidate(c) {
-  const m = /^(\S+) \(suggested, (.+)\)$/.exec(c.form);
-  return m ? { form: m[1], note: `suggested by ${m[2]}` } : { form: c.form, note: c.count ? `seen ${fmt(c.count)}×` : "" };
-}
-
-function wordChooser(file, word, current) {
-  const key = choiceKey(file.path, word);
-  const chosen = S.choices.get(key);
-  const err = h("span", { class: "error-text small", "aria-live": "polite" });
-  const input = h("input", { type: "text", placeholder: "Type the word", "aria-label": `Spelling for ${word}`, value: chosen && !(current || []).some((c) => c.form === chosen) ? chosen : "",
-    oninput: (e) => {
-      const v = e.target.value.trim();
-      if (!v) {
-        S.choices.delete(key);
-        err.textContent = "";
-      } else if (fits(word, v)) {
-        S.choices.set(key, v);
-        err.textContent = "";
-        for (const b of e.target.parentElement.querySelectorAll(".choice")) b.setAttribute("aria-pressed", "false");
-      } else {
-        S.choices.delete(key);
-        err.textContent = `Only the ${R} may change, one letter each.`;
-      }
-      updateRepairButton();
-    } });
-  return h("div", { class: "choices" },
-    (current || []).map((c) => h("button", { class: "choice", type: "button", "aria-pressed": String(chosen === c.form), onclick: (e) => {
-      const on = S.choices.get(key) !== c.form;
-      on ? S.choices.set(key, c.form) : S.choices.delete(key);
-      for (const b of e.currentTarget.parentElement.querySelectorAll(".choice")) b.setAttribute("aria-pressed", "false");
-      e.currentTarget.setAttribute("aria-pressed", String(on));
-      input.value = "";
-      err.textContent = "";
-      updateRepairButton();
-    } }, c.form, c.note ? h("small", null, " ", c.note) : null)),
-    input, err,
-  );
-}
-
-// contextLine shows a lyric line with the damaged word marked (the report wraps it in «»).
-function contextLine(context, word, count) {
-  let i = context.indexOf(`«${word}»`);
-  let len = word.length + 2;
-  if (i < 0) {
-    i = context.indexOf(word);
-    len = word.length;
-  }
-  const more = count > 1 ? h("span", { class: "muted small" }, ` (${count}× in this song)`) : null;
-  if (i < 0) return h("div", { class: "context" }, context, more);
-  return h("div", { class: "context" }, context.slice(0, i), h("mark", null, word), context.slice(i + len), more);
-}
-
-// wordGroups merges the unresolved occurrences of one word (one choice repairs them all).
-function wordGroups(unresolved) {
-  const groups = new Map();
-  for (const u of unresolved) {
-    const g = groups.get(u.word);
-    if (g) {
-      g.count++;
-      for (const c of u.candidates || []) if (!g.candidates.some((x) => x.form === c.form)) g.candidates.push(c);
-    } else {
-      groups.set(u.word, { ...u, count: 1, candidates: [...(u.candidates || [])] });
-    }
-  }
-  return [...groups.values()];
-}
-
-function repairCount() {
-  return S.rep.report.files.filter((f) => !S.skip.has(f.path) &&
-    (f.fixed > 0 || [...S.choices.keys()].some((k) => k.startsWith(`${f.path}\n`)))).length;
-}
-
-function updateRepairButton() {
-  const b = document.getElementById("repair-go");
-  if (!b) return;
-  const n = repairCount();
-  b.disabled = n === 0;
-  b.textContent = n ? `Repair ${plural(n, "file", "files")}` : "Nothing to repair";
-}
-
-function skipToggle(f) {
-  return h("label", { class: "check small" },
-    h("input", { type: "checkbox", checked: S.skip.has(f.path), onchange: (e) => {
-      e.target.checked ? S.skip.add(f.path) : S.skip.delete(f.path);
-      updateRepairButton();
-    } }),
-    h("span", null, "Don’t change this file"));
-}
-
-function viewRepairReview() {
-  const rep = S.rep.report;
-  const sum = S.rep.summary;
-  const frag = h("div");
-  add(frag, h("h1", null, sum.damaged ? "Broken characters found" : "No broken characters found"));
-  add(frag, noticeBox(S.notice));
-  if (!sum.damaged) {
-    add(frag, h("p", null, `All song files below ${S.rep.songDir} are fine.`));
-    add(frag, h("div", { class: "actions" }, h("button", { class: "btn", type: "button", onclick: () => {
-      S.view = "setup";
-      render();
-      validate();
-    } }, "Back")));
-    return frag;
-  }
-  const files = rep.files || [];
-  const needChoice = files.filter((f) => f.unresolved?.length);
-  const withFixes = files.filter((f) => f.fixes?.length);
-  const fixItem = (f) => h("li", null,
-    h("div", { class: "song-name" }, folderOf(f.path), f.weak ? h("span", { class: "badge weak" }, `${f.weak} best ${f.weak === 1 ? "guess" : "guesses"}`) : null),
-    h("div", { class: "song-meta path" }, f.path),
-    h("ul", { class: "fixes" }, f.fixes.map((x) => {
-      const key = choiceKey(f.path, x.before);
-      const changed = S.choices.get(key);
-      const li = h("li", null, x.before, " becomes ", h("strong", null, changed || x.after),
-        x.weak ? h("span", { class: "badge weak" }, "best guess") : null,
-        advanced() ? h("span", { class: "muted small" }, ` (${x.source}, line ${x.lines.join(", ")})`) : null, " ");
-      li.append(h("button", { class: "link small", type: "button", onclick: (e) => {
-        e.currentTarget.replaceWith(wordChooser(f, x.before, [{ form: x.after, note: "proposed" }]));
-      } }, "Change"));
-      return li;
-    })),
-    skipToggle(f),
-  );
-  const choiceItem = (f) => h("li", null,
-    h("div", { class: "song-name" }, folderOf(f.path)),
-    h("div", { class: "song-meta path" }, f.path),
-    wordGroups(f.unresolved).map((u) => h("div", { class: "word" },
-      contextLine(u.context, u.word, u.count),
-      wordChooser(f, u.word, u.candidates.map(parseCandidate)),
-    )),
-    skipToggle(f),
-  );
-  const tally = h("ul", { class: "tally" });
-  tally.append(tallyItem("fixed", "library", sum.fixed, sum.fixed === 1 ? "character can be repaired automatically" : "characters can be repaired automatically",
-    () => h("div", null,
-      sum.weak ? h("p", { class: "muted small" }, `${plural(sum.weak, "of them is a best guess", "of them are best guesses")}; check those. “Change” lets you pick another spelling.`) : null,
-      cappedList(withFixes, fixItem, "fixed"))));
-  tally.append(tallyItem("choose", "dup", sum.left, sum.left === 1 ? "character needs your choice" : "characters need your choice",
-    () => h("div", null,
-      h("p", { class: "muted small" }, "Pick the right word, or type it. Words you leave open stay as they are. Your choices are kept for later runs."),
-      cappedList(needChoice, choiceItem, "choose"))));
-  if (rep.skipped?.length) {
-    tally.append(tallyItem("skipped", "bad", rep.skipped.length, rep.skipped.length === 1 ? "file cannot be repaired here" : "files cannot be repaired here",
-      () => cappedList(rep.skipped, (s) => h("li", null, h("div", { class: "path" }, s.path), h("div", { class: "song-meta" }, s.reason)), "skipped")));
-  }
-  add(frag, tally);
-  if (!S.rep.lyrics) add(frag, h("p", { class: "muted small" }, "Tip: with “Also look up lyrics online” more words are repaired."));
-  add(frag, h("p", { class: "muted" }, "Only the broken characters change. A copy of every original file is kept in ", h("span", { class: "path" }, `${S.rep.outDir}`), "."));
-  add(frag, h("div", { class: "actions" },
-    h("button", { class: "btn primary", type: "button", id: "repair-go", onclick: () => {
-      const choices = [...S.choices.entries()].map(([k, form]) => {
-        const [path, word] = k.split("\n");
-        return { path, word, form };
-      });
-      startJob("/api/repair/apply", { analysis: S.rep.id, choices, skip: [...S.skip] });
-    } }, "Repair"),
-    h("button", { class: "btn", type: "button", onclick: startAnalysis }, "Check again"),
-    h("button", { class: "btn", type: "button", onclick: () => {
-      S.view = "setup";
-      render();
-      validate();
-    } }, "Change folders"),
-  ));
-  queueMicrotask(updateRepairButton);
-  return frag;
-}
-
 // ---------------------------------------------------------------- done
 
 function viewDone() {
@@ -1298,14 +1010,6 @@ function viewDone() {
     add(frag, h("div", { class: "actions" },
       (st.failed || stopped) && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, stopped ? "Undo again" : "Try the undo again") : null,
       again));
-  } else {
-    const sum = j.result?.summary || {};
-    add(frag, h("h1", null, d.stopped ? "Stopped part-way" : "Repaired"));
-    add(frag, noticeBox(S.notice));
-    add(frag, h("p", null, `${plural(sum.written ?? st.written, "file was", "files were")} repaired.`));
-    if (j.result?.originals) add(frag, h("p", null, "The original files are kept in ", h("span", { class: "path" }, j.result.originals), "."));
-    if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "file", "files")} could not be written` }));
-    add(frag, h("div", { class: "actions" }, again));
   }
   return frag;
 }
@@ -1326,7 +1030,6 @@ async function start() {
   try {
     const j = await get("/api/job");
     if (j && j.state === "running") {
-      S.task = j.kind.startsWith("repair") ? "repair" : S.task === "repair" ? "dedupe" : S.task;
       S.job = j;
       S.waitingFor = j.id;
       S.view = "running";
