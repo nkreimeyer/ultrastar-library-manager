@@ -22,6 +22,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/songtxt"
 	"github.com/nkreimeyer/library-manager/utils"
 )
 
@@ -278,18 +279,15 @@ func (i *Inspector) observeFile(path string, kind refKind) fileObs {
 }
 
 // rawHeaderValues returns the undecoded values of the tag lines of a txt in a
-// single-byte codepage, keyed by their 1-based line (the same lines songtxt.Parse
-// reports: \r\n, \r and \n all end a line). It is nil for UTF-8 and UTF-16 txts.
+// single-byte codepage, keyed by their 1-based line (the lines songtxt.Parse reports,
+// songtxt.LineSpans). It is nil for UTF-8 and UTF-16 txts.
 func rawHeaderValues(raw []byte, encoding string) map[int]string {
 	if encoding == utils.EncUTF8 || encoding == utils.EncUTF16LE || encoding == utils.EncUTF16BE {
 		return nil
 	}
-	raw = bytes.TrimPrefix(raw, []byte("\xef\xbb\xbf"))
-	raw = bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
-	raw = bytes.ReplaceAll(raw, []byte("\r"), []byte("\n"))
 	values := map[int]string{}
-	for i, line := range bytes.Split(raw, []byte("\n")) {
-		line = bytes.TrimSpace(line)
+	for i, sp := range songtxt.LineSpans(raw) {
+		line := bytes.TrimSpace(raw[sp[0]:sp[1]])
 		if len(line) == 0 || line[0] != '#' {
 			continue
 		}

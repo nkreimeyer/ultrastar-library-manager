@@ -1,7 +1,6 @@
 package repairtxt
 
 import (
-	"bytes"
 	"sort"
 	"strings"
 	"unicode"
@@ -23,35 +22,6 @@ type segment struct {
 	runes []rune
 	offs  []int // byte offset of each rune in the source; -1 for the inserted '\n'
 	lines []int // 1-based line of each rune
-}
-
-// lineSpans returns the [start, end) byte range of every line of src, numbered like
-// songtxt.Parse does (a leading BOM skipped; "\r\n", "\r" and "\n" end a line).
-func lineSpans(src []byte) [][2]int {
-	i := 0
-	if bytes.HasPrefix(src, []byte("\uFEFF")) {
-		i = 3
-	}
-	var spans [][2]int
-	start := i
-	for i < len(src) {
-		switch src[i] {
-		case '\n':
-			spans = append(spans, [2]int{start, i})
-			i++
-			start = i
-		case '\r':
-			spans = append(spans, [2]int{start, i})
-			i++
-			if i < len(src) && src[i] == '\n' {
-				i++
-			}
-			start = i
-		default:
-			i++
-		}
-	}
-	return append(spans, [2]int{start, len(src)})
 }
 
 // appendRunes decodes src[from:to] into seg. '~' (a held syllable) is left out, so the
@@ -81,7 +51,7 @@ func (seg *segment) appendBreak() {
 // (valid UTF-8, the line numbers of song refer to it). A tag or note whose text cannot be
 // found in its line (which Parse never produces) is left out.
 func segments(src []byte, song *songtxt.Song) []segment {
-	spans := lineSpans(src)
+	spans := songtxt.LineSpans(src)
 	lineText := func(n int) (int, int, bool) {
 		if n < 1 || n > len(spans) {
 			return 0, 0, false

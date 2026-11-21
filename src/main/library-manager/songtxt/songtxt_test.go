@@ -730,3 +730,25 @@ func TestIsDuet(t *testing.T) {
 		}
 	}
 }
+
+// LineSpans numbers lines like Parse: line n of Parse is LineSpans[n-1].
+func TestLineSpans(t *testing.T) {
+	src := "\uFEFF#TITLE:a\r\n#ARTIST:b\r\r\n: 0 1 0 x\n\nE"
+	var got []string
+	for _, sp := range LineSpans([]byte(src)) {
+		got = append(got, src[sp[0]:sp[1]])
+	}
+	if want := []string{"#TITLE:a", "#ARTIST:b", "", ": 0 1 0 x", "", "E"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("LineSpans = %q, want %q", got, want)
+	}
+	s, _ := Parse(src)
+	if s.Tags[1].Line != 2 || s.Notes[0].Line != 4 || s.EndLine != 6 {
+		t.Errorf("Parse lines: tag %d, note %d, end %d; want 2, 4, 6", s.Tags[1].Line, s.Notes[0].Line, s.EndLine)
+	}
+	if got := LineSpans(nil); len(got) != 1 || got[0] != [2]int{0, 0} {
+		t.Errorf("LineSpans(nil) = %v, want one empty line", got)
+	}
+	if got := LineSpans([]byte("a\n")); len(got) != 2 {
+		t.Errorf("LineSpans(a\\n) = %v, want 2 lines (Parse numbering)", got)
+	}
+}

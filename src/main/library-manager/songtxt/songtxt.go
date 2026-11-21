@@ -282,11 +282,44 @@ func IsBodyLine(line string) bool {
 	return false
 }
 
+// LineSpans returns the [start, end) byte range of every line of src, without its line
+// ending, in the numbering Parse uses: a leading BOM is skipped, and "\r\n", "\r" and "\n"
+// each end a line (line n is LineSpans(src)[n-1]). Code that maps Parse's line numbers
+// back to the raw bytes (check, repairtxt) uses it, so the numbers always agree.
+func LineSpans(src []byte) [][2]int {
+	i := 0
+	if len(src) >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF {
+		i = 3
+	}
+	var spans [][2]int
+	start := i
+	for i < len(src) {
+		switch src[i] {
+		case '\n':
+			spans = append(spans, [2]int{start, i})
+			i++
+			start = i
+		case '\r':
+			spans = append(spans, [2]int{start, i})
+			i++
+			if i < len(src) && src[i] == '\n' {
+				i++
+			}
+			start = i
+		default:
+			i++
+		}
+	}
+	return append(spans, [2]int{start, len(src)})
+}
+
 func splitLines(text string) []string {
-	text = strings.TrimPrefix(text, "\uFEFF")
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	return strings.Split(text, "\n")
+	spans := LineSpans([]byte(text))
+	lines := make([]string, len(spans))
+	for i, sp := range spans {
+		lines[i] = text[sp[0]:sp[1]]
+	}
+	return lines
 }
 
 func isSpace(c byte) bool { return c == ' ' || c == '\t' }
