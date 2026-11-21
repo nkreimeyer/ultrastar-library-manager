@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/nkreimeyer/library-manager/check"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // A panic while inspecting one song is counted as a failure; that song stays where it is
@@ -14,7 +15,7 @@ func TestRunInspectionPanic(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src := filepath.Join(base, "src")
-	writeFiles(t, src, merge(songFiles("Bad", "Bad Artist", "Bad Song"), songFiles("Good", "Good Artist", "Good Song")))
+	testutil.WriteFiles(t, src, merge(songFiles("Bad", "Bad Artist", "Bad Song"), songFiles("Good", "Good Artist", "Good Song")))
 	old := inspectFolder
 	t.Cleanup(func() { inspectFolder = old })
 	inspectFolder = func(insp *check.Inspector, folder string) (check.Inspection, error) {

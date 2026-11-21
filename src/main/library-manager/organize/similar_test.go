@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/nkreimeyer/library-manager/config"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	"github.com/nkreimeyer/library-manager/songtxt"
 )
 
@@ -397,7 +398,7 @@ func TestRunDedupeSimilar(t *testing.T) {
 	base := t.TempDir()
 	lib := filepath.Join(base, "library")
 	v := verse(120, "w", nil)
-	writeFiles(t, lib, map[string]string{
+	testutil.WriteFiles(t, lib, map[string]string{
 		"A/Band - Song/song.txt":     "#ARTIST:Band\n#TITLE:Song\n#MP3:a.mp3\n" + sung("300", 1, 0, v),
 		"A/Band - Song/a.mp3":        "audio",
 		"Misc/Bnad - Sogn/song.txt":  "#ARTIST:The Band\n#TITLE:Sogn\n#MP3:a.mp3\n#COVER:c.png\n" + sung("600", 2, -12, verse(120, "w", map[int]string{60: "typo"})),

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/nkreimeyer/library-manager/config"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	"github.com/nkreimeyer/library-manager/songtxt"
 )
 
@@ -252,7 +253,7 @@ func TestRunDedupeByContent(t *testing.T) {
 	body := tenNotes(": %d 2 5 M\u00e4dchen%d")
 	cp1252 := strings.ReplaceAll(chart("#ARTIST:Unknown Artist\n#TITLE:Track 03\n#MP3:a.mp3\n#BPM:300\n#GAP:480\n",
 		append(body[:5:5], append([]string{"- 19"}, body[5:]...)...)...), "\u00e4", "\xe4")
-	writeFiles(t, lib, merge(
+	testutil.WriteFiles(t, lib, merge(
 		songFiles("Pop/Original", "Die Band", "Mädchen", "cover"),
 		songFiles("C/Cher - Believe", "Cher", "Believe"),
 		map[string]string{

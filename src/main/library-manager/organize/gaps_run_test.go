@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // Only the category folders a run emptied are counted, each once; bucket folders of a
@@ -20,7 +21,7 @@ func TestRunEmptiedCategoriesCount(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, lib, merge(
+	testutil.WriteFiles(t, lib, merge(
 		songFiles("misc/Cher", "Cher", "Believe"),  // -> C/, misc emptied
 		songFiles("A/Cat/Zed", "Zed", "Song"),      // -> Z/, A/Cat emptied, A (a bucket) too
 		songFiles("B/Blondie", "Blondie", "Maria"), // -> B/Blondie - Maria, B stays a bucket
@@ -37,10 +38,10 @@ func TestRunPendingReportUnwritable(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src, lib, out := filepath.Join(base, "src"), filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, src, songFiles("ABBA - SOS", "ABBA", "SOS"))
+	testutil.WriteFiles(t, src, songFiles("ABBA - SOS", "ABBA", "SOS"))
 	before := tree(t, src)
 	cfg := organizeCfg(t, [][]string{{src}}, lib, out, false)
-	writeFiles(t, cfg.ReportPath(reportJSON), map[string]string{"x": "a folder where the report goes"})
+	testutil.WriteFiles(t, cfg.ReportPath(reportJSON), map[string]string{"x": "a folder where the report goes"})
 	ops := fsops.New(false)
 	if err := Run(cfg, ops, Options{}); err == nil {
 		t.Error("Run did not fail")
@@ -61,8 +62,8 @@ func TestRunBucketHoldsMedia(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src, lib, out := filepath.Join(base, "src"), filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, lib, map[string]string{"A/stray.mp3": "x", "A/notes.txt": "not a song", "A/.hidden.mp4": "x"})
-	writeFiles(t, src, merge(songFiles("ABBA - SOS", "ABBA", "SOS"), songFiles("Cher", "Cher", "Believe")))
+	testutil.WriteFiles(t, lib, map[string]string{"A/stray.mp3": "x", "A/notes.txt": "not a song", "A/.hidden.mp4": "x"})
+	testutil.WriteFiles(t, src, merge(songFiles("ABBA - SOS", "ABBA", "SOS"), songFiles("Cher", "Cher", "Believe")))
 	cfg := organizeCfg(t, [][]string{{src}}, lib, out, false)
 	st, rep := runOrganize(t, cfg, Options{})
 	if len(rep.LeftInPlace) != 1 || !strings.Contains(rep.LeftInPlace[0].Reason, "the bucket folder A holds the media file stray.mp3") {
@@ -77,7 +78,7 @@ func swapSetup(t *testing.T) (lib, out string, cands []Candidate, plan Plan) {
 	t.Helper()
 	base := t.TempDir()
 	lib, out = filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
+	testutil.WriteFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
 	cands = []Candidate{
 		{Label: "lib", Rel: "A/a", Folder: filepath.Join(lib, "A", "a"), InLibrary: true},
 		{Label: "lib", Rel: "B/b", Folder: filepath.Join(lib, "B", "b"), InLibrary: true},
@@ -110,7 +111,7 @@ func TestApplyBucketRecheckRefusesParkedSong(t *testing.T) {
 	a.moveTo = func(src, dst string) error {
 		if strings.HasPrefix(filepath.Base(dst), tempPrefix) {
 			// After the park, a song txt appears in the bucket A, and the move of A/a fails.
-			writeFiles(t, lib, map[string]string{"A/song.txt": "#ARTIST:X\n#TITLE:Y\n#BPM:300\n: 0 1 0 a\nE\n"})
+			testutil.WriteFiles(t, lib, map[string]string{"A/song.txt": "#ARTIST:X\n#TITLE:Y\n#BPM:300\n: 0 1 0 a\nE\n"})
 		} else if src == cands[0].Folder {
 			ops.Fail()
 			return errors.New("injected failure")
@@ -137,7 +138,7 @@ func TestApplyBucketUnreadable(t *testing.T) {
 	}
 	base := t.TempDir()
 	src, lib, out := filepath.Join(base, "src"), filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, src, songFiles("s", "ABBA", "SOS"))
+	testutil.WriteFiles(t, src, songFiles("s", "ABBA", "SOS"))
 	bucket := filepath.Join(lib, "A")
 	if err := os.MkdirAll(bucket, 0o755); err != nil {
 		t.Fatal(err)
@@ -166,7 +167,7 @@ func TestApplyMkdirJournalFailure(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src, lib, out := filepath.Join(base, "src"), filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, src, songFiles("s", "ABBA", "SOS"))
+	testutil.WriteFiles(t, src, songFiles("s", "ABBA", "SOS"))
 	before := tree(t, src)
 	ops := fsops.New(false)
 	cands := []Candidate{{Label: "src", Rel: "s", Folder: filepath.Join(src, "s")}}
@@ -190,7 +191,7 @@ func TestApplyOutDirOrderAfterJournalFailure(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src, lib, out := filepath.Join(base, "src"), filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, src, merge(songFiles("a", "A", "A"), songFiles("i1", "I", "I"), songFiles("i2", "J", "J"), songFiles("k", "K", "K")))
+	testutil.WriteFiles(t, src, merge(songFiles("a", "A", "A"), songFiles("i1", "I", "I"), songFiles("i2", "J", "J"), songFiles("k", "K", "K")))
 	ops := fsops.New(false)
 	var cands []Candidate
 	for _, n := range []string{"a", "i2", "i1", "k"} {
@@ -278,7 +279,7 @@ func TestApplyUnparkFails(t *testing.T) {
 
 func TestIsEmptyTree(t *testing.T) {
 	base := t.TempDir()
-	writeFiles(t, base, map[string]string{
+	testutil.WriteFiles(t, base, map[string]string{
 		"hiddenonly/.git/objects/x": "x",
 		"hiddenfile/.DS_Store":      "x",
 		"nested/sub/x":              "x",
@@ -317,7 +318,7 @@ func TestRunCandidateTagsAndErrors(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src, lib, out := filepath.Join(base, "src"), filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, src, merge(
+	testutil.WriteFiles(t, src, merge(
 		songFiles("s", "Old", "Song", "#ARTIST:New"),
 		map[string]string{
 			"broken/song.txt": "#ARTIST:Q\n#TITLE:T\n#MP3:song.mp3\n#BPM:300\n#GAP:x\n: 0 x 0 a\n: 4 y 0 b\nE\n",
@@ -342,11 +343,11 @@ func TestUndoKeepsUserFileInCreatedBucket(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src, lib, out := filepath.Join(base, "src"), filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, src, songFiles("ABBA - SOS", "ABBA", "SOS"))
+	testutil.WriteFiles(t, src, songFiles("ABBA - SOS", "ABBA", "SOS"))
 	before := tree(t, src)
 	cfg := organizeCfg(t, [][]string{{src}}, lib, out, false)
 	runOrganize(t, cfg, Options{})
-	writeFiles(t, lib, map[string]string{"A/user.txt": "mine"})
+	testutil.WriteFiles(t, lib, map[string]string{"A/user.txt": "mine"})
 	if st := runUndo(t, cfg); st.Moved != 1 || st.Failed != 0 {
 		t.Errorf("undo: %+v", st)
 	}
@@ -361,7 +362,7 @@ func TestUndoKeepsUserFileInCreatedBucket(t *testing.T) {
 func TestUndoJournalUnreadable(t *testing.T) {
 	base := t.TempDir()
 	cfg := organizeCfg(t, nil, filepath.Join(base, "lib"), filepath.Join(base, "out"), false)
-	writeFiles(t, cfg.JournalPath(), map[string]string{"x": "x"})
+	testutil.WriteFiles(t, cfg.JournalPath(), map[string]string{"x": "x"})
 	err := Undo(cfg, fsops.New(false), UndoOptions{})
 	if err == nil || !strings.Contains(err.Error(), "reading the journal") {
 		t.Errorf("Undo = %v", err)
@@ -407,7 +408,7 @@ func TestJournalRunLineOnce(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src, lib, out := filepath.Join(base, "src"), filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, src, merge(songFiles("ABBA - SOS", "ABBA", "SOS"), songFiles("Cher", "Cher", "Believe")))
+	testutil.WriteFiles(t, src, merge(songFiles("ABBA - SOS", "ABBA", "SOS"), songFiles("Cher", "Cher", "Believe")))
 	if err := os.MkdirAll(lib, 0o755); err != nil {
 		t.Fatal(err)
 	}

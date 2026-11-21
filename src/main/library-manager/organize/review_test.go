@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 func TestMakePlanExclude(t *testing.T) {
@@ -127,8 +128,8 @@ func reviewSources(t *testing.T) (base, a, b string) {
 	t.Helper()
 	base = t.TempDir()
 	a, b = filepath.Join(base, "a"), filepath.Join(base, "b")
-	writeFiles(t, a, merge(songFiles("ABBA - SOS", "ABBA", "SOS", "cover"), songFiles("Queen - Rock", "Queen", "Rock")))
-	writeFiles(t, b, songFiles("x/ABBA - SOS", "ABBA", "SOS"))
+	testutil.WriteFiles(t, a, merge(songFiles("ABBA - SOS", "ABBA", "SOS", "cover"), songFiles("Queen - Rock", "Queen", "Rock")))
+	testutil.WriteFiles(t, b, songFiles("x/ABBA - SOS", "ABBA", "SOS"))
 	return base, a, b
 }
 
@@ -256,7 +257,7 @@ func TestRunCancelDuringMovesAndUndo(t *testing.T) {
 	noFFprobe(t)
 	base, a, b := reviewSources(t)
 	c := filepath.Join(base, "c") // a second duplicate: two moves to duplicates/
-	writeFiles(t, c, songFiles("ABBA - SOS", "ABBA", "SOS"))
+	testutil.WriteFiles(t, c, songFiles("ABBA - SOS", "ABBA", "SOS"))
 	lib, out := filepath.Join(base, "library"), filepath.Join(base, "out")
 	before := [][]string{tree(t, a), tree(t, b), tree(t, c)}
 	cfg := organizeCfg(t, [][]string{{a}, {b}, {c}}, lib, out, false)
@@ -337,7 +338,7 @@ func TestApplyCancelAfterPark(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
+	testutil.WriteFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
 	before := tree(t, lib)
 	cfg := organizeCfg(t, [][]string{{lib}}, lib, out, false)
 	ops := fsops.New(false)
@@ -383,7 +384,7 @@ func TestApplyCancelAfterSwapMoveIsJournaled(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
+	testutil.WriteFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
 	before := tree(t, lib)
 	cfg := organizeCfg(t, [][]string{{lib}}, lib, out, false)
 	ops := fsops.New(false)
@@ -430,7 +431,7 @@ func TestApplyCancelFallbackCreatesFolderIsJournaled(t *testing.T) {
 	// x wants to go below y's folder and y below x's: y is parked, x moves to B/b/x
 	// (creating B/b), then the run stops; y cannot go back to B/b and goes to A/a/y,
 	// which needs A/a again (x has moved away from there).
-	writeFiles(t, lib, merge(songFiles("A/a", "Ex", "X"), songFiles("B/b", "Why", "Y")))
+	testutil.WriteFiles(t, lib, merge(songFiles("A/a", "Ex", "X"), songFiles("B/b", "Why", "Y")))
 	before := tree(t, lib)
 	cfg := organizeCfg(t, [][]string{{lib}}, lib, out, false)
 	ops := fsops.New(false)

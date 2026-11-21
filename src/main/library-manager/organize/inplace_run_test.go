@@ -9,6 +9,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // prepared returns a function that fails the test on err, else prepares the out dir of
@@ -45,7 +46,7 @@ func renamed(files map[string]string, dir, from, to string) map[string]string {
 // only the mark makes it lose.
 func dedupeLibrary(t *testing.T, lib string) {
 	t.Helper()
-	writeFiles(t, lib, merge(
+	testutil.WriteFiles(t, lib, merge(
 		songFiles("Pop/ABBA - SOS", "ABBA", "SOS", "cover"),
 		songFiles("Misc/ABBA - SOS_dupl1", "ABBA", "SOS", "cover", "video"),
 		songFiles("C/Cher - Believe", "Cher", "Believe"),
@@ -151,12 +152,12 @@ func TestRunAdd(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, newDir, new2 := filepath.Join(base, "library"), filepath.Join(base, "new"), filepath.Join(base, "new2")
-	writeFiles(t, lib, merge(
+	testutil.WriteFiles(t, lib, merge(
 		songFiles("A/ABBA - SOS", "ABBA", "SOS"),
 		songFiles("Q/Queen - Song", "Queen", "Song", "video"),
 		songFiles("Old/Toto - Africa", "Toto", "Africa"),
 	))
-	writeFiles(t, newDir, merge(
+	testutil.WriteFiles(t, newDir, merge(
 		songFiles("ABBA - SOS", "ABBA", "SOS", "video"), // better: replaces the library copy
 		songFiles("Queen - Song", "Queen", "Song"),      // worse: a duplicate
 		songFiles("Toto - Africa", "Toto", "Africa"),    // a tie: the library copy stays
@@ -167,7 +168,7 @@ func TestRunAdd(t *testing.T) {
 			"Broken/song.mp3": "x",
 		},
 	))
-	writeFiles(t, new2, songFiles("Muse - Uprising_dupl2", "Muse", "Uprising")) // a lone copy: added without the mark
+	testutil.WriteFiles(t, new2, songFiles("Muse - Uprising_dupl2", "Muse", "Uprising")) // a lone copy: added without the mark
 	roots := []string{lib, newDir, new2}
 	before := map[string][]string{}
 	for _, d := range roots {
@@ -235,7 +236,7 @@ func TestRunAddNewLibrary(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, src := filepath.Join(base, "library"), filepath.Join(base, "new")
-	writeFiles(t, src, songFiles("x", "ABBA", "SOS"))
+	testutil.WriteFiles(t, src, songFiles("x", "ABBA", "SOS"))
 	cfg := prepared(t)(config.NewAdd([][]string{{src}}, lib, "", false))
 	if len(cfg.Sources) != 1 {
 		t.Fatalf("sources = %+v", cfg.Sources)

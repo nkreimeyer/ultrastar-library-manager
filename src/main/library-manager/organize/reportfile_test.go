@@ -9,6 +9,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // "&", "<" and ">" in song names are written literally to the JSON reports (no HTML
@@ -59,7 +60,7 @@ func TestReportFilesKeepAmpersandLiteral(t *testing.T) {
 	t.Run("organize", func(t *testing.T) {
 		base := t.TempDir()
 		src := filepath.Join(base, "src")
-		writeFiles(t, src, songFiles("Simon", "Simon & Garfunkel", "I <3 You > Me"))
+		testutil.WriteFiles(t, src, songFiles("Simon", "Simon & Garfunkel", "I <3 You > Me"))
 		cfg := organizeCfg(t, [][]string{{src}}, filepath.Join(base, "lib"), filepath.Join(base, "out"), true)
 		if err := Run(cfg, fsops.New(true), Options{}); err != nil {
 			t.Fatal(err)
@@ -78,7 +79,7 @@ func TestReportFilesKeepAmpersandLiteral(t *testing.T) {
 	t.Run("remove", func(t *testing.T) {
 		base := t.TempDir()
 		lib := filepath.Join(base, "lib")
-		writeFiles(t, lib, songFiles("S/Simon & Garfunkel - I 3 You Me", "Simon & Garfunkel", "I <3 You > Me"))
+		testutil.WriteFiles(t, lib, songFiles("S/Simon & Garfunkel - I 3 You Me", "Simon & Garfunkel", "I <3 You > Me"))
 		cfg := prepared(t)(config.NewDedupe(lib, filepath.Join(base, "out"), true))
 		if err := Remove(cfg, fsops.New(true), []Pattern{mustPattern(t, PatternArtist, "Simon & Garfunkel")}); err != nil {
 			t.Fatal(err)

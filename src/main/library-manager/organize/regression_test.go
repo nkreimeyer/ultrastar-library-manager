@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // A keeper from another source that cannot reach the library must not cost the library
@@ -163,9 +165,9 @@ func TestReportDestFollowsCollisionSuffix(t *testing.T) {
 		base := t.TempDir()
 		a, b := filepath.Join(base, "a"), filepath.Join(base, "b")
 		lib, out := filepath.Join(base, "library"), filepath.Join(base, "out")
-		writeFiles(t, a, songFiles("Song", "Artist", "Song", "cover"))
-		writeFiles(t, b, songFiles("Song", "Artist", "Song"))
-		writeFiles(t, out, map[string]string{"duplicates/b/Song/old.txt": "x"})
+		testutil.WriteFiles(t, a, songFiles("Song", "Artist", "Song", "cover"))
+		testutil.WriteFiles(t, b, songFiles("Song", "Artist", "Song"))
+		testutil.WriteFiles(t, out, map[string]string{"duplicates/b/Song/old.txt": "x"})
 		cfg := organizeCfg(t, [][]string{{a, b}}, lib, out, dry)
 		_, rep := runOrganize(t, cfg, Options{})
 		if len(rep.Duplicates) != 1 {
@@ -188,7 +190,7 @@ func TestUndoAfterTruncatedJournalLine(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src := filepath.Join(base, "src")
-	writeFiles(t, src, songFiles("ABBA - SOS", "ABBA", "SOS"))
+	testutil.WriteFiles(t, src, songFiles("ABBA - SOS", "ABBA", "SOS"))
 	lib, out := filepath.Join(base, "library"), filepath.Join(base, "out")
 	cfg := organizeCfg(t, [][]string{{src}}, lib, out, false)
 	if st, _ := runOrganize(t, cfg, Options{}); st.Moved == 0 || st.Failed != 0 {

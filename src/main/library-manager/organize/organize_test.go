@@ -10,7 +10,6 @@ import (
 	"image/png"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -20,20 +19,9 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	log "github.com/sirupsen/logrus"
 )
-
-// notesTxt is a valid song body: 10 notes ending at 1.9 s, then E. The lyrics are lyric,
-// so songs with different lyrics never have the same content hash.
-func notesTxt(lyric string) string {
-	var b strings.Builder
-	b.WriteString("#BPM:300\n#GAP:0\n")
-	for i := range 10 {
-		fmt.Fprintf(&b, ": %d 2 0 %s\n", i*4, lyric)
-	}
-	b.WriteString("E\n")
-	return b.String()
-}
 
 // duetTxt is a valid duet body with P1 and P2, sung to lyric.
 func duetTxt(lyric string) string {
@@ -47,20 +35,6 @@ func duetTxt(lyric string) string {
 	}
 	b.WriteString("E\n")
 	return b.String()
-}
-
-// writeFiles creates files (path relative to root -> content).
-func writeFiles(t *testing.T, root string, files map[string]string) {
-	t.Helper()
-	for rel, content := range files {
-		p := filepath.Join(root, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
 }
 
 // pngImage is a valid w x h PNG.
@@ -80,7 +54,7 @@ func songFiles(dir, artist, title string, extra ...string) map[string]string {
 	head := "#ARTIST:" + artist + "\n#TITLE:" + title + "\n#MP3:song.mp3\n"
 	files := map[string]string{dir + "/song.mp3": "audio of " + dir}
 	lyric := artist + " / " + title // different songs, different content
-	body := notesTxt(lyric)
+	body := testutil.NotesTxt(lyric)
 	for _, e := range extra {
 		switch {
 		case e == "duet":
@@ -208,7 +182,7 @@ func runUndo(t *testing.T, cfg config.OrganizeConfig) fsops.Stats {
 // sources creates the three test sources (hq, low1, low2) below base.
 func threeSources(t *testing.T, base string) (hqDir, low1Dir, low2Dir string) {
 	hqDir, low1Dir, low2Dir = filepath.Join(base, "hq"), filepath.Join(base, "low1"), filepath.Join(base, "low2")
-	writeFiles(t, hqDir, merge(
+	testutil.WriteFiles(t, hqDir, merge(
 		songFiles("ABBA - SOS", "ABBA", "SOS"),
 		// Broken: no #BPM. The working low1 version replaces it.
 		map[string]string{
@@ -216,13 +190,13 @@ func threeSources(t *testing.T, base string) (hqDir, low1Dir, low2Dir string) {
 			"Broken/song.mp3": "x",
 		},
 	))
-	writeFiles(t, low1Dir, merge(
+	testutil.WriteFiles(t, low1Dir, merge(
 		songFiles("Pop/ABBA - SOS", "ABBA", "SOS", "cover"), // better (a cover), but lower tier
 		songFiles("Queen - Bohemian Rhapsody", "Queen", "Bohemian Rhapsody"),
 		songFiles("Elton", "Elton John", "Song"),
 		songFiles("Enc", "Mot\x81rhead", "Ace of Spades"), // 0x81 is undefined in CP1252: an encoding problem
 	))
-	writeFiles(t, low2Dir, merge(
+	testutil.WriteFiles(t, low2Dir, merge(
 		songFiles("Rock/Beatles", "The Beatles", "Help!"),
 		songFiles("Elton Duet", "Elton John", "Song", "duet"),
 	))
@@ -232,8 +206,8 @@ func threeSources(t *testing.T, base string) (hqDir, low1Dir, low2Dir string) {
 		}
 	}
 	// Folders with only hidden files (macOS leftovers) count as empty.
-	writeFiles(t, low2Dir, map[string]string{"Empty/Sub/.DS_Store": "x"})
-	writeFiles(t, low1Dir, map[string]string{"Pop/Nothing/._song.txt": "#ARTIST:X\n#TITLE:Y\n"})
+	testutil.WriteFiles(t, low2Dir, map[string]string{"Empty/Sub/.DS_Store": "x"})
+	testutil.WriteFiles(t, low1Dir, map[string]string{"Pop/Nothing/._song.txt": "#ARTIST:X\n#TITLE:Y\n"})
 	return
 }
 
@@ -387,7 +361,7 @@ func TestRunDryRunMatchesRealRun(t *testing.T) {
 	base := t.TempDir()
 	hqDir, low1Dir, low2Dir := threeSources(t, base)
 	lib := filepath.Join(base, "library")
-	writeFiles(t, lib, songFiles("misc/Cher - Believe", "Cher", "Believe"))
+	testutil.WriteFiles(t, lib, songFiles("misc/Cher - Believe", "Cher", "Believe"))
 	tiers := [][]string{{lib}, {hqDir}, {low1Dir, low2Dir}}
 	roots := []string{hqDir, low1Dir, low2Dir, lib}
 	before := map[string][]string{}
@@ -445,14 +419,14 @@ func TestRunLibraryAsSource(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, newDir, out := filepath.Join(base, "library"), filepath.Join(base, "new"), filepath.Join(base, "out")
-	writeFiles(t, lib, merge(
+	testutil.WriteFiles(t, lib, merge(
 		songFiles("A/ABBA - SOS", "Zed", "Song"), // wants Z/Zed - Song
 		songFiles("Z/Zed - Song", "ABBA", "SOS"), // wants A/ABBA - SOS
 		songFiles("B", "Blondie", "Call Me"),     // a song folder named like its bucket
 		songFiles("misc/Cher - Believe", "Cher", "Believe"),
 		songFiles("C/Cher - Believe (2)", "Cher", "Believe", "cover"), // the better version (a cover)
 	))
-	writeFiles(t, newDir, songFiles("Bee Gees - Stayin' Alive", "Bee Gees", "Stayin' Alive"))
+	testutil.WriteFiles(t, newDir, songFiles("Bee Gees - Stayin' Alive", "Bee Gees", "Stayin' Alive"))
 	beforeLib, beforeNew := tree(t, lib), tree(t, newDir)
 	tiers := [][]string{{lib, newDir}}
 
@@ -515,7 +489,7 @@ func TestUndoDryRunAndFailures(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src, lib, out := filepath.Join(base, "src"), filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, src, merge(songFiles("a", "Abba", "SOS"), songFiles("b", "Bee Gees", "Tragedy")))
+	testutil.WriteFiles(t, src, merge(songFiles("a", "Abba", "SOS"), songFiles("b", "Bee Gees", "Tragedy")))
 	cfg := organizeCfg(t, [][]string{{src}}, lib, out, false)
 	if st, _ := runOrganize(t, cfg, Options{}); st.Moved != 2 {
 		t.Fatalf("moved %d", st.Moved)
@@ -550,43 +524,29 @@ func TestUndoDryRunAndFailures(t *testing.T) {
 }
 
 func TestRunMediaQuality(t *testing.T) {
-	for _, tool := range []string{"ffmpeg", "ffprobe"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s not found", tool)
-		}
-	}
+	testutil.RequireFFmpeg(t)
 	base := t.TempDir()
 	a, b, c := filepath.Join(base, "a"), filepath.Join(base, "b"), filepath.Join(base, "c")
-	ffmpeg := func(out string, args ...string) {
-		t.Helper()
-		if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		cmd := exec.Command("ffmpeg", append(append([]string{"-v", "error", "-y"}, args...), out)...)
-		if msg, err := cmd.CombinedOutput(); err != nil {
-			t.Skipf("cannot generate test media: %v\n%s", err, msg)
-		}
-	}
 	mp3 := func(out, rate string) {
-		ffmpeg(out, "-f", "lavfi", "-i", "sine=d=3", "-c:a", "libmp3lame", "-b:a", rate)
+		testutil.GenerateMediaAt(t, out, "-f", "lavfi", "-i", "sine=d=3", "-c:a", "libmp3lame", "-b:a", rate)
 	}
 	// Song 1: the same song at 96 and 256 kbit/s; the higher bitrate wins (no -priority).
-	writeFiles(t, a, songFiles("One", "Artist", "One"))
-	writeFiles(t, b, songFiles("One", "Artist", "One"))
+	testutil.WriteFiles(t, a, songFiles("One", "Artist", "One"))
+	testutil.WriteFiles(t, b, songFiles("One", "Artist", "One"))
 	mp3(filepath.Join(a, "One", "song.mp3"), "96k")
 	mp3(filepath.Join(b, "One", "song.mp3"), "256k")
 	// Song 2: the version with a video wins over the higher bitrate.
-	writeFiles(t, b, songFiles("Two", "Artist", "Two"))
-	writeFiles(t, c, songFiles("Two", "Artist", "Two", "#VIDEO:video.mp4"))
+	testutil.WriteFiles(t, b, songFiles("Two", "Artist", "Two"))
+	testutil.WriteFiles(t, c, songFiles("Two", "Artist", "Two", "#VIDEO:video.mp4"))
 	mp3(filepath.Join(b, "Two", "song.mp3"), "256k")
 	mp3(filepath.Join(c, "Two", "song.mp3"), "96k")
 	video := func(out, size string) {
-		ffmpeg(out, "-f", "lavfi", "-i", "testsrc=d=3:s="+size+":r=10", "-c:v", "libx264", "-pix_fmt", "yuv420p")
+		testutil.GenerateMediaAt(t, out, "-f", "lavfi", "-i", "testsrc=d=3:s="+size+":r=10", "-c:v", "libx264", "-pix_fmt", "yuv420p")
 	}
 	video(filepath.Join(c, "Two", "video.mp4"), "64x48")
 	// Song 4: both have a video; the higher one wins.
-	writeFiles(t, a, songFiles("Four", "Artist", "Four", "#VIDEO:video.mp4"))
-	writeFiles(t, b, songFiles("Four", "Artist", "Four", "#VIDEO:video.mp4"))
+	testutil.WriteFiles(t, a, songFiles("Four", "Artist", "Four", "#VIDEO:video.mp4"))
+	testutil.WriteFiles(t, b, songFiles("Four", "Artist", "Four", "#VIDEO:video.mp4"))
 	mp3(filepath.Join(a, "Four", "song.mp3"), "128k")
 	mp3(filepath.Join(b, "Four", "song.mp3"), "128k")
 	video(filepath.Join(a, "Four", "video.mp4"), "64x48")
@@ -613,8 +573,8 @@ func TestRunMediaQuality(t *testing.T) {
 		t.Errorf("notes = %v", rep.Notes)
 	}
 	// With -priority, the first source wins although it is worse.
-	writeFiles(t, filepath.Join(base, "d"), songFiles("Three", "Artist", "Three"))
-	writeFiles(t, filepath.Join(base, "e"), songFiles("Three", "Artist", "Three"))
+	testutil.WriteFiles(t, filepath.Join(base, "d"), songFiles("Three", "Artist", "Three"))
+	testutil.WriteFiles(t, filepath.Join(base, "e"), songFiles("Three", "Artist", "Three"))
 	mp3(filepath.Join(base, "d", "Three", "song.mp3"), "96k")
 	mp3(filepath.Join(base, "e", "Three", "song.mp3"), "256k")
 	_, rep = runOrganize(t, organizeCfg(t, [][]string{{filepath.Join(base, "d")}, {filepath.Join(base, "e")}}, lib, filepath.Join(base, "out2"), true), Options{Priority: true})
@@ -631,7 +591,7 @@ func TestApplyMovesBackAfterFailedCycle(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
+	testutil.WriteFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
 	before := tree(t, lib)
 	cfg := organizeCfg(t, [][]string{{lib}}, lib, out, false)
 	ops := fsops.New(false)
@@ -675,7 +635,7 @@ func TestApplySkipsFinalMoveAfterFailedPark(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
+	testutil.WriteFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
 	before := tree(t, lib)
 	ops := fsops.New(false)
 	cands := []Candidate{
@@ -708,13 +668,13 @@ func TestRunExistingLibraryNotSource(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src, lib := filepath.Join(base, "src"), filepath.Join(base, "lib")
-	writeFiles(t, lib, merge(
+	testutil.WriteFiles(t, lib, merge(
 		songFiles("A/abba - sos", "ABBA", "SOS"),
 		songFiles("Q/Queen - Bohemian Rhapsody", "Queen", "Bohemian Rhapsody"),
 		map[string]string{"C": "a file where the bucket C would go"},
 		songFiles("D", "Some", "Song"), // a song folder named like the bucket D
 	))
-	writeFiles(t, src, merge(
+	testutil.WriteFiles(t, src, merge(
 		songFiles("ABBA - SOS", "ABBA", "SOS"),
 		songFiles("Queen - Bohemian Rhapsody", "Queen", "Bohemian Rhapsody"),
 		songFiles("Cher - Believe", "Cher", "Believe"),
@@ -773,7 +733,7 @@ func TestRunLibrarySourceWithoutSongs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeFiles(t, src, songFiles("ABBA - SOS", "ABBA", "SOS"))
+	testutil.WriteFiles(t, src, songFiles("ABBA - SOS", "ABBA", "SOS"))
 	want := fmt.Sprintf(reasonNotASong, "A/ABBA - SOS")
 	var replanned Plan
 	opts := Options{Review: func(rv *Review) error {
@@ -801,7 +761,7 @@ func TestRunUnreadableBucket(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src, lib := filepath.Join(base, "src"), filepath.Join(base, "lib")
-	writeFiles(t, src, songFiles("ABBA - SOS", "ABBA", "SOS"))
+	testutil.WriteFiles(t, src, songFiles("ABBA - SOS", "ABBA", "SOS"))
 	if err := os.MkdirAll(filepath.Join(lib, "A"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -824,11 +784,11 @@ func TestRunBucketSongStays(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src, lib, out := filepath.Join(base, "src"), filepath.Join(base, "library"), filepath.Join(base, "out")
-	writeFiles(t, lib, map[string]string{"A/song.txt": "#ARTIST:Some\n#TITLE:Song\n#MP3:song.mp3\n: 0 2 0 la\nE\n", "A/song.mp3": "x"}) // no #BPM
-	writeFiles(t, src, songFiles("Abba - Y", "Abba", "Y"))
+	testutil.WriteFiles(t, lib, map[string]string{"A/song.txt": "#ARTIST:Some\n#TITLE:Song\n#MP3:song.mp3\n: 0 2 0 la\nE\n", "A/song.mp3": "x"}) // no #BPM
+	testutil.WriteFiles(t, src, songFiles("Abba - Y", "Abba", "Y"))
 	beforeLib, beforeSrc := tree(t, lib), tree(t, src)
 	cfg := organizeCfg(t, [][]string{{lib}, {src}}, lib, out, false)
-	writeFiles(t, out, map[string]string{"invalid/library": "a file: the move to invalid/ fails"})
+	testutil.WriteFiles(t, out, map[string]string{"invalid/library": "a file: the move to invalid/ fails"})
 	st, rep := runOrganize(t, cfg, Options{})
 	if st.Failed != 2 || st.Moved != 0 {
 		t.Errorf("stats = %+v, want the failed invalid move and the refused library move", st)
@@ -851,8 +811,8 @@ func TestApplyBucketSongParkFails(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, src, out := filepath.Join(base, "lib"), filepath.Join(base, "src"), filepath.Join(base, "out")
-	writeFiles(t, lib, songFiles("A", "Abba", "SOS"))
-	writeFiles(t, src, songFiles("x", "Abba", "Y"))
+	testutil.WriteFiles(t, lib, songFiles("A", "Abba", "SOS"))
+	testutil.WriteFiles(t, src, songFiles("x", "Abba", "Y"))
 	before := tree(t, lib)
 	ops := fsops.New(false)
 	cands := []Candidate{
@@ -897,7 +857,7 @@ func TestApplyJournalFailureAfterPark(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
+	testutil.WriteFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
 	before := tree(t, lib)
 	cfg := organizeCfg(t, [][]string{{lib}}, lib, out, false)
 	ops := fsops.New(false)
@@ -927,7 +887,7 @@ func TestApplyJournalFailureAfterSwapMove(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
+	testutil.WriteFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
 	cfg := organizeCfg(t, [][]string{{lib}}, lib, out, false)
 	ops := fsops.New(false)
 	cands := []Candidate{
@@ -964,7 +924,7 @@ func TestApplyStopsAfterJournalFailure(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src, lib, out := filepath.Join(base, "src"), filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, src, merge(songFiles("a", "A", "A"), songFiles("b", "B", "B"), songFiles("c", "C", "C")))
+	testutil.WriteFiles(t, src, merge(songFiles("a", "A", "A"), songFiles("b", "B", "B"), songFiles("c", "C", "C")))
 	ops := fsops.New(false)
 	var cands []Candidate
 	var ds []Decision
@@ -995,7 +955,7 @@ func TestRunJournalUnwritable(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src, lib, out := filepath.Join(base, "src"), filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, src, songFiles("a", "Abba", "SOS"))
+	testutil.WriteFiles(t, src, songFiles("a", "Abba", "SOS"))
 	before := tree(t, src)
 	cfg := organizeCfg(t, [][]string{{src}}, lib, out, false)
 	if err := os.MkdirAll(cfg.JournalPath(), 0o755); err != nil { // a folder: appends fail
@@ -1028,7 +988,7 @@ func TestRunQualityWithoutFFprobe(t *testing.T) {
 	}
 	for i, extra := range variants {
 		dir := filepath.Join(base, fmt.Sprintf("s%d", i))
-		writeFiles(t, dir, songFiles("Song", "Artist", "Song", extra...))
+		testutil.WriteFiles(t, dir, songFiles("Song", "Artist", "Song", extra...))
 		tier = append(tier, dir)
 	}
 	_, rep := runOrganize(t, organizeCfg(t, [][]string{tier}, filepath.Join(base, "lib"), filepath.Join(base, "out"), true), Options{})
@@ -1054,8 +1014,8 @@ func TestRunVideoWithoutFFprobe(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	without, with := filepath.Join(base, "a"), filepath.Join(base, "b")
-	writeFiles(t, without, songFiles("Song", "Artist", "Song"))
-	writeFiles(t, with, songFiles("Song", "Artist", "Song", "video"))
+	testutil.WriteFiles(t, without, songFiles("Song", "Artist", "Song"))
+	testutil.WriteFiles(t, with, songFiles("Song", "Artist", "Song", "video"))
 	_, rep := runOrganize(t, organizeCfg(t, [][]string{{without, with}}, filepath.Join(base, "lib"), filepath.Join(base, "out"), true), Options{})
 	if len(rep.Duplicates) != 1 || rep.Duplicates[0].Song != "a:Song" || rep.Duplicates[0].Keeper != "b:Song" || rep.Duplicates[0].Reason != "no video" {
 		t.Errorf("duplicates = %+v, want a:Song losing to b:Song with \"no video\"", rep.Duplicates)
@@ -1067,7 +1027,7 @@ func TestRunIgnoreThe(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src := filepath.Join(base, "src")
-	writeFiles(t, src, songFiles("x", "The Beatles", "Help!"))
+	testutil.WriteFiles(t, src, songFiles("x", "The Beatles", "Help!"))
 	_, rep := runOrganize(t, organizeCfg(t, [][]string{{src}}, filepath.Join(base, "lib"), filepath.Join(base, "out"), true), Options{IgnoreThe: true})
 	if len(rep.ToLibrary) != 1 || rep.ToLibrary[0].Target != "B/The Beatles - Help!" || !rep.IgnoreThe {
 		t.Errorf("to library = %+v, ignoreThe = %v", rep.ToLibrary, rep.IgnoreThe)
@@ -1091,7 +1051,7 @@ func TestApplyUnparkFallbackFails(t *testing.T) {
 			noFFprobe(t)
 			base := t.TempDir()
 			lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
-			writeFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
+			testutil.WriteFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
 			before := tree(t, lib)
 			cfg := organizeCfg(t, [][]string{{lib}}, lib, out, false)
 			ops := fsops.New(false)
@@ -1118,7 +1078,7 @@ func TestApplyUnparkFallbackFails(t *testing.T) {
 				}
 				return ops.MoveTo(src, dst)
 			}
-			hook := captureLog(t)
+			hook := testutil.CaptureLogs(t)
 			a.apply(plan)
 			var found bool
 			for _, m := range messages(hook, log.ErrorLevel) {

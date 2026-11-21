@@ -9,6 +9,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 func mustPattern(t *testing.T, kind, text string) Pattern {
@@ -142,7 +143,7 @@ func TestRunRemove(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib := filepath.Join(base, "library")
-	writeFiles(t, lib, merge(
+	testutil.WriteFiles(t, lib, merge(
 		songFiles("A/ABBA - SOS", "ABBA", "SOS"),
 		songFiles("A/ABBA - Waterloo", "ABBA", "Waterloo"),
 		songFiles("E/Elton John & Kiki Dee - Don't Go", "Elton John & Kiki Dee", "Don't Go Breaking My Heart", "duet"),
@@ -152,16 +153,16 @@ func TestRunRemove(t *testing.T) {
 		songFiles("D/Duo - Song (solo)", "Duo", "Song (Solo)"), // another title
 		songFiles("C/Copy - Song", "Copycat_dupl1", "Song"),    // the copy mark is ignored
 		map[string]string{ // no #ARTIST: taken from the folder name
-			"E/Elton John - Rocket Man/song.txt": "#TITLE:Rocket Man\n#MP3:a.mp3\n" + notesTxt("r"),
+			"E/Elton John - Rocket Man/song.txt": "#TITLE:Rocket Man\n#MP3:a.mp3\n" + testutil.NotesTxt("r"),
 			"E/Elton John - Rocket Man/a.mp3":    "a",
-			"E/Untagged/song.txt":                "#MP3:a.mp3\n" + notesTxt("u"), // no obvious name: never matched
+			"E/Untagged/song.txt":                "#MP3:a.mp3\n" + testutil.NotesTxt("u"), // no obvious name: never matched
 			"E/Untagged/a.mp3":                   "a",
-			"M/Muse - Uprising/song.txt":         "#ARTIST:Muse\n#MP3:a.mp3\n" + notesTxt("m"), // no #TITLE
+			"M/Muse - Uprising/song.txt":         "#ARTIST:Muse\n#MP3:a.mp3\n" + testutil.NotesTxt("m"), // no #TITLE
 			"M/Muse - Uprising/a.mp3":            "a",
 		},
 		map[string]string{
 			// CP1252 with an ambiguous byte: an encoding problem, so it stays.
-			"Q/Queen - Broken/song.txt": "#ARTIST:Queen\n#TITLE:Br\x81ken\n#MP3:a.mp3\n" + notesTxt("x"),
+			"Q/Queen - Broken/song.txt": "#ARTIST:Queen\n#TITLE:Br\x81ken\n#MP3:a.mp3\n" + testutil.NotesTxt("x"),
 			"Q/Queen - Broken/a.mp3":    "a",
 			"Z/notxt/a.mp3":             "a",
 		},

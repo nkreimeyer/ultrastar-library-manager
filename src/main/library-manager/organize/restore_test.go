@@ -12,6 +12,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // addWithBetterSource sets up `add` of a source whose copy of the library's song is better
@@ -22,8 +23,8 @@ func addWithBetterSource(t *testing.T, dry bool) (cfg config.OrganizeConfig, lib
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, src = filepath.Join(base, "lib"), filepath.Join(base, "usb", "songs")
-	writeFiles(t, lib, songFiles("A/ABBA - SOS", "ABBA", "SOS"))
-	writeFiles(t, src, songFiles("ABBA - SOS", "ABBA", "SOS", "video"))
+	testutil.WriteFiles(t, lib, songFiles("A/ABBA - SOS", "ABBA", "SOS"))
+	testutil.WriteFiles(t, src, songFiles("ABBA - SOS", "ABBA", "SOS", "video"))
 	cfg = prepared(t)(config.NewAdd([][]string{{src}}, lib, filepath.Join(base, "out"), dry))
 	return cfg, lib, src, tree(t, lib)
 }
@@ -128,9 +129,9 @@ func TestRestoreLibraryLosersSelection(t *testing.T) {
 			noFFprobe(t)
 			base := t.TempDir()
 			lib, src, out := filepath.Join(base, "lib"), filepath.Join(base, "src"), filepath.Join(base, "out")
-			writeFiles(t, lib, merge(songFiles("A/dup", "A", "S"), songFiles("A/broken", "A", "T"),
+			testutil.WriteFiles(t, lib, merge(songFiles("A/dup", "A", "S"), songFiles("A/broken", "A", "T"),
 				songFiles("B/kept", "B", "K"), songFiles("B/lost", "B", "K")))
-			writeFiles(t, src, merge(songFiles("keeper1", "A", "S"), songFiles("keeper2", "A", "T"), songFiles("other", "A", "S")))
+			testutil.WriteFiles(t, src, merge(songFiles("keeper1", "A", "S"), songFiles("keeper2", "A", "T"), songFiles("other", "A", "S")))
 			cfg := organizeCfg(t, [][]string{{lib}, {src}}, lib, out, false)
 			c := func(label, root, rel string, inLib bool) Candidate {
 				return Candidate{Label: label, Rel: rel, Folder: filepath.Join(root, filepath.FromSlash(rel)), InLibrary: inLib}
@@ -187,8 +188,8 @@ func TestUndoRetriesRunWithFailedMoves(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	src1, src2, lib, out := filepath.Join(base, "src1"), filepath.Join(base, "src2"), filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, src1, songFiles("a", "Abba", "SOS"))
-	writeFiles(t, src2, merge(songFiles("b", "Bee Gees", "Tragedy"), songFiles("c", "Cher", "Believe")))
+	testutil.WriteFiles(t, src1, songFiles("a", "Abba", "SOS"))
+	testutil.WriteFiles(t, src2, merge(songFiles("b", "Bee Gees", "Tragedy"), songFiles("c", "Cher", "Believe")))
 	runOrganize(t, organizeCfg(t, [][]string{{src1}}, lib, out, false), Options{})
 	runOrganize(t, organizeCfg(t, [][]string{{src2}}, lib, out, false), Options{})
 	undoCfg := organizeCfg(t, nil, lib, out, false)
@@ -199,7 +200,7 @@ func TestUndoRetriesRunWithFailedMoves(t *testing.T) {
 	second := runs[1].ID
 
 	blocker := filepath.Join(src2, "b")
-	writeFiles(t, blocker, map[string]string{"new.txt": "put here since"})
+	testutil.WriteFiles(t, blocker, map[string]string{"new.txt": "put here since"})
 	if st := runUndo(t, undoCfg); st.Moved != 1 || st.Failed != 1 {
 		t.Errorf("undo with a blocked move: %+v, want c moved back and b failed", st)
 	}
@@ -245,7 +246,7 @@ func TestUndoDryRunOfSwapPlansEveryMove(t *testing.T) {
 	base := t.TempDir()
 	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
 	// Each folder holds the song the other one's name belongs to.
-	writeFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A")))
+	testutil.WriteFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A")))
 	cfg := organizeCfg(t, [][]string{{lib}}, lib, out, false)
 	st, _ := runOrganize(t, cfg, Options{})
 	if st.Moved != 3 || st.Failed != 0 {
@@ -270,12 +271,12 @@ func TestSingleP1MarkerIsNoDuet(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, src, out := filepath.Join(base, "lib"), filepath.Join(base, "src"), filepath.Join(base, "out")
-	writeFiles(t, lib, songFiles("A/ABBA - SOS", "ABBA", "SOS"))
+	testutil.WriteFiles(t, lib, songFiles("A/ABBA - SOS", "ABBA", "SOS"))
 	marked := songFiles("SOS with P1", "ABBA", "SOS")
 	txt := marked["SOS with P1/song.txt"]
 	i := strings.Index(txt, ": 0 ")
 	marked["SOS with P1/song.txt"] = txt[:i] + "P1\n" + txt[i:]
-	writeFiles(t, src, marked)
+	testutil.WriteFiles(t, src, marked)
 
 	_, rep := runOrganize(t, prepared(t)(config.NewAdd([][]string{{src}}, lib, out, true)), Options{Mode: ModeAdd})
 	if len(rep.Duplicates) != 1 || rep.Duplicates[0].Song != "src:SOS with P1" {
@@ -293,7 +294,7 @@ func TestUndoRetrySkipsRevertedSwap(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A")))
+	testutil.WriteFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A")))
 	before := tree(t, lib)
 	runOrganize(t, organizeCfg(t, [][]string{{lib}}, lib, out, false), Options{})
 	cfg := organizeCfg(t, nil, lib, out, false)
@@ -334,7 +335,7 @@ func TestUndoStopped(t *testing.T) {
 			noFFprobe(t)
 			base := t.TempDir()
 			lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
-			writeFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A"), songFiles("Pop/Cee - C", "Cee", "C")))
+			testutil.WriteFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A"), songFiles("Pop/Cee - C", "Cee", "C")))
 			before := tree(t, lib)
 			runOrganize(t, organizeCfg(t, [][]string{{lib}}, lib, out, false), Options{})
 			cfg := organizeCfg(t, nil, lib, out, false)
@@ -386,7 +387,7 @@ func TestUndoJournalUnwritable(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A")))
+	testutil.WriteFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A")))
 	before := tree(t, lib)
 	runOrganize(t, organizeCfg(t, [][]string{{lib}}, lib, out, false), Options{})
 	cfg := organizeCfg(t, nil, lib, out, false)
@@ -409,7 +410,7 @@ func TestUndoStopAfterFailedUnpark(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A"), songFiles("Pop/Cee - C", "Cee", "C")))
+	testutil.WriteFiles(t, lib, merge(songFiles("A/Abba - A", "Bee", "B"), songFiles("B/Bee - B", "Abba", "A"), songFiles("Pop/Cee - C", "Cee", "C")))
 	runOrganize(t, organizeCfg(t, [][]string{{lib}}, lib, out, false), Options{})
 	cfg := organizeCfg(t, nil, lib, out, false)
 	runs, _ := readJournal(cfg.JournalPath())

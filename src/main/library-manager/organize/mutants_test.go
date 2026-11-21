@@ -9,17 +9,10 @@ import (
 	"testing"
 
 	"github.com/nkreimeyer/library-manager/config"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
-
-// captureLog collects the entries of the standard logger until the test ends.
-func captureLog(t *testing.T) *logtest.Hook {
-	t.Helper()
-	hook := logtest.NewGlobal()
-	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(make(log.LevelHooks)) })
-	return hook
-}
 
 // messages returns the messages of the entries at level or more severe.
 func messages(hook *logtest.Hook, level log.Level) []string {
@@ -58,7 +51,7 @@ func TestReadJournalLongGarbageLine(t *testing.T) {
 // The warnings about skipped journal lines name the right line number (1-based, blank
 // lines counted), so the user can find the line in the file.
 func TestReadJournalWarningLineNumbers(t *testing.T) {
-	hook := captureLog(t)
+	hook := testutil.CaptureLogs(t)
 	path := filepath.Join(t.TempDir(), "organize-journal.jsonl")
 	data := `{"op":"run","run":"r1","time":"t1"}
 
@@ -88,10 +81,10 @@ func TestUndoLogsResult(t *testing.T) {
 	base := t.TempDir()
 	src, lib, out := filepath.Join(base, "src"), filepath.Join(base, "lib"), filepath.Join(base, "out")
 	files := merge(songFiles("a", "Abba", "SOS"), songFiles("b", "Bee Gees", "Tragedy"), songFiles("c", "Cher", "Believe"))
-	writeFiles(t, src, files)
+	testutil.WriteFiles(t, src, files)
 	cfg := organizeCfg(t, [][]string{{src}}, lib, out, false)
 
-	hook := captureLog(t)
+	hook := testutil.CaptureLogs(t)
 	if st, _ := runOrganize(t, cfg, Options{}); st.Moved != 3 {
 		t.Fatalf("moved %d", st.Moved)
 	}
@@ -206,7 +199,7 @@ func TestRunEmptiedZBucketNotCounted(t *testing.T) {
 	noFFprobe(t)
 	base := t.TempDir()
 	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
-	writeFiles(t, lib, songFiles("Z/Abba", "Abba", "SOS")) // -> A/Abba - SOS, Z emptied
+	testutil.WriteFiles(t, lib, songFiles("Z/Abba", "Abba", "SOS")) // -> A/Abba - SOS, Z emptied
 	cfg := organizeCfg(t, [][]string{{lib}}, lib, out, false)
 	_, rep := runOrganize(t, cfg, Options{})
 	if rep.Summary.ToLibrary != 1 || rep.Summary.EmptyCategoriesLeft != 0 {
