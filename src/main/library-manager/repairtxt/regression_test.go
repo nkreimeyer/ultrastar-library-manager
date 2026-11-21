@@ -40,3 +40,28 @@ func TestRunFolderNameWithDotIsEvidence(t *testing.T) {
 		}
 	}
 }
+
+// A file tag names a whole file: a longer name that only starts with the value
+// ("Cafè.mp3.bak") is another file, neither a fill nor a veto against the real one.
+func TestNameFillWholeNameOnly(t *testing.T) {
+	value := []rune("Caf" + R + ".mp3")
+	if fill, ok := nameFill(value, []string{"Cafè.mp3.bak"}, true); ok {
+		t.Errorf("filled %q from a longer name", string(fill))
+	}
+	if fill, ok := nameFill(value, []string{"Café.mp3", "Cafè.mp3.bak"}, true); !ok || string(fill) != "é" {
+		t.Errorf("fill = %q, %v; want é", string(fill), ok)
+	}
+	// Case and NFC are still ignored.
+	if fill, ok := nameFill(value, []string{"CAFE\u0301.MP3"}, true); !ok || string(lowerRunes(fill)) != "é" {
+		t.Errorf("fill = %q, %v; want É", string(fill), ok)
+	}
+	// The substring mode of text tags is unchanged.
+	if fill, ok := nameFill([]rune("Caf"+R), []string{"Café.mp3.bak"}, false); !ok || string(fill) != "é" {
+		t.Errorf("text fill = %q, %v; want é", string(fill), ok)
+	}
+
+	txt := "#TITLE:X\n#ARTIST:Y\n#MP3:Caf" + R + ".mp3\n: 0 2 0 la\nE\n"
+	if _, got := planText(t, &planner{lex: corpus("")}, txt, "Café.mp3", "Cafè.mp3.bak"); !strings.Contains(got, "#MP3:Café.mp3\n") {
+		t.Errorf("#MP3 not repaired from the existing file:\n%s", got)
+	}
+}

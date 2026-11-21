@@ -245,10 +245,10 @@ func nameFill(value []rune, names []string, whole bool) ([]rune, bool) {
 		if whole && string(rs) == string(value) {
 			return nil, false
 		}
+		if whole && len(rs) != len(value) {
+			continue // a name that only starts with value is another file ("Cafè.mp3.bak")
+		}
 		for i := 0; i+len(value) <= len(rs); i++ {
-			if whole && i > 0 {
-				break
-			}
 			cand := rs[i : i+len(value)]
 			if !wildMatch(value, cand) {
 				continue
