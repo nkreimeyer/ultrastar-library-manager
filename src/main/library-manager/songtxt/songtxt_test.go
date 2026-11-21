@@ -683,3 +683,28 @@ func TestBeatToMsNegativeBPMChange(t *testing.T) {
 		}
 	}
 }
+
+// IsBodyLine decides like Parse: a tag after a line is a header tag exactly when the line
+// is no body line.
+func TestIsBodyLineMatchesParse(t *testing.T) {
+	for _, line := range []string{": 0 1 0 a", ":0 1 0 a", "* 0 1 0 a", "F 0 1 0 a", "R 0 1 0 a", "G 0 1 0 a",
+		"- 4", "-4", "B 4 300", "P1", " P 2", "E", "  E\r\n", "F\n"} {
+		if !IsBodyLine(line) {
+			t.Errorf("IsBodyLine(%q) = false, want true", line)
+		}
+	}
+	for _, line := range []string{"", " \n", "#BPM:300", "Created with editor", "End", "Bla", "Gx", "P", "Px", "Foo"} {
+		if IsBodyLine(line) {
+			t.Errorf("IsBodyLine(%q) = true, want false", line)
+		}
+	}
+	// Each line decides the same way as songtxt.Parse: a tag after it is a header tag
+	// exactly when the line is no body line.
+	for _, line := range []string{"Created with editor", "P1", "- 4", "Gx", "B 4 300"} {
+		s, _ := Parse("#TITLE:T\n" + line + "\n#BPM:300\n")
+		_, inHeader := s.Tag("BPM")
+		if inHeader == IsBodyLine(line) {
+			t.Errorf("%q: Parse header tag after it = %v, isBodyLine = %v", line, inHeader, IsBodyLine(line))
+		}
+	}
+}

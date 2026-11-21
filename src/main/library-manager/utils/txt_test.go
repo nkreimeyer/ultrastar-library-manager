@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/songtxt"
 )
 
 func TestDecodeTxt(t *testing.T) {
@@ -253,5 +254,54 @@ func TestTxtLookupsSeeDryRunPlan(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(keep); string(data) != "#TITLE:Song\n#MP3:old.mp3\n" {
 		t.Errorf("dry run changed song.txt: %q", data)
+	}
+}
+
+// A junk line inside the header ("Created with editor") does not end it: songtxt.Parse,
+// fixtxt and UltraStar read the tags after it, so #VOCALS, #VIDEO and #MP3 there count
+// (fixaudio must not normalize a stem, fixvideos must convert the referenced video).
+func TestHeaderTagsJunkLineInHeader(t *testing.T) {
+	text := "\ufeff#TITLE:T\n#ARTIST:A\nCreated with Foo\n#MP3:song.mp3\n  #VOCALS:vocals.mp3\n#VIDEO:v.avi\r\n- 4\n#AFTER:x\n"
+	tags := HeaderTags(text)
+	for k, want := range map[string]string{"TITLE": "T", "MP3": "song.mp3", "VOCALS": "vocals.mp3", "VIDEO": "v.avi"} {
+		if tags[k] != want {
+			t.Errorf("HeaderTags[%s] = %q, want %q (all: %v)", k, tags[k], want, tags)
+		}
+	}
+	if _, ok := tags["AFTER"]; ok {
+		t.Errorf("a tag after the first body line counts: %v", tags)
+	}
+	// The same tags as songtxt.Parse.
+	s, _ := songtxt.Parse(text)
+	for _, tag := range s.Tags {
+		if v, _ := s.Tag(tag.Key); tags[strings.ToUpper(tag.Key)] != v {
+			t.Errorf("HeaderTags[%s] = %q, songtxt has %q", tag.Key, tags[strings.ToUpper(tag.Key)], v)
+		}
+	}
+	if len(s.Tags) != len(tags) {
+		t.Errorf("HeaderTags has %d tags, songtxt %d", len(tags), len(s.Tags))
+	}
+}
+
+func TestReplaceFileReferenceJunkLineInHeader(t *testing.T) {
+	dir := t.TempDir()
+	txt := "#TITLE:T\n#ARTIST:A\nCreated with Foo\n#VIDEO:v.avi\n: 0 1 0 v.avi\n#VIDEO:v.avi\n"
+	writeFile(t, filepath.Join(dir, "song.txt"), txt)
+	replaced, err := ReplaceFileReference(fsops.New(false), dir, "v.avi", "v.mp4")
+	if err != nil || !replaced {
+		t.Fatalf("ReplaceFileReference = %v, %v", replaced, err)
+	}
+	want := "#TITLE:T\n#ARTIST:A\nCreated with Foo\n#VIDEO:v.mp4\n: 0 1 0 v.avi\n#VIDEO:v.avi\n"
+	if got, _ := os.ReadFile(filepath.Join(dir, "song.txt")); string(got) != want {
+		t.Errorf("txt = %q, want %q (the header tag replaced, the body untouched)", got, want)
+	}
+}
+
+func TestEncodingHintJunkLineInHeader(t *testing.T) {
+	if h := encodingHint([]byte("#TITLE:T\nCreated with Foo\n#ENCODING:CP1250\n: 0 1 0 a\n")); h.name != "CP1250" {
+		t.Errorf("encodingHint = %+v, want CP1250", h)
+	}
+	if h := encodingHint([]byte("#TITLE:T\n: 0 1 0 a\n#ENCODING:CP1250\n")); h.name != "" {
+		t.Errorf("encodingHint after the notes = %+v, want none", h)
 	}
 }

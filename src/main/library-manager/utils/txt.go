@@ -13,21 +13,23 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/songtxt"
 )
 
 // HeaderTags returns the header tags of a decoded song txt: upper-cased tag name without
 // "#" mapped to its trimmed value. Lines end in "\n", "\r\n" or "\r". The header ends at
-// the first non-empty line that does not start with "#" (after leading blanks). A repeated
-// tag resolves like UltraStar does: the last occurrence wins.
+// the first body line (songtxt.IsBodyLine), as in songtxt.Parse and UltraStar: other lines
+// that are no tag (junk such as "Created with editor") are skipped. A repeated tag
+// resolves like UltraStar does: the last occurrence wins.
 func HeaderTags(text string) map[string]string {
 	tags := map[string]string{}
-	for _, line := range splitLines(text) {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if !strings.HasPrefix(line, "#") {
+	for _, line := range splitLines(strings.TrimPrefix(text, "\ufeff")) {
+		if songtxt.IsBodyLine(line) {
 			break
+		}
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "#") {
+			continue
 		}
 		name, value, ok := strings.Cut(line[1:], ":")
 		if !ok {
@@ -36,6 +38,16 @@ func HeaderTags(text string) map[string]string {
 		tags[strings.ToUpper(strings.TrimSpace(name))] = strings.TrimSpace(value)
 	}
 	return tags
+}
+
+// startsWithTag reports whether the first non-blank line of text is a tag line.
+func startsWithTag(text string) bool {
+	for _, line := range splitLines(strings.TrimPrefix(text, "\ufeff")) {
+		if line = strings.TrimSpace(line); line != "" {
+			return strings.HasPrefix(line, "#")
+		}
+	}
+	return false
 }
 
 // splitLines splits s at "\n" and "\r", leaving out empty lines.
@@ -47,9 +59,12 @@ func splitLines(s string) []string {
 // treated as an UltraStar song file (as opposed to License.txt, readme.txt, ...).
 var songHeaderTags = []string{"TITLE", "ARTIST", "MP3", "AUDIO", "BPM"}
 
-// IsSongTxt reports whether the file looks like an UltraStar song txt: its header contains
-// one of the known tags (case-insensitive, any supported encoding). Unreadable files are
-// not song files. The file is read with ops.ReadFile (ops may be nil), so in a dry run it
+// IsSongTxt reports whether the file looks like an UltraStar song txt: it starts with a
+// tag line (blank lines aside), and its header contains one of the known tags
+// (case-insensitive, any supported encoding). A txt that starts with prose (License.txt,
+// readme.txt) is never a song txt, even with a "#TITLE:" line further down; a junk line
+// inside a header that started with a tag does not end it (see HeaderTags). Unreadable
+// files are not song files. The file is read with ops.ReadFile (ops may be nil), so in a dry run it
 // is judged as earlier modules would have left it.
 func IsSongTxt(ops *fsops.Ops, path string) bool {
 	ok, _ := isSongTxt(ops, path)
@@ -62,7 +77,11 @@ func isSongTxt(ops *fsops.Ops, path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	tags := HeaderTags(DecodeTxt(data).Text)
+	text := DecodeTxt(data).Text
+	if !startsWithTag(text) {
+		return false, nil
+	}
+	tags := HeaderTags(text)
 	for _, tag := range songHeaderTags {
 		if _, ok := tags[tag]; ok {
 			return true, nil
@@ -249,11 +268,11 @@ func ReplaceFileReference(ops *fsops.Ops, dir, oldName, newName string) (replace
 		ending := line[len(body):]
 		// Leading blanks are allowed before the "#", as in HeaderTags.
 		trimmed := strings.TrimLeft(strings.TrimPrefix(body, "\ufeff"), " \t")
+		if songtxt.IsBodyLine(trimmed) {
+			break // end of header
+		}
 		if !strings.HasPrefix(trimmed, "#") {
-			if strings.TrimSpace(trimmed) != "" {
-				break // end of header
-			}
-			continue
+			continue // blank or junk line inside the header
 		}
 		name, value, ok := strings.Cut(trimmed[1:], ":")
 		if !ok || !fileTags[strings.ToUpper(strings.TrimSpace(name))] {

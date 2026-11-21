@@ -10,6 +10,8 @@ import (
 	"golang.org/x/text/encoding/charmap"
 	xunicode "golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/nkreimeyer/library-manager/songtxt"
 )
 
 // Names of the encodings DecodeTxt can detect. Single-byte codecs named by an #ENCODING
@@ -206,14 +208,15 @@ var singleByteCodecs = map[string]struct {
 
 // encodingHint reads the #ENCODING header tag. The header is ASCII in every supported
 // encoding, so it can be read from the raw bytes. Lines may end in "\n", "\r\n" or "\r".
+// The header ends at the first body line (songtxt.IsBodyLine), as in HeaderTags.
 func encodingHint(raw []byte) hint {
 	for _, line := range splitLines(string(raw)) {
 		line = strings.TrimSpace(strings.TrimPrefix(line, "\ufeff"))
-		if line == "" {
-			continue
+		if songtxt.IsBodyLine(line) {
+			break
 		}
 		if !strings.HasPrefix(line, "#") {
-			break
+			continue
 		}
 		name, value, ok := strings.Cut(line[1:], ":")
 		if !ok || !strings.EqualFold(strings.TrimSpace(name), "ENCODING") {

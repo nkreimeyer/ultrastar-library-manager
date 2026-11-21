@@ -64,6 +64,8 @@ func TestIsSongTxt(t *testing.T) {
 		{"leading blank lines", "\n\n  #TITLE:x\n", true},
 		{"tag after other header tags", "#VERSION:1.0.0\n#LANGUAGE:German\n#TITLE:x\n", true},
 		{"license", "MIT License\n\nPermission is hereby granted...\n#TITLE: not a header\n", false},
+		{"junk line inside the header", "#VERSION:1.0.0\nCreated with editor\n#TITLE:x\n: 0 1 0 a\n", true},
+		{"tag only after the notes", "#VERSION:1.0.0\n: 0 1 0 a\n#TITLE:x\n", false},
 		{"empty", "", false},
 		{"only unknown tags", "#VERSION:1.0.0\n#LANGUAGE:German\n", false},
 		{"prefix is not enough", "#TITLEX:Song\n", false},

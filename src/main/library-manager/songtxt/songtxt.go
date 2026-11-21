@@ -257,6 +257,31 @@ func Parse(text string) (*Song, []Issue) {
 	return s, issues
 }
 
+// IsBodyLine reports whether line (leading blanks and the line ending ignored) is a note
+// (":", "*" or "F"/"R"/"G" followed by a blank or nothing), a line break ("-"), a BPM
+// change ("B" followed by a blank or nothing), a player marker ("P" plus digits) or the
+// end mark ("E" followed by a blank or nothing): exactly the lines at which Parse leaves
+// the header. Other lines (blank lines, junk such as "Created with editor") do not end
+// it, so a tag after them is still a header tag. Every reader of header tags uses this
+// rule, so they all agree with Parse and with UltraStar.
+func IsBodyLine(line string) bool {
+	line = strings.TrimLeft(strings.TrimRight(line, "\r\n"), " \t")
+	if line == "" {
+		return false
+	}
+	c, rest := line[0], line[1:]
+	endsWord := rest == "" || isSpace(rest[0])
+	switch c {
+	case ':', '*', '-':
+		return true
+	case 'F', 'R', 'G', 'B', 'E':
+		return endsWord
+	case 'P':
+		return isDigits(strings.TrimSpace(rest))
+	}
+	return false
+}
+
 func splitLines(text string) []string {
 	text = strings.TrimPrefix(text, "\uFEFF")
 	text = strings.ReplaceAll(text, "\r\n", "\n")

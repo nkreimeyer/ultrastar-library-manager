@@ -19,6 +19,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/songtxt"
 	"github.com/nkreimeyer/library-manager/utils"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/text/unicode/norm"
@@ -723,40 +724,16 @@ func tagValue(line string) string {
 }
 
 // headerLen returns the number of header lines. The header ends at the first body line,
-// the same lines at which songtxt.Parse switches to the body (see isBodyLine); "#" lines
+// the same lines at which songtxt.Parse switches to the body (songtxt.IsBodyLine); "#" lines
 // after it are ignored by players and never treated as tags. Other lines (blank lines,
 // junk such as "Created with editor") do not end the header and are copied unchanged.
 func headerLen(lines []string) int {
 	for i, line := range lines {
-		if isBodyLine(line) {
+		if songtxt.IsBodyLine(line) {
 			return i
 		}
 	}
 	return len(lines)
-}
-
-// isBodyLine reports whether line (leading blanks and the line ending ignored) is a note
-// (":", "*" or "F"/"R"/"G" followed by a blank or nothing), a line break ("-"), a BPM
-// change ("B" followed by a blank or nothing), a player marker ("P" plus digits) or the
-// end mark ("E" followed by a blank or nothing): exactly the lines that end the header in
-// songtxt.Parse.
-func isBodyLine(line string) bool {
-	line = strings.TrimLeft(strings.TrimRight(line, "\r\n"), " \t")
-	if line == "" {
-		return false
-	}
-	c, rest := line[0], line[1:]
-	endsWord := rest == "" || rest[0] == ' ' || rest[0] == '\t'
-	switch c {
-	case ':', '*', '-':
-		return true
-	case 'F', 'R', 'G', 'B', 'E':
-		return endsWord
-	case 'P':
-		digits := strings.TrimSpace(rest)
-		return digits != "" && strings.Trim(digits, "0123456789") == ""
-	}
-	return false
 }
 
 // sameFileName reports whether a tag value names the on-disk file name (case-insensitive,
