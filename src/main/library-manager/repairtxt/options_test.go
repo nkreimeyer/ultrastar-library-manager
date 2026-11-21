@@ -11,10 +11,9 @@ import (
 	"sync"
 	"testing"
 
-	logtest "github.com/sirupsen/logrus/hooks/test"
-
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // twoDamaged writes a library with two damaged txts and a corpus that repairs both.
@@ -283,8 +282,7 @@ func TestRunCancelled(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		hook := logtest.NewGlobal()
-		t.Cleanup(hook.Reset)
+		hook := testutil.CaptureLogs(t)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		// A lookup the cancel interrupts fails with the ctx error: that is the stop, not a
