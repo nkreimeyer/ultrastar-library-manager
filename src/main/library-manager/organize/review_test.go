@@ -346,3 +346,46 @@ func TestApplyCancelAfterPark(t *testing.T) {
 		t.Errorf("library after undo:\n%s", strings.Join(got, "\n"))
 	}
 }
+
+// A run cancelled after the middle move of a swap (A parked, B moved into A's place)
+// cannot move A back, so A goes to its planned target. The journal still works, so that
+// move is journaled and -undo restores the library.
+func TestApplyCancelAfterSwapMoveIsJournaled(t *testing.T) {
+	noFFprobe(t)
+	base := t.TempDir()
+	lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
+	writeFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
+	before := tree(t, lib)
+	cfg := organizeCfg(t, [][]string{{lib}}, lib, out, false)
+	ops := fsops.New(false)
+	cands := []Candidate{
+		{Label: "lib", Rel: "A/a", Folder: filepath.Join(lib, "A", "a"), InLibrary: true},
+		{Label: "lib", Rel: "B/b", Folder: filepath.Join(lib, "B", "b"), InLibrary: true},
+	}
+	plan := Plan{Decisions: []Decision{{Action: ActMove, Target: "B/b", Other: -1}, {Action: ActMove, Target: "A/a", Other: -1}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := newApplier(cfg, ops, cands, map[int]moveOutcome{})
+	a.ctx = ctx
+	a.moveTo = func(src, dst string) error {
+		if !strings.HasPrefix(filepath.Base(src), tempPrefix) && !strings.HasPrefix(filepath.Base(dst), tempPrefix) {
+			defer cancel() // the swap's middle move completes, then the run stops
+		}
+		return ops.MoveTo(src, dst)
+	}
+	a.apply(plan)
+	if !a.stopped {
+		t.Fatal("the run did not stop")
+	}
+	for _, p := range tree(t, lib) {
+		if strings.Contains(p, tempPrefix) {
+			t.Fatalf("a song stays hidden: %s", p)
+		}
+	}
+	if st := runUndo(t, organizeCfg(t, nil, lib, out, false)); st.Failed != 0 {
+		t.Errorf("undo: %+v", st)
+	}
+	if got := tree(t, lib); !reflect.DeepEqual(got, before) {
+		t.Errorf("library after undo:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(before, "\n"))
+	}
+}

@@ -731,18 +731,24 @@ func (a *applier) stayParked(s step) {
 }
 
 // unpark gets a parked song out of its temporary name when its final move is not
-// attempted because the journal cannot be written: back to where it came from or, if
-// that place is taken by now (the completed move into it is what could not be
-// journaled), to its planned target. Either way it stays visible to the discovery.
+// attempted (the journal cannot be written, or the run was stopped): back to where it
+// came from or, if that place is taken by now (a later step of the cycle moved a song
+// into it), to its planned target. Either way it stays visible to the discovery. The
+// move to the target is journaled unless the journal failed, so -undo can revert it.
 func (a *applier) unpark(s step) {
 	if a.moveBack(s) {
 		return
 	}
+	journaled := !a.j.failed && a.journalMkdirs(s.Cand, s.Dst)
 	if err := a.moveTo(s.Src, s.Dst); err != nil {
 		log.Errorf("Moving %s to %s failed too: %v; the song stays at the temporary name, move it by hand", s.Src, s.Dst, err)
 		return
 	}
-	log.Warnf("Moved %s to its planned target %s instead; this move is not in the journal", s.Src, s.Dst)
+	if journaled && a.journalMove(s.Src, s.Dst) {
+		log.Warnf("Moved %s to its planned target %s instead", s.Src, s.Dst)
+	} else {
+		log.Warnf("Moved %s to its planned target %s instead; this move is not in the journal", s.Src, s.Dst)
+	}
 	a.done(s.Cand, s.Dst)
 }
 
