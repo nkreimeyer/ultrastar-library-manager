@@ -212,7 +212,7 @@ func (s *Server) handleOrganizeExclude(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, fmt.Errorf("this plan was applied already"))
 		return
 	}
-	plan := rv.Replan(ex) // pure, may take a moment for a big library
+	plan := rv.Replan(ex) // in memory (only buckets no plan needed yet are read), may take a moment for a big library
 	s.mu.Lock()
 	if a.review != rv {
 		s.mu.Unlock()

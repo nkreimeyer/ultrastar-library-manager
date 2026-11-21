@@ -91,8 +91,11 @@ type Review struct {
 	Plan  Plan
 	// Notes are the report notes (e.g. ffprobe missing).
 	Notes []string
-	// Replan plans the same candidates again with other exclusions, against the library
-	// as it was seen for Plan. It is pure and may be called after Run returned.
+	// Replan plans the same candidates again with other exclusions. It may be called
+	// after Run returned. It is not pure: the library's bucket folders are listed once,
+	// when a plan first needs them, so the buckets Plan looked at are seen as they were
+	// then, but a bucket only the new plan reaches (another keeper's artist) is read from
+	// the disk now, and its problems are logged and counted on Run's ops.
 	Replan func(exclude map[string]bool) Plan
 }
 
