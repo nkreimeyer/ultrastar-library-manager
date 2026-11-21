@@ -537,15 +537,16 @@ func TestParseProgressDuration(t *testing.T) {
 	}
 }
 
-func TestCappedBuffer(t *testing.T) {
-	b := &cappedBuffer{max: 5}
-	for _, p := range []string{"abc", "defg", "hij"} {
+func TestCapStderr(t *testing.T) {
+	b := capStderr()
+	big := strings.Repeat("x", maxStderr)
+	for _, p := range []string{"abc", big, "hij"} {
 		if n, err := b.Write([]byte(p)); n != len(p) || err != nil {
-			t.Errorf("Write(%q) = %d, %v", p, n, err)
+			t.Errorf("Write(%d bytes) = %d, %v", len(p), n, err)
 		}
 	}
-	if b.String() != "abcde" {
-		t.Errorf("buffer = %q, want %q", b.String(), "abcde")
+	if want := "abc" + big[3:]; b.Head() != want {
+		t.Errorf("Head() is %d bytes, want the first %d", len(b.Head()), len(want))
 	}
 }
 

@@ -27,6 +27,7 @@ import (
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
 	"github.com/nkreimeyer/library-manager/journal"
+	"github.com/nkreimeyer/library-manager/mediatools"
 	"github.com/nkreimeyer/library-manager/utils"
 	log "github.com/sirupsen/logrus"
 )
@@ -396,12 +397,14 @@ var peakLevelRe = regexp.MustCompile(`Peak level dB:\s*(\S+)`)
 // stereo downmix is measured, because that is what will be encoded.
 func measurePeak(path string, downmix bool) (float64, error) {
 	filter := strings.Join(append(baseFilters(downmix), peakFilter), ",")
-	out, err := exec.Command("ffmpeg",
+	// astats prints its result when the graph closes, so it is in the kept end of the
+	// output even if a damaged file made the decoder print megabytes before it.
+	out, err := mediatools.CombinedOutput(exec.Command("ffmpeg",
 		"-nostdin", "-hide_banner", "-v", "info",
 		"-i", path,
 		"-map", "0:a:0",
 		"-af", filter,
-		"-f", "null", "-").CombinedOutput()
+		"-f", "null", "-"))
 	peak, perr := parsePeakLevel(string(out))
 	if perr != nil {
 		if err != nil {
@@ -429,7 +432,7 @@ func parsePeakLevel(output string) (float64, error) {
 
 // encode runs ffmpeg to write the processed version of in to out (an existing temp file).
 func encode(in, out string, info audioInfo, filters []string) error {
-	output, err := exec.Command("ffmpeg", encodeArgs(in, out, info, filters)...).CombinedOutput()
+	output, err := mediatools.CombinedOutput(exec.Command("ffmpeg", encodeArgs(in, out, info, filters)...))
 	if err != nil {
 		return fmt.Errorf("ffmpeg: %v: %s", err, lastLines(string(output), 5))
 	}

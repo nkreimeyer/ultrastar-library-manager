@@ -1,7 +1,6 @@
 package check
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/nkreimeyer/library-manager/mediatools"
 )
 
 // errToolFailed marks an ffprobe/ffmpeg run that failed for reasons other than the file
@@ -20,20 +21,9 @@ var errToolFailed = errors.New("tool failed")
 // quoted, but a badly corrupt video can print a line per frame.
 const maxStderr = 64 << 10
 
-// cappedBuffer keeps the first max bytes written to it and discards the rest.
-type cappedBuffer struct {
-	buf bytes.Buffer
-	max int
-}
-
-func (b *cappedBuffer) Write(p []byte) (int, error) {
-	if room := b.max - b.buf.Len(); room > 0 {
-		b.buf.Write(p[:min(len(p), room)])
-	}
-	return len(p), nil
-}
-
-func (b *cappedBuffer) String() string { return b.buf.String() }
+// capStderr returns a writer for ffmpeg/ffprobe messages. Only their start is used (its
+// Head): the report quotes the first lines, so it does not change with a longer tail.
+func capStderr() *mediatools.OutputCap { return mediatools.NewOutputCap(maxStderr, 0) }
 
 // estimatedMsg is what ffprobe logs (at warning level) when it guesses the duration of
 // an mp3 from the bitrate of its first frames: a VBR file without Xing/VBRI header, as
@@ -51,13 +41,13 @@ func probeMedia(path string) (mediaInfo, error) {
 	cmd := exec.Command("ffprobe", "-v", "warning",
 		"-show_entries", "format=duration,bit_rate:stream=codec_type,codec_name,bit_rate,width,height:stream_tags=BPS,BPS-eng:stream_disposition=attached_pic",
 		"-of", "json", path)
-	stderr := &cappedBuffer{max: maxStderr}
+	stderr := capStderr()
 	cmd.Stderr = stderr
 	out, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			msg := toolMessage(stderr.String(), path, 2)
+			msg := toolMessage(stderr.Head(), path, 2)
 			if msg == "" {
 				msg = err.Error()
 			}
@@ -69,7 +59,7 @@ func probeMedia(path string) (mediaInfo, error) {
 	if err != nil {
 		return info, err
 	}
-	if info.HasAudio && strings.Contains(stderr.String(), estimatedMsg) {
+	if info.HasAudio && strings.Contains(stderr.Head(), estimatedMsg) {
 		if d, ok := measureDuration(path); ok {
 			info.DurationSec, info.HasDuration = d, true
 		} else {
@@ -84,7 +74,7 @@ func probeMedia(path string) (mediaInfo, error) {
 func measureDuration(path string) (sec float64, ok bool) {
 	cmd := exec.Command("ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-i", path,
 		"-map", "0:a:0", "-c", "copy", "-f", "null", "-progress", "pipe:1", "-nostats", "-")
-	cmd.Stderr = &cappedBuffer{max: maxStderr}
+	cmd.Stderr = capStderr()
 	out, err := cmd.Output()
 	if err != nil {
 		return 0, false
@@ -190,12 +180,12 @@ func parseBitrate(s string) int64 {
 // It also keeps the memory and CPU use of the parallel workers bounded.
 func decodeCheck(path string) (decodeErr, decodeWarn string, err error) {
 	cmd := exec.Command("ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-threads", "1", "-i", path, "-f", "null", "-")
-	stderr := &cappedBuffer{max: maxStderr}
+	stderr := capStderr()
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			msg := toolMessage(stderr.String(), path, 3)
+			msg := toolMessage(stderr.Head(), path, 3)
 			if msg == "" {
 				msg = err.Error()
 			}
@@ -203,7 +193,7 @@ func decodeCheck(path string) (decodeErr, decodeWarn string, err error) {
 		}
 		return "", "", fmt.Errorf("%w: ffmpeg: %v", errToolFailed, err)
 	}
-	return "", toolMessage(dropNullMuxerLines(stderr.String()), path, 3), nil
+	return "", toolMessage(dropNullMuxerLines(stderr.Head()), path, 3), nil
 }
 
 // dropNullMuxerLines removes the messages of ffmpeg's null output muxer ("[null @ 0x…]

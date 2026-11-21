@@ -28,6 +28,7 @@ import (
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
 	"github.com/nkreimeyer/library-manager/journal"
+	"github.com/nkreimeyer/library-manager/mediatools"
 	"github.com/nkreimeyer/library-manager/utils"
 
 	log "github.com/sirupsen/logrus"
@@ -427,7 +428,9 @@ func (p *processor) encode(dir, file string, pl encodePlan) {
 	args := buildFFmpegArgs(file, tmp, pl)
 	log.Infof("Processing video (%s): %s", pl.describe(), file)
 	log.Debugf("Running ffmpeg with args: %v", args)
-	out, err := exec.Command("ffmpeg", args...).CombinedOutput()
+	// The "Invalid data found" message isCorruptInput looks for is printed when the
+	// input is opened, so it is in the kept start of the output.
+	out, err := mediatools.CombinedOutput(exec.Command("ffmpeg", args...))
 	if err != nil {
 		os.Remove(tmp) // our own temp file, not a library file
 		var exitErr *exec.ExitError
@@ -602,7 +605,7 @@ func (p *processor) tagByRemux(file string) error {
 		"-i", filepath.Clean(file),
 		"-map", "0", "-c", "copy",
 	}, markerArgs(tmp), []string{"-y", filepath.Clean(tmp)})
-	if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
+	if out, err := mediatools.CombinedOutput(exec.Command("ffmpeg", args...)); err != nil {
 		os.Remove(tmp) // our own temp file, not a library file
 		return fmt.Errorf("ffmpeg remux: %v: %s", err, strings.TrimSpace(string(out)))
 	}
