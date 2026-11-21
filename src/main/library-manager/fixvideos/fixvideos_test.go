@@ -2,7 +2,6 @@ package fixvideos
 
 import (
 	"cmp"
-	"crypto/sha256"
 	"fmt"
 	"io/fs"
 	"os"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	"github.com/nkreimeyer/library-manager/journal"
 )
 
@@ -133,10 +133,10 @@ func TestWriteCorruptedReportMergesSorted(t *testing.T) {
 	cfg, songDir, outDir := newLibrary(t, false)
 	a, b, c := filepath.Join(songDir, "a.avi"), filepath.Join(songDir, "b.avi"), filepath.Join(songDir, "c.avi")
 	for _, f := range []string{a, b, c} {
-		writeFile(t, f, "v")
+		testutil.WriteFile(t, f, "v")
 	}
 	report := filepath.Join(outDir, corruptedReportName)
-	writeFile(t, report, b+"\n\n"+a+"\n")
+	testutil.WriteFile(t, report, b+"\n\n"+a+"\n")
 	p := &processor{cfg: cfg, ops: fsops.New(false), corrupted: map[string]struct{}{}}
 	p.flagCorrupted(c, "test")
 	p.flagCorrupted(a, "test")
@@ -158,13 +158,13 @@ func TestWriteCorruptedReportDropsStaleEntries(t *testing.T) {
 	gone := filepath.Join(songDir, "Song", "gone.avi")     // converted or removed
 	flagged := filepath.Join(songDir, "Song", "again.avi") // flagged again
 	for _, f := range []string{still, fixed, flagged} {
-		writeFile(t, f, "v "+f)
+		testutil.WriteFile(t, f, "v "+f)
 	}
 	if err := p.journal.Add(journalChecked, fixed); err != nil {
 		t.Fatal(err)
 	}
 	report := filepath.Join(outDir, corruptedReportName)
-	writeFile(t, report, strings.Join([]string{fixed, gone, still, flagged}, "\n")+"\n")
+	testutil.WriteFile(t, report, strings.Join([]string{fixed, gone, still, flagged}, "\n")+"\n")
 
 	p.processVideoFile(filepath.Dir(fixed), fixed) // skipped via the journal, no ffmpeg needed
 	p.flagCorrupted(flagged, "test")
@@ -202,7 +202,7 @@ func TestDryRunKeepsCorruptedReport(t *testing.T) {
 	gone := filepath.Join(song, "gone.avi")   // converted or removed
 	still := filepath.Join(song, "still.avi")
 	for _, f := range []string{moved, fixed, still} {
-		writeFile(t, f, "v "+f)
+		testutil.WriteFile(t, f, "v "+f)
 	}
 	if err := p.journal.Add(journalChecked, fixed); err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func TestDryRunKeepsCorruptedReport(t *testing.T) {
 	}
 	report := filepath.Join(outDir, corruptedReportName)
 	old := strings.Join([]string{fixed, gone, moved, still}, "\n") + "\n"
-	writeFile(t, report, old)
+	testutil.WriteFile(t, report, old)
 
 	for _, f := range []string{moved, fixed, still} {
 		p.processVideoFile(song, f)
@@ -229,10 +229,10 @@ func TestDryRunKeepsCorruptedReport(t *testing.T) {
 // --- tests that need ffmpeg -------------------------------------------------------------
 
 func TestReEncodeAviToMp4(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, outDir := newLibrary(t, false)
 	song := filepath.Join(songDir, "Artist", "Artist - Song")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:Song\n#ARTIST:Artist\n#MP3:video.avi\n#VIDEO:video.avi\n#VIDEOGAP:0\n: 0 4 0 La\nE\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:Song\n#ARTIST:Artist\n#MP3:video.avi\n#VIDEO:video.avi\n#VIDEOGAP:0\n: 0 4 0 La\nE\n")
 	// mpeg4 at maximum quality: the codec needs re-encoding and the estimate is far below the input size.
 	makeMedia(t, filepath.Join(song, "video.avi"), "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
 	if err := os.Chmod(filepath.Join(song, "video.avi"), 0o640); err != nil {
@@ -272,11 +272,11 @@ func TestReEncodeAviToMp4(t *testing.T) {
 // If the txt cannot be pointed at the new file, the conversion is undone and the original
 // stays referenced in place.
 func TestReEncodeUpdatesReferenceSpelledDifferently(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, outDir := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
 	// Referenced in a different case; the tag-aware replacement still updates it.
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:VIDEO.AVI\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:VIDEO.AVI\n")
 	makeMedia(t, filepath.Join(song, "video.avi"), "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
 
 	ops := fsops.New(false)
@@ -299,11 +299,11 @@ func TestReEncodeUpdatesReferenceSpelledDifferently(t *testing.T) {
 }
 
 func TestUnreferencedVideoIsNotConverted(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, outDir := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
 	txt := "#TITLE:S\n#ARTIST:A\n#VIDEO:other.mp4\n"
-	writeFile(t, filepath.Join(song, "song.txt"), txt)
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), txt)
 	makeMedia(t, filepath.Join(song, "video.avi"), "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
 
 	ops := fsops.New(false)
@@ -329,7 +329,7 @@ func TestUnreferencedVideoIsNotConverted(t *testing.T) {
 }
 
 func TestStripAudio(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	tests := []struct {
 		name      string
 		txt       string
@@ -342,8 +342,8 @@ func TestStripAudio(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg, songDir, _ := newLibrary(t, false)
 			song := filepath.Join(songDir, "A - S")
-			writeFile(t, filepath.Join(song, "song.txt"), tt.txt)
-			writeFile(t, filepath.Join(song, "song.mp3"), "not checked")
+			testutil.WriteFile(t, filepath.Join(song, "song.txt"), tt.txt)
+			testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "not checked")
 			// Low-bitrate H.264 does not need re-encoding, so only the audio decision matters.
 			makeMedia(t, filepath.Join(song, "video.mp4"), "-c:v", "libx264", "-crf", "35", "-c:a", "aac")
 
@@ -364,12 +364,12 @@ func TestStripAudio(t *testing.T) {
 }
 
 func TestCorruptedVideoIsReported(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, outDir := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n")
 	bad := filepath.Join(song, "video.avi")
-	writeFile(t, bad, strings.Repeat("garbage", 200))
+	testutil.WriteFile(t, bad, strings.Repeat("garbage", 200))
 
 	ops := fsops.New(false)
 	if err := Run(cfg, ops); err != nil {
@@ -391,7 +391,7 @@ func TestCorruptedVideoIsReported(t *testing.T) {
 // a run finds it readable: tagged as processed, needing no processing (ffprobe read its
 // codec), or re-encoded in place by ffmpeg. An entry this run did not read stays.
 func TestReadableVideoIsDroppedFromReport(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	tests := []struct {
 		name         string
 		codecArgs    []string
@@ -408,14 +408,14 @@ func TestReadableVideoIsDroppedFromReport(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg, songDir, outDir := newLibrary(t, false)
 			song := filepath.Join(songDir, "A - S")
-			writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")
-			writeFile(t, filepath.Join(song, "song.mp3"), "audio")
+			testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")
+			testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "audio")
 			video := filepath.Join(song, "video.mp4")
 			makeMedia(t, video, tt.codecArgs...)
 			unread := filepath.Join(t.TempDir(), "other.avi") // not below the song dir
-			writeFile(t, unread, "v")
+			testutil.WriteFile(t, unread, "v")
 			report := filepath.Join(outDir, corruptedReportName)
-			writeFile(t, report, unread+"\n"+video+"\n")
+			testutil.WriteFile(t, report, unread+"\n"+video+"\n")
 
 			ops := fsops.New(false)
 			if err := Run(cfg, ops); err != nil {
@@ -435,14 +435,14 @@ func TestReadableVideoIsDroppedFromReport(t *testing.T) {
 }
 
 func TestDryRunLeavesTreeIdentical(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, outDir := newLibrary(t, true)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.avi\n")
-	writeFile(t, filepath.Join(song, "song.mp3"), "audio")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.avi\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "audio")
 	makeMedia(t, filepath.Join(song, "video.avi"), "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
 
-	before := snapshot(t, songDir)
+	before := testutil.Snapshot(t, songDir)
 	ops := fsops.New(true)
 	if err := Run(cfg, ops); err != nil {
 		t.Fatal(err)
@@ -450,7 +450,7 @@ func TestDryRunLeavesTreeIdentical(t *testing.T) {
 	if st := ops.Stats(); st.Replaced != 1 || st.Failed != 0 {
 		t.Errorf("Stats = %+v, want 1 planned replacement", st)
 	}
-	if after := snapshot(t, songDir); !slices.Equal(before, after) {
+	if after := testutil.Snapshot(t, songDir); after != before {
 		t.Errorf("dry run changed the library\nbefore: %v\n after: %v", before, after)
 	}
 	if entries, _ := os.ReadDir(outDir); len(entries) != 0 {
@@ -459,16 +459,16 @@ func TestDryRunLeavesTreeIdentical(t *testing.T) {
 }
 
 func TestTaggedVideoIsSkipped(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")
-	writeFile(t, filepath.Join(song, "song.mp3"), "audio")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "audio")
 	// Would be re-encoded (mpeg4) and stripped of its audio, but an earlier run tagged it.
 	makeMedia(t, filepath.Join(song, "video.mp4"), "-c:v", "mpeg4", "-q:v", "1", "-c:a", "aac",
 		"-metadata", "SANITIZER_VIDEO=processed", "-movflags", "+use_metadata_tags")
 
-	before := snapshot(t, songDir)
+	before := testutil.Snapshot(t, songDir)
 	ops := fsops.New(false)
 	if err := Run(cfg, ops); err != nil {
 		t.Fatal(err)
@@ -476,7 +476,7 @@ func TestTaggedVideoIsSkipped(t *testing.T) {
 	if st := ops.Stats(); st != (fsops.Stats{}) {
 		t.Errorf("Stats = %+v, want nothing done", st)
 	}
-	if after := snapshot(t, songDir); !slices.Equal(before, after) {
+	if after := testutil.Snapshot(t, songDir); after != before {
 		t.Errorf("tagged video was changed\nbefore: %v\n after: %v", before, after)
 	}
 }
@@ -484,11 +484,11 @@ func TestTaggedVideoIsSkipped(t *testing.T) {
 // A video whose re-encode is larger than the original is not re-encoded on every run: the
 // original gets the tag by a lossless remux.
 func TestLargerResultTagsOriginal(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, outDir := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
 	txt := "#TITLE:S\n#ARTIST:A\n#VIDEO:video.mkv\n"
-	writeFile(t, filepath.Join(song, "song.txt"), txt)
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), txt)
 	// VP9 needs re-encoding, but the tiny VP9 stream is smaller than its H.264 re-encode;
 	// the big audio track keeps the size estimate below the input size.
 	video := filepath.Join(song, "video.mkv")
@@ -518,7 +518,7 @@ func TestLargerResultTagsOriginal(t *testing.T) {
 	assertNoTempFiles(t, songDir)
 
 	// The second run leaves the video alone.
-	before := snapshot(t, songDir)
+	before := testutil.Snapshot(t, songDir)
 	ops = fsops.New(false)
 	if err := Run(cfg, ops); err != nil {
 		t.Fatal(err)
@@ -526,7 +526,7 @@ func TestLargerResultTagsOriginal(t *testing.T) {
 	if st := ops.Stats(); st != (fsops.Stats{}) {
 		t.Errorf("second run Stats = %+v, want nothing done", st)
 	}
-	if after := snapshot(t, songDir); !slices.Equal(before, after) {
+	if after := testutil.Snapshot(t, songDir); after != before {
 		t.Errorf("second run changed the library\nbefore: %v\n after: %v", before, after)
 	}
 }
@@ -534,11 +534,11 @@ func TestLargerResultTagsOriginal(t *testing.T) {
 // An AVI cannot carry the tag, so a checked AVI is recorded in the media journal and
 // skipped by later runs.
 func TestCheckedAviIsJournaled(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
 	txt := "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n"
-	writeFile(t, filepath.Join(song, "song.txt"), txt)
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), txt)
 	video := filepath.Join(song, "video.avi")
 	makeMedia(t, video, "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3") // would be re-encoded
 
@@ -559,7 +559,7 @@ func TestCheckedAviIsJournaled(t *testing.T) {
 		t.Errorf("journal = %q, want a video-checked entry", got)
 	}
 
-	before := snapshot(t, songDir)
+	before := testutil.Snapshot(t, songDir)
 	ops = fsops.New(false)
 	if err := Run(cfg, ops); err != nil {
 		t.Fatal(err)
@@ -567,7 +567,7 @@ func TestCheckedAviIsJournaled(t *testing.T) {
 	if st := ops.Stats(); st.Replaced != 0 || st.Moved != 0 || st.Written != 0 || st.Failed != 0 {
 		t.Errorf("Stats = %+v, want the journaled video skipped", st)
 	}
-	if after := snapshot(t, songDir); !slices.Equal(before, after) {
+	if after := testutil.Snapshot(t, songDir); after != before {
 		t.Errorf("journaled video was changed\nbefore: %v\n after: %v", before, after)
 	}
 }
@@ -575,14 +575,14 @@ func TestCheckedAviIsJournaled(t *testing.T) {
 // A remux that does not carry the tag (simulated by treating AVI as tag-capable) is
 // discarded; the original is kept and recorded in the journal instead.
 func TestUnverifiedRemuxFallsBackToJournal(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	markerExts[".avi"] = true
 	t.Cleanup(func() { delete(markerExts, ".avi") })
 	cfg, songDir, _ := newLibrary(t, false)
 	video := filepath.Join(songDir, "A - S", "video.avi")
-	writeFile(t, filepath.Join(songDir, "A - S", "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n")
+	testutil.WriteFile(t, filepath.Join(songDir, "A - S", "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n")
 	makeMedia(t, video, "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
-	before := snapshot(t, video)
+	before := testutil.Snapshot(t, video)
 
 	j, err := journal.Open(cfg.JournalPath())
 	if err != nil {
@@ -594,7 +594,7 @@ func TestUnverifiedRemuxFallsBackToJournal(t *testing.T) {
 	if st := ops.Stats(); st.Replaced != 0 || st.Failed != 0 {
 		t.Errorf("Stats = %+v, the unverified remux must not replace the original", st)
 	}
-	if after := snapshot(t, video); !slices.Equal(before, after) {
+	if after := testutil.Snapshot(t, video); after != before {
 		t.Errorf("original changed\nbefore: %v\n after: %v", before, after)
 	}
 	if !j.Has("video-checked", video) {
@@ -606,11 +606,11 @@ func TestUnverifiedRemuxFallsBackToJournal(t *testing.T) {
 // Stripping the audio from an AVI copies the video stream into an AVI, which cannot carry
 // the tag; the result is recorded in the media journal.
 func TestStrippedAviIsJournaled(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.avi\n")
-	writeFile(t, filepath.Join(song, "song.mp3"), "audio")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.avi\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "audio")
 	video := filepath.Join(song, "video.avi")
 	makeMedia(t, video, "-c:v", "libx264", "-crf", "35", "-c:a", "ac3")
 
@@ -638,12 +638,12 @@ func TestStrippedAviIsJournaled(t *testing.T) {
 // audio would be kept; the planned txt names the separate song.mp3, so the real run strips
 // it, and the dry run must plan the same.
 func TestNeedsRemoveAudioSeesPlannedTxt(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	_, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
 	txt := filepath.Join(song, "song.txt")
-	writeFile(t, txt, "#TITLE:S\n#ARTIST:A\n#MP3:video.mp4\n#VIDEO:song.mp3\n")
-	writeFile(t, filepath.Join(song, "song.mp3"), "audio")
+	testutil.WriteFile(t, txt, "#TITLE:S\n#ARTIST:A\n#MP3:video.mp4\n#VIDEO:song.mp3\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "audio")
 	video := filepath.Join(song, "video.mp4")
 	makeMedia(t, video, "-c:v", "libx264", "-crf", "35", "-c:a", "aac")
 
@@ -665,11 +665,11 @@ func TestNeedsRemoveAudioSeesPlannedTxt(t *testing.T) {
 // A hidden file named by #MP3 (e.g. "._v.mp3" left by old versions) is not a separate audio
 // file, so the video keeps its audio.
 func TestHiddenAudioReferenceKeepsVideoAudio(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:._v.mp3\n#VIDEO:video.mp4\n")
-	writeFile(t, filepath.Join(song, "._v.mp3"), "AppleDouble")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:._v.mp3\n#VIDEO:video.mp4\n")
+	testutil.WriteFile(t, filepath.Join(song, "._v.mp3"), "AppleDouble")
 	video := filepath.Join(song, "video.mp4")
 	makeMedia(t, video, "-c:v", "libx264", "-crf", "35", "-c:a", "aac")
 
@@ -691,11 +691,11 @@ func TestHiddenAudioReferenceKeepsVideoAudio(t *testing.T) {
 // v.MP4 re-encoded to .mp4 only changes the extension's case: the original is replaced in
 // place (on case-insensitive file systems "v.mp4" is the original itself).
 func TestCaseOnlyExtensionChangeReplacesInPlace(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, outDir := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
 	txt := "#TITLE:S\n#ARTIST:A\n#VIDEO:video.MP4\n"
-	writeFile(t, filepath.Join(song, "song.txt"), txt)
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), txt)
 	video := filepath.Join(song, "video.MP4")
 	makeMediaFrom(t, video, "testsrc=size=320x240:rate=25:duration=1", "-f", "mp4", "-c:v", "mpeg4", "-q:v", "1", "-c:a", "aac")
 
@@ -723,11 +723,11 @@ func TestCaseOnlyExtensionChangeReplacesInPlace(t *testing.T) {
 
 // Portrait videos taller than the limit are downscaled too, keeping the aspect ratio.
 func TestDownscalePortraitVideo(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	lowerLimits(t, 320, 180) // stands in for 1920x1080
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.mp4\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.mp4\n")
 	video := filepath.Join(song, "video.mp4")
 	// 180x320 is narrower than 320 but taller than 180; H.264 needs no re-encode otherwise.
 	makeMediaFrom(t, video, "testsrc=size=180x320:rate=25:duration=1", "-c:v", "libx264", "-crf", "10", "-c:a", "aac")
@@ -750,10 +750,10 @@ func TestDownscalePortraitVideo(t *testing.T) {
 
 // In dry-run mode, videos an earlier module would move away are not planned.
 func TestDryRunSkipsPlannedMoves(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, true)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n")
 	makeMedia(t, filepath.Join(song, "video.avi"), "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
 
 	ops := fsops.New(true)
@@ -771,7 +771,7 @@ func TestDryRunSkipsPlannedMoves(t *testing.T) {
 
 // The worker pool processes every video of every folder exactly once.
 func TestProcessesAllVideosConcurrently(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	src := filepath.Join(t.TempDir(), "v.mp4")
 	makeMedia(t, src, "-c:v", "libx264", "-crf", "35", "-c:a", "aac")
@@ -780,9 +780,9 @@ func TestProcessesAllVideosConcurrently(t *testing.T) {
 	var videos []string
 	for i := range songs {
 		song := filepath.Join(songDir, fmt.Sprintf("A - S%d", i))
-		writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")
-		writeFile(t, filepath.Join(song, "song.mp3"), "audio")
-		writeFile(t, filepath.Join(song, "video.mp4"), data)
+		testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")
+		testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "audio")
+		testutil.WriteFile(t, filepath.Join(song, "video.mp4"), data)
 		videos = append(videos, filepath.Join(song, "video.mp4"))
 	}
 
@@ -845,15 +845,6 @@ func newLibrary(t *testing.T, dryRun bool) (cfg config.Config, songDir, outDir s
 	return cfg, cfg.SongDir, cfg.OutDir
 }
 
-func requireFFmpeg(t *testing.T) {
-	t.Helper()
-	for _, tool := range []string{"ffmpeg", "ffprobe"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s not available: %v", tool, err)
-		}
-	}
-}
-
 // makeMedia creates a 1 s 320x240 test video with a sine tone, encoded with codecArgs.
 func makeMedia(t *testing.T, path string, codecArgs ...string) {
 	t.Helper()
@@ -863,14 +854,10 @@ func makeMedia(t *testing.T, path string, codecArgs ...string) {
 // makeMediaFrom creates a test video from the lavfi video source with a 1 s sine tone.
 func makeMediaFrom(t *testing.T, path, videoSrc string, codecArgs ...string) {
 	t.Helper()
-	args := slices.Concat([]string{
-		"-hide_banner", "-nostdin", "-loglevel", "error",
+	testutil.GenerateMedia(t, slices.Concat([]string{
 		"-f", "lavfi", "-i", videoSrc,
 		"-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-	}, codecArgs, []string{"-y", path})
-	if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
-		t.Skipf("cannot generate test media (%v): %s", err, out)
-	}
+	}, codecArgs, []string{path})...)
 }
 
 // probeStreams returns "type:codec" for every stream of file.
@@ -898,41 +885,6 @@ func assertNoTempFiles(t *testing.T, root string) {
 		}
 		return nil
 	})
-}
-
-// snapshot lists every entry below root with its mode, size, mtime and content hash.
-func snapshot(t *testing.T, root string) []string {
-	t.Helper()
-	var entries []string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		entry := fmt.Sprintf("%s %v %d %d", path, info.Mode(), info.Size(), info.ModTime().UnixNano())
-		if info.Mode().IsRegular() {
-			entry += fmt.Sprintf(" %x", sha256.Sum256([]byte(readFile(t, path))))
-		}
-		entries = append(entries, entry)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return entries
-}
-
-func writeFile(t *testing.T, path, content string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func readFile(t *testing.T, path string) string {

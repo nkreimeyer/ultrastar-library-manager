@@ -4,13 +4,13 @@ import (
 	"errors"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	"github.com/nkreimeyer/library-manager/journal"
 )
 
@@ -23,14 +23,6 @@ func newProcessor(t *testing.T, dryRun bool) (*processor, string, string) {
 		t.Fatal(err)
 	}
 	return &processor{cfg: cfg, ops: fsops.New(dryRun), journal: j, corrupted: map[string]struct{}{}}, songDir, outDir
-}
-
-// skipIfRoot skips tests that rely on permissions root ignores.
-func skipIfRoot(t *testing.T) {
-	t.Helper()
-	if os.Geteuid() == 0 {
-		t.Skip("permissions are not enforced for root")
-	}
 }
 
 func TestReEncodeWorthIt(t *testing.T) {
@@ -191,12 +183,12 @@ func TestWriteCorruptedReportNothingFlagged(t *testing.T) {
 func TestCollectVideos(t *testing.T) {
 	p, songDir, _ := newProcessor(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "video.avi"), "v")
-	writeFile(t, filepath.Join(song, "._video.avi"), "AppleDouble")
-	writeFile(t, filepath.Join(song, ".video.sanitizer-1.mp4"), "leftover")
-	writeFile(t, filepath.Join(song, "song.mp3"), "audio")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n")
-	writeFile(t, filepath.Join(song, "real.mkv"), "v")
+	testutil.WriteFile(t, filepath.Join(song, "video.avi"), "v")
+	testutil.WriteFile(t, filepath.Join(song, "._video.avi"), "AppleDouble")
+	testutil.WriteFile(t, filepath.Join(song, ".video.sanitizer-1.mp4"), "leftover")
+	testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "audio")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n")
+	testutil.WriteFile(t, filepath.Join(song, "real.mkv"), "v")
 	if err := os.Mkdir(filepath.Join(song, "clip.mp4"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -215,13 +207,9 @@ func TestCollectVideos(t *testing.T) {
 		t.Errorf("Stats = %+v, want no failure", st)
 	}
 
-	skipIfRoot(t)
 	locked := filepath.Join(songDir, "B - T")
-	writeFile(t, filepath.Join(locked, "video.avi"), "v")
-	if err := os.Chmod(locked, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	testutil.WriteFile(t, filepath.Join(locked, "video.avi"), "v")
+	testutil.ChmodUnreadable(t, locked)
 	if got := p.collectVideos([]string{locked, song}); !slices.Equal(got, want) {
 		t.Errorf("collectVideos with an unreadable folder = %v, want %v", got, want)
 	}
@@ -241,7 +229,7 @@ func TestReplaceOriginalUnusableOutput(t *testing.T) {
 	p, songDir, _ := newProcessor(t, false)
 	song := filepath.Join(songDir, "A - S")
 	video := filepath.Join(song, "video.mp4")
-	writeFile(t, video, "original video")
+	testutil.WriteFile(t, video, "original video")
 	tmp, err := fsops.TempFileNear(video, ".mp4") // empty, as if ffmpeg wrote nothing
 	if err != nil {
 		t.Fatal(err)
@@ -259,7 +247,7 @@ func TestReplaceOriginalUnusableOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, tmp, "processed")
+	testutil.WriteFile(t, tmp, "processed")
 	p.replaceOriginal(song, filepath.Join(song, "gone.mp4"), tmp, encodePlan{removeAudio: true})
 	if st := p.ops.Stats(); st.Failed != 2 || st.Replaced != 0 {
 		t.Errorf("Stats = %+v, want 2 failures and no replacement", st)
@@ -280,14 +268,14 @@ func TestReplaceOriginalTxtUpdateFails(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			p, songDir, outDir := newProcessor(t, false)
 			song := filepath.Join(songDir, "A - S")
-			writeFile(t, filepath.Join(song, "song.txt"), tt.txt)
+			testutil.WriteFile(t, filepath.Join(song, "song.txt"), tt.txt)
 			video := filepath.Join(song, "video.avi")
-			writeFile(t, video, "original video, larger than the result")
+			testutil.WriteFile(t, video, "original video, larger than the result")
 			tmp, err := fsops.TempFileNear(video, ".mp4")
 			if err != nil {
 				t.Fatal(err)
 			}
-			writeFile(t, tmp, "converted")
+			testutil.WriteFile(t, tmp, "converted")
 
 			p.replaceOriginal(song, video, tmp, encodePlan{reEncode: true})
 			if st := p.ops.Stats(); st.Failed != 1 || st.Written != 0 || st.Removed != 1 {
@@ -314,15 +302,15 @@ func TestReplaceOriginalTxtUpdateFails(t *testing.T) {
 func TestReplaceOriginalTargetAppeared(t *testing.T) {
 	p, songDir, _ := newProcessor(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n")
 	video := filepath.Join(song, "video.avi")
-	writeFile(t, video, "original video")
-	writeFile(t, filepath.Join(song, "video.mp4"), "other")
+	testutil.WriteFile(t, video, "original video")
+	testutil.WriteFile(t, filepath.Join(song, "video.mp4"), "other")
 	tmp, err := fsops.TempFileNear(video, ".mp4")
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, tmp, "new")
+	testutil.WriteFile(t, tmp, "new")
 	p.replaceOriginal(song, video, tmp, encodePlan{reEncode: true})
 	if st := p.ops.Stats(); st != (fsops.Stats{}) {
 		t.Errorf("Stats = %+v, want nothing done", st)
@@ -336,16 +324,16 @@ func TestReplaceOriginalTargetAppeared(t *testing.T) {
 // A video written in a container without the tag is journaled; if that fails, the failure
 // is counted but the video stays replaced.
 func TestRememberProcessedJournalFailure(t *testing.T) {
-	skipIfRoot(t)
+	testutil.SkipIfRoot(t)
 	p, songDir, outDir := newProcessor(t, false)
 	song := filepath.Join(songDir, "A - S")
 	video := filepath.Join(song, "video.avi")
-	writeFile(t, video, "original video")
+	testutil.WriteFile(t, video, "original video")
 	tmp, err := fsops.TempFileNear(video, ".avi")
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, tmp, "stripped")
+	testutil.WriteFile(t, tmp, "stripped")
 	if err := os.Chmod(outDir, 0o500); err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +352,7 @@ func TestRememberProcessedJournalFailure(t *testing.T) {
 func TestRememberProcessedTaggedContainer(t *testing.T) {
 	p, songDir, outDir := newProcessor(t, false)
 	video := filepath.Join(songDir, "A - S", "video.mkv")
-	writeFile(t, video, "v")
+	testutil.WriteFile(t, video, "v")
 	p.rememberProcessed(video)
 	if err := p.journal.Save(p.ops); err != nil {
 		t.Fatal(err)
@@ -389,10 +377,10 @@ func TestRunPreconditions(t *testing.T) {
 		}
 	})
 	t.Run("no ffprobe", func(t *testing.T) {
-		requireFFmpeg(t)
+		testutil.RequireFFmpeg(t)
 		cfg, _, _ := newLibrary(t, false)
 		bin := t.TempDir()
-		ffmpeg, _ := lookPath(t, "ffmpeg")
+		ffmpeg := testutil.RequireTool(t, "ffmpeg")
 		if err := os.Symlink(ffmpeg, filepath.Join(bin, "ffmpeg")); err != nil {
 			t.Fatal(err)
 		}
@@ -403,7 +391,7 @@ func TestRunPreconditions(t *testing.T) {
 		}
 	})
 	t.Run("song dir gone", func(t *testing.T) {
-		requireFFmpeg(t)
+		testutil.RequireFFmpeg(t)
 		cfg, songDir, _ := newLibrary(t, false)
 		if err := os.Remove(songDir); err != nil {
 			t.Fatal(err)
@@ -413,33 +401,24 @@ func TestRunPreconditions(t *testing.T) {
 		}
 	})
 	t.Run("journal unreadable", func(t *testing.T) {
-		requireFFmpeg(t)
+		testutil.RequireFFmpeg(t)
 		cfg, songDir, _ := newLibrary(t, false)
 		song := filepath.Join(songDir, "A - S")
-		writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n")
-		writeFile(t, filepath.Join(song, "video.avi"), "v")
+		testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n")
+		testutil.WriteFile(t, filepath.Join(song, "video.avi"), "v")
 		if err := os.Mkdir(cfg.JournalPath(), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		before := snapshot(t, songDir)
+		before := testutil.Snapshot(t, songDir)
 		ops := fsops.New(false)
 		err := Run(cfg, ops)
 		if err == nil || !strings.Contains(err.Error(), "journal") {
 			t.Errorf("Run = %v, want a journal error", err)
 		}
-		if after := snapshot(t, songDir); !slices.Equal(before, after) {
+		if after := testutil.Snapshot(t, songDir); after != before {
 			t.Errorf("library changed\nbefore: %v\n after: %v", before, after)
 		}
 	})
-}
-
-func lookPath(t *testing.T, tool string) (string, error) {
-	t.Helper()
-	p, err := exec.LookPath(tool)
-	if err != nil {
-		t.Skipf("%s not available: %v", tool, err)
-	}
-	return p, nil
 }
 
 // --- gaps that need ffmpeg ------------------------------------------------------------------
@@ -447,10 +426,10 @@ func lookPath(t *testing.T, tool string) (string, error) {
 // plan picks crf 23 above 1280 px width and 28 up to it, re-encodes a video ffprobe cannot
 // read, and skips a file without a video stream.
 func TestPlan(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	p, songDir, _ := newProcessor(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n")
 	for _, tt := range []struct {
 		size string
 		crf  int
@@ -464,7 +443,7 @@ func TestPlan(t *testing.T) {
 	}
 
 	garbage := filepath.Join(song, "garbage.avi")
-	writeFile(t, garbage, strings.Repeat("garbage", 200))
+	testutil.WriteFile(t, garbage, strings.Repeat("garbage", 200))
 	if pl, ok := p.planFile(song, garbage); !ok || !pl.reEncode || pl.resize || pl.removeAudio {
 		t.Errorf("plan(garbage) = %+v, %v; want a re-encode attempt", pl, ok)
 	}
@@ -481,13 +460,13 @@ func TestPlan(t *testing.T) {
 
 // An audio-only .mp4 is left alone by Run.
 func TestAudioOnlyMp4IsSkipped(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")
-	writeFile(t, filepath.Join(song, "song.mp3"), "audio")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "audio")
 	makeMedia(t, filepath.Join(song, "video.mp4"), "-vn", "-c:a", "aac")
-	before := snapshot(t, songDir)
+	before := testutil.Snapshot(t, songDir)
 	ops := fsops.New(false)
 	if err := Run(cfg, ops); err != nil {
 		t.Fatal(err)
@@ -495,13 +474,13 @@ func TestAudioOnlyMp4IsSkipped(t *testing.T) {
 	if st := ops.Stats(); st != (fsops.Stats{}) {
 		t.Errorf("Stats = %+v, want nothing done", st)
 	}
-	if after := snapshot(t, songDir); !slices.Equal(before, after) {
+	if after := testutil.Snapshot(t, songDir); after != before {
 		t.Errorf("library changed\nbefore: %v\n after: %v", before, after)
 	}
 }
 
 func TestNeedsRemoveAudio(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	src := t.TempDir()
 	withAudio, silent := filepath.Join(src, "a.mp4"), filepath.Join(src, "s.mp4")
 	makeMedia(t, withAudio, "-c:v", "libx264", "-crf", "35", "-c:a", "aac")
@@ -525,12 +504,12 @@ func TestNeedsRemoveAudio(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			song := t.TempDir()
-			writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n"+tt.tags+"#VIDEO:video.mp4\n")
-			writeFile(t, filepath.Join(song, "song.mp3"), "audio")
-			writeFile(t, filepath.Join(song, "cover.jpg"), "image")
-			writeFile(t, filepath.Join(song, "empty.mp3"), "")
+			testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n"+tt.tags+"#VIDEO:video.mp4\n")
+			testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "audio")
+			testutil.WriteFile(t, filepath.Join(song, "cover.jpg"), "image")
+			testutil.WriteFile(t, filepath.Join(song, "empty.mp3"), "")
 			video := filepath.Join(song, "video.mp4")
-			writeFile(t, video, readFile(t, map[bool]string{false: withAudio, true: silent}[tt.silent]))
+			testutil.WriteFile(t, video, readFile(t, map[bool]string{false: withAudio, true: silent}[tt.silent]))
 			if got := needsRemoveAudio(nil, song, video, probeOf(video)); got != tt.want {
 				t.Errorf("needsRemoveAudio = %v, want %v", got, tt.want)
 			}
@@ -539,9 +518,9 @@ func TestNeedsRemoveAudio(t *testing.T) {
 
 	t.Run("no song txt", func(t *testing.T) {
 		song := t.TempDir()
-		writeFile(t, filepath.Join(song, "song.mp3"), "audio")
+		testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "audio")
 		video := filepath.Join(song, "video.mp4")
-		writeFile(t, video, readFile(t, withAudio))
+		testutil.WriteFile(t, video, readFile(t, withAudio))
 		if needsRemoveAudio(nil, song, video, probeOf(video)) {
 			t.Error("needsRemoveAudio = true without a song txt")
 		}
@@ -550,11 +529,11 @@ func TestNeedsRemoveAudio(t *testing.T) {
 
 // Stripping the audio is idempotent: the second run leaves the tagged result alone.
 func TestStripAudioTwice(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")
-	writeFile(t, filepath.Join(song, "song.mp3"), "audio")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "audio")
 	video := filepath.Join(song, "video.mp4")
 	makeMedia(t, video, "-c:v", "libx264", "-crf", "35", "-c:a", "aac")
 	ops := fsops.New(false)
@@ -565,7 +544,7 @@ func TestStripAudioTwice(t *testing.T) {
 		t.Errorf("first run Stats = %+v, want 1 replacement", st)
 	}
 	assertTagged(t, video, true)
-	before := snapshot(t, songDir)
+	before := testutil.Snapshot(t, songDir)
 	ops = fsops.New(false)
 	if err := Run(cfg, ops); err != nil {
 		t.Fatal(err)
@@ -573,7 +552,7 @@ func TestStripAudioTwice(t *testing.T) {
 	if st := ops.Stats(); st != (fsops.Stats{}) {
 		t.Errorf("second run Stats = %+v, want nothing done", st)
 	}
-	if after := snapshot(t, songDir); !slices.Equal(before, after) {
+	if after := testutil.Snapshot(t, songDir); after != before {
 		t.Errorf("second run changed the library\nbefore: %v\n after: %v", before, after)
 	}
 }
@@ -581,14 +560,14 @@ func TestStripAudioTwice(t *testing.T) {
 // A video ffmpeg can read but not process (an audio codec MP4 cannot hold) is a failure,
 // not a corrupted file, and the original stays untouched.
 func TestFFmpegFailureIsCounted(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, outDir := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
 	txt := "#TITLE:S\n#ARTIST:A\n#MP3:video.avi\n#VIDEO:video.avi\n"
-	writeFile(t, filepath.Join(song, "song.txt"), txt)
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), txt)
 	video := filepath.Join(song, "video.avi")
 	makeMedia(t, video, "-c:v", "mpeg4", "-q:v", "1", "-c:a", "adpcm_ms")
-	before := snapshot(t, video)
+	before := testutil.Snapshot(t, video)
 
 	ops := fsops.New(false)
 	if err := Run(cfg, ops); err != nil {
@@ -600,7 +579,7 @@ func TestFFmpegFailureIsCounted(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(outDir, corruptedReportName)); !os.IsNotExist(err) {
 		t.Errorf("a processing failure must not be reported as corrupted (err=%v)", err)
 	}
-	if after := snapshot(t, video); !slices.Equal(before, after) {
+	if after := testutil.Snapshot(t, video); after != before {
 		t.Errorf("original changed\nbefore: %v\n after: %v", before, after)
 	}
 	if got := dirNames(t, song); !slices.Equal(got, []string{"song.txt", "video.avi"}) {
@@ -613,7 +592,7 @@ func TestFFmpegFailureIsCounted(t *testing.T) {
 
 // A high-bitrate H.264 MP4 is re-encoded, a low-bitrate one is not.
 func TestGetNeedsReEncodeBitrate(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	dir := t.TempDir()
 	high, low := filepath.Join(dir, "high.mp4"), filepath.Join(dir, "low.mp4")
 	makeMediaFrom(t, high, "testsrc2=size=640x480:rate=25:duration=1", "-c:v", "libx264", "-qp", "0", "-an")
@@ -632,7 +611,7 @@ func TestGetNeedsReEncodeBitrate(t *testing.T) {
 	}
 	// Without a size estimate (unreadable file) the codec alone decides.
 	garbage := filepath.Join(dir, "garbage.avi")
-	writeFile(t, garbage, "garbage")
+	testutil.WriteFile(t, garbage, "garbage")
 	if !getNeedsReEncode(garbage, "mpeg4") || getNeedsReEncode(garbage, "h264") {
 		t.Error("without an estimate, the codec must decide")
 	}
@@ -640,7 +619,7 @@ func TestGetNeedsReEncodeBitrate(t *testing.T) {
 
 // The size estimate of a 1 s 320x240 clip at 25 fps.
 func TestEstimatedSizeOfReEncodedVideo(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	video := filepath.Join(t.TempDir(), "v.mp4")
 	makeMedia(t, video, "-c:v", "libx264", "-crf", "35", "-an")
 	got, err := estimatedSizeOfReEncodedVideo(video)
@@ -665,11 +644,11 @@ func TestEstimatedSizeOfReEncodedVideo(t *testing.T) {
 
 // A video recorded as processed in the media journal is skipped.
 func TestJournaledProcessedVideoIsSkipped(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.avi\n")
-	writeFile(t, filepath.Join(song, "song.mp3"), "audio")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.avi\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "audio")
 	video := filepath.Join(song, "video.avi")
 	makeMedia(t, video, "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3") // would be re-encoded and stripped
 	j, err := journal.Open(cfg.JournalPath())
@@ -682,7 +661,7 @@ func TestJournaledProcessedVideoIsSkipped(t *testing.T) {
 	if err := j.Save(fsops.New(false)); err != nil {
 		t.Fatal(err)
 	}
-	before := snapshot(t, songDir)
+	before := testutil.Snapshot(t, songDir)
 	ops := fsops.New(false)
 	if err := Run(cfg, ops); err != nil {
 		t.Fatal(err)
@@ -690,17 +669,17 @@ func TestJournaledProcessedVideoIsSkipped(t *testing.T) {
 	if st := ops.Stats(); st != (fsops.Stats{}) {
 		t.Errorf("Stats = %+v, want nothing done", st)
 	}
-	if after := snapshot(t, songDir); !slices.Equal(before, after) {
+	if after := testutil.Snapshot(t, songDir); after != before {
 		t.Errorf("journaled video was changed\nbefore: %v\n after: %v", before, after)
 	}
 }
 
 // In a dry run, an unreferenced video that would need a conversion is not planned either.
 func TestDryRunUnreferencedVideoIsNotPlanned(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, true)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:other.mp4\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:other.mp4\n")
 	makeMedia(t, filepath.Join(song, "video.avi"), "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
 	ops := fsops.New(true)
 	if err := Run(cfg, ops); err != nil {
@@ -714,14 +693,14 @@ func TestDryRunUnreferencedVideoIsNotPlanned(t *testing.T) {
 // A remux that ffmpeg cannot write (mpeg2video in FLV) leaves the original untouched and
 // records it in the journal instead.
 func TestFailedRemuxFallsBackToJournal(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	p, songDir, _ := newProcessor(t, false)
 	video := filepath.Join(songDir, "A - S", "video.flv")
 	if err := os.MkdirAll(filepath.Dir(video), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	makeMedia(t, video, "-c:v", "mpeg2video", "-c:a", "mp2", "-f", "matroska")
-	before := snapshot(t, video)
+	before := testutil.Snapshot(t, video)
 	if err := p.tagByRemux(video); err == nil || !strings.Contains(err.Error(), "ffmpeg remux") {
 		t.Errorf("tagByRemux = %v, want an ffmpeg remux error", err)
 	}
@@ -729,7 +708,7 @@ func TestFailedRemuxFallsBackToJournal(t *testing.T) {
 	if st := p.ops.Stats(); st.Replaced != 0 || st.Failed != 0 {
 		t.Errorf("Stats = %+v, the failed remux must not replace the original", st)
 	}
-	if after := snapshot(t, video); !slices.Equal(before, after) {
+	if after := testutil.Snapshot(t, video); after != before {
 		t.Errorf("original changed\nbefore: %v\n after: %v", before, after)
 	}
 	if !p.journal.Has(journalChecked, video) {
@@ -739,7 +718,7 @@ func TestFailedRemuxFallsBackToJournal(t *testing.T) {
 
 	// A file ffprobe cannot read is not remuxed at all.
 	garbage := filepath.Join(songDir, "A - S", "garbage.mkv")
-	writeFile(t, garbage, "garbage")
+	testutil.WriteFile(t, garbage, "garbage")
 	if err := p.tagByRemux(garbage); err == nil {
 		t.Error("tagByRemux(garbage) = nil, want an error")
 	}

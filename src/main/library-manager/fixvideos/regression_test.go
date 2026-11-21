@@ -12,6 +12,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	"github.com/nkreimeyer/library-manager/mediatools"
 	"github.com/nkreimeyer/library-manager/utils"
 )
@@ -30,10 +31,10 @@ func probeVideo(t *testing.T, file, entries string) string {
 // An odd-sized video that needs a re-encode (but no downscale) is encoded with even
 // dimensions, which libx264 requires; before, ffmpeg failed on every run.
 func TestReEncodeOddDimensions(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "Artist", "Artist - Song")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:Song\n#ARTIST:Artist\n#MP3:video.avi\n#VIDEO:video.avi\n#VIDEOGAP:0\n: 0 4 0 La\nE\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:Song\n#ARTIST:Artist\n#MP3:video.avi\n#VIDEO:video.avi\n#VIDEOGAP:0\n: 0 4 0 La\nE\n")
 	makeMediaFrom(t, filepath.Join(song, "video.avi"), "testsrc=size=853x481:rate=25:duration=1", "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
 
 	ops := fsops.New(false)
@@ -55,10 +56,10 @@ func TestReEncodeOddDimensions(t *testing.T) {
 
 // A 10-bit source is re-encoded to 8-bit 4:2:0 H.264, which every player can decode.
 func TestReEncode10BitGives8Bit420(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.mkv\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.mkv\n")
 	// Lossless 10-bit VP9: the codec needs re-encoding and the input is far above the estimate.
 	makeMedia(t, filepath.Join(song, "video.mkv"), "-pix_fmt", "yuv420p10le", "-c:v", "libvpx-vp9", "-lossless", "1", "-an")
 
@@ -79,12 +80,12 @@ func TestReEncode10BitGives8Bit420(t *testing.T) {
 // stripped by a stream copy; before, the original was tagged with its audio and skipped
 // forever.
 func TestLargerReEncodeStillStripsAudio(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
 	txt := "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mkv\n"
-	writeFile(t, filepath.Join(song, "song.txt"), txt)
-	writeFile(t, filepath.Join(song, "song.mp3"), "separate audio")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), txt)
+	testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "separate audio")
 	video := filepath.Join(song, "video.mkv")
 	// The tiny VP9 stream plus a small audio track is smaller than its H.264 re-encode.
 	makeMediaFrom(t, video, "testsrc2=size=320x240:rate=25:duration=1",
@@ -122,11 +123,11 @@ func TestLargerReEncodeStillStripsAudio(t *testing.T) {
 // A 0-byte #MP3 file is not a usable separate audio source, so the video's audio
 // (possibly the song's only audio) is kept.
 func TestEmptySeparateAudioKeepsVideoAudio(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")
-	writeFile(t, filepath.Join(song, "song.mp3"), "")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.mp4\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "")
 	video := filepath.Join(song, "video.mp4")
 	makeMedia(t, video, "-c:v", "libx264", "-crf", "35", "-c:a", "aac")
 
@@ -145,16 +146,16 @@ func TestEmptySeparateAudioKeepsVideoAudio(t *testing.T) {
 // A conversion whose target name is taken is skipped before encoding, so the dry run plans
 // what the real run does and the real run does not re-encode on every run.
 func TestConversionBlockedByExistingMp4(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	songDir, outDir := t.TempDir(), t.TempDir()
 	song := filepath.Join(songDir, "A - S")
 	txt := "#TITLE:S\n#ARTIST:A\n#MP3:song.mp3\n#VIDEO:video.avi\n"
-	writeFile(t, filepath.Join(song, "song.txt"), txt)
-	writeFile(t, filepath.Join(song, "song.mp3"), "audio")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), txt)
+	testutil.WriteFile(t, filepath.Join(song, "song.mp3"), "audio")
 	makeMedia(t, filepath.Join(song, "video.avi"), "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
 	// An unrelated, already fine mp4 (h264, no audio, low bitrate) occupies the target name.
 	makeMedia(t, filepath.Join(song, "video.mp4"), "-c:v", "libx264", "-crf", "35", "-an")
-	before := snapshot(t, songDir)
+	before := testutil.Snapshot(t, songDir)
 
 	dryCfg, err := config.New(songDir, outDir, true)
 	if err != nil {
@@ -179,7 +180,7 @@ func TestConversionBlockedByExistingMp4(t *testing.T) {
 	if st := real.Stats(); st != (fsops.Stats{}) {
 		t.Errorf("real run Stats = %+v, want nothing done", st)
 	}
-	if after := snapshot(t, songDir); !slices.Equal(before, after) {
+	if after := testutil.Snapshot(t, songDir); after != before {
 		t.Errorf("library changed\nbefore: %v\n after: %v", before, after)
 	}
 }
@@ -187,12 +188,12 @@ func TestConversionBlockedByExistingMp4(t *testing.T) {
 // In a dry run, a target an earlier module would move away does not block the conversion,
 // as in the real run where it is gone by then.
 func TestConversionTargetPlannedAwayIsPlanned(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, true)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:video.avi\n")
 	makeMedia(t, filepath.Join(song, "video.avi"), "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
-	writeFile(t, filepath.Join(song, "video.mp4"), "unreferenced leftover")
+	testutil.WriteFile(t, filepath.Join(song, "video.mp4"), "unreferenced leftover")
 
 	ops := fsops.New(true)
 	if _, err := ops.MoveInto(filepath.Join(song, "video.mp4"), cfg.ExtraFilesDir(), "A - S/video.mp4"); err != nil {
@@ -209,7 +210,7 @@ func TestConversionTargetPlannedAwayIsPlanned(t *testing.T) {
 // A low-bitrate H.264 video in MKV (no per-stream bitrate) is not re-encoded just because
 // its audio track is large: the container bitrate includes the audio.
 func TestGetNeedsReEncodeMKVAudioNotCountedAsVideoBitrate(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	dir := t.TempDir()
 	mkv := filepath.Join(dir, "video.mkv")
 	makeMedia(t, mkv, "-c:v", "libx264", "-crf", "35", "-c:a", "pcm_s24le", "-ar", "96000", "-ac", "2")
@@ -224,7 +225,7 @@ func TestGetNeedsReEncodeMKVAudioNotCountedAsVideoBitrate(t *testing.T) {
 
 // A high-bitrate H.264 video in MKV without audio is detected from the container rate.
 func TestGetVideoBitrateMKVHighBitrate(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	mkv := filepath.Join(t.TempDir(), "video.mkv")
 	makeMediaFrom(t, mkv, "testsrc2=size=640x480:rate=25:duration=1", "-c:v", "libx264", "-qp", "0", "-an")
 	br, err := getVideoBitrate(mkv)
@@ -241,7 +242,7 @@ func TestGetVideoBitrateMKVHighBitrate(t *testing.T) {
 // pads a 300 kbit/s video to its 8 Mbit/s mux rate: the container rate would make a
 // video-only song re-encoded (and its original deleted) for nothing.
 func TestVideoBitrateIgnoresContainerRate(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	dir := t.TempDir()
 	padded := filepath.Join(dir, "padded.mpg")
 	makeMediaFrom(t, padded, "testsrc2=size=320x240:rate=25:duration=5", "-map", "0:v", "-c:v", "libx264", "-b:v", "300k",
@@ -318,7 +319,7 @@ func TestPacketBitrate(t *testing.T) {
 // markChecked counted it a second time. A failing Add (the file cannot be fingerprinted)
 // is not counted by ops, so they must count it themselves.
 func TestJournalFailuresCountedOnce(t *testing.T) {
-	skipIfRoot(t)
+	testutil.SkipIfRoot(t)
 	record := map[string]func(p *processor, file string){
 		"rememberProcessed": (*processor).rememberProcessed,
 		"markChecked":       (*processor).markChecked,
@@ -327,7 +328,7 @@ func TestJournalFailuresCountedOnce(t *testing.T) {
 		t.Run(name+" save fails", func(t *testing.T) {
 			p, songDir, outDir := newProcessor(t, false)
 			video := filepath.Join(songDir, "A - S", "video.avi") // cannot carry the tag
-			writeFile(t, video, "video")
+			testutil.WriteFile(t, video, "video")
 			if err := os.Chmod(outDir, 0o500); err != nil {
 				t.Fatal(err)
 			}
@@ -403,12 +404,12 @@ func TestSameSizeResultReplacesOriginal(t *testing.T) {
 	p, songDir, _ := newProcessor(t, false)
 	song := filepath.Join(songDir, "A - S")
 	video := filepath.Join(song, "video.mp4")
-	writeFile(t, video, "original")
+	testutil.WriteFile(t, video, "original")
 	tmp, err := fsops.TempFileNear(video, ".mp4")
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, tmp, "encoded!") // same length as "original"
+	testutil.WriteFile(t, tmp, "encoded!") // same length as "original"
 
 	p.replaceOriginal(song, video, tmp, encodePlan{reEncode: true})
 
@@ -424,7 +425,7 @@ func TestSameSizeResultReplacesOriginal(t *testing.T) {
 // A video whose duration ffprobe cannot tell (Matroska written to a pipe) is not remuxed:
 // the remux could not be checked against it.
 func TestTagByRemuxNeedsKnownDuration(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	p, songDir, _ := newProcessor(t, false)
 	video := filepath.Join(songDir, "A - S", "video.mkv")
 	if err := os.MkdirAll(filepath.Dir(video), 0o755); err != nil {
@@ -446,13 +447,13 @@ func TestTagByRemuxNeedsKnownDuration(t *testing.T) {
 	if m, err := probeMarker(video); err != nil || m.duration != 0 {
 		t.Fatalf("fixture probe = %+v, %v; want an unknown duration", m, err)
 	}
-	before := snapshot(t, songDir)
+	before := testutil.Snapshot(t, songDir)
 
 	err = p.tagByRemux(video)
 	if err == nil || err.Error() != "unknown duration" {
 		t.Errorf("tagByRemux = %v, want the unknown-duration error", err)
 	}
-	if after := snapshot(t, songDir); !slices.Equal(before, after) {
+	if after := testutil.Snapshot(t, songDir); after != before {
 		t.Errorf("song dir changed\nbefore: %v\n after: %v", before, after)
 	}
 	if st := p.ops.Stats(); st != (fsops.Stats{}) {
@@ -464,19 +465,15 @@ func TestTagByRemuxNeedsKnownDuration(t *testing.T) {
 // re-encode comes out shorter: its video would run ahead of the song from there on, and the
 // conversion deletes the original. The original must stay, referenced and reported.
 func TestDamagedAviIsNotConverted(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, outDir := newLibrary(t, false)
 	song := filepath.Join(songDir, "Artist - Song")
 	txt := "#TITLE:Song\n#ARTIST:Artist\n#MP3:video.avi\n#VIDEO:video.avi\n: 0 4 0 La\nE\n"
-	writeFile(t, filepath.Join(song, "song.txt"), txt)
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), txt)
 	video := filepath.Join(song, "video.avi")
-	args := []string{"-hide_banner", "-nostdin", "-loglevel", "error",
-		"-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=4",
+	testutil.GenerateMedia(t, "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=4",
 		"-f", "lavfi", "-i", "sine=frequency=440:duration=4",
-		"-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3", "-y", video}
-	if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
-		t.Skipf("cannot generate test media (%v): %s", err, out)
-	}
+		"-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3", video)
 	// Zero 30 % of the file from 30 % on: the header and the index stay intact.
 	data, err := os.ReadFile(video)
 	if err != nil {
@@ -543,17 +540,14 @@ func TestParseVideoStreamDuration(t *testing.T) {
 // Without a known video duration, the containers are compared if the audio is kept; a
 // stripped audio track may have been the longer stream, so then nothing is compared.
 func TestSameVideoDurationFallbacks(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	dir := t.TempDir()
 	gen := func(name, dur string, extra ...string) string {
 		path := filepath.Join(dir, name)
-		args := slices.Concat([]string{"-hide_banner", "-nostdin", "-loglevel", "error",
+		testutil.GenerateMedia(t, slices.Concat([]string{
 			"-f", "lavfi", "-i", "testsrc=size=64x48:rate=25:duration=" + dur,
 			"-f", "lavfi", "-i", "sine=frequency=440:duration=" + dur,
-			"-c:v", "mpeg4"}, extra, []string{"-y", path})
-		if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
-			t.Skipf("cannot generate test media (%v): %s", err, out)
-		}
+			"-c:v", "mpeg4"}, extra, []string{path})...)
 		return path
 	}
 	long, short := gen("long.mp4", "3"), gen("short.mp4", "1")
@@ -589,14 +583,14 @@ func TestSameVideoDurationFallbacks(t *testing.T) {
 // A symlinked video is left alone: replacing it would turn the link into a regular copy,
 // and a conversion would delete only the link.
 func TestSymlinkedVideoIsNotProcessed(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	pool := filepath.Join(t.TempDir(), "pool.avi")
 	makeMedia(t, pool, "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
 	orig := readFile(t, pool)
 	song := filepath.Join(songDir, "A - S")
 	txt := "#TITLE:S\n#ARTIST:A\n#MP3:video.avi\n#VIDEO:video.avi\n: 0 4 0 La\nE\n"
-	writeFile(t, filepath.Join(song, "song.txt"), txt)
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), txt)
 	link := filepath.Join(song, "video.avi")
 	if err := os.Symlink(pool, link); err != nil {
 		t.Fatal(err)
@@ -625,11 +619,11 @@ func TestSymlinkedVideoIsNotProcessed(t *testing.T) {
 // the original. It is skipped before encoding, so a dry run plans nothing and later runs
 // do not encode and discard the video again.
 func TestConversionKeepsOriginalOfProblemTxt(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "Artist - Song")
 	txt := "#TITLE:Песня\n#ARTIST:Artist\n#ENCODING:CP1252\n#MP3:video.avi\n#VIDEO:video.avi\n: 0 4 0 Ля\nE\n"
-	writeFile(t, filepath.Join(song, "song.txt"), txt)
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), txt)
 	video := filepath.Join(song, "video.avi")
 	makeMedia(t, video, "-c:v", "mpeg4", "-q:v", "1", "-c:a", "ac3")
 	orig := readFile(t, video)
@@ -660,10 +654,10 @@ func TestConversionKeepsOriginalOfProblemTxt(t *testing.T) {
 // converted name goes into the txt in NFC, so DecodeTxt still reads it as clean UTF-8
 // (an NFD mark as the txt's only non-ASCII is a Problem, and fixtxt would skip the song).
 func TestConversionOfNFDNameKeepsTxtClean(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:Mädchen.avi\n: 0 4 0 La\nE\n")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#VIDEO:Mädchen.avi\n: 0 4 0 La\nE\n")
 	makeMedia(t, filepath.Join(song, "Mädchen.avi"), "-c:v", "mpeg4", "-q:v", "1", "-an")
 
 	ops := fsops.New(false)
@@ -710,12 +704,12 @@ func TestPlanVideoWithoutCodecName(t *testing.T) {
 // The same with a real file: a Matroska video whose CodecID ffmpeg does not know. It needs
 // a resize, so it is processed, and ffmpeg's failure on it counts.
 func TestUnknownVideoCodecIsProcessed(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	lowerLimits(t, 160, 120)
 	cfg, songDir, _ := newLibrary(t, false)
 	song := filepath.Join(songDir, "A - S")
-	writeFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:a.mp3\n#VIDEO:v.mkv\n: 0 4 0 La\nE\n")
-	writeFile(t, filepath.Join(song, "a.mp3"), "audio")
+	testutil.WriteFile(t, filepath.Join(song, "song.txt"), "#TITLE:S\n#ARTIST:A\n#MP3:a.mp3\n#VIDEO:v.mkv\n: 0 4 0 La\nE\n")
+	testutil.WriteFile(t, filepath.Join(song, "a.mp3"), "audio")
 	video := filepath.Join(song, "v.mkv")
 	makeMedia(t, video, "-c:v", "mpeg4", "-c:a", "aac")
 	data, err := os.ReadFile(video)
