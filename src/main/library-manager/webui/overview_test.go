@@ -16,6 +16,7 @@ func TestOverview(t *testing.T) {
 	testutil.WriteFile(t, filepath.Join(lib, "A", "ABBA - SOS", "cover.jpg"), "c")
 	testutil.WriteFile(t, filepath.Join(lib, "Q", "Queen - Rock", ".hidden"), strings.Repeat("h", 1000))
 	testutil.WriteFiles(t, filepath.Join(lib, "Z", "No - Audio"), map[string]string{"song.txt": "#ARTIST:No\n#TITLE:Audio\n" + testutil.NotesTxt("no audio")})
+	testutil.WriteFile(t, filepath.Join(lib, "Junk", "stray.txt"), "no song here") // a folder, not a song
 	testutil.WriteFile(t, filepath.Join(out, "extra-files", "A", "x.jpg"), "x")
 	writeSong(t, filepath.Join(out, "removed", "Q", "Gone - Song"), "Gone", "Song", nil)
 
@@ -28,7 +29,7 @@ func TestOverview(t *testing.T) {
 	}
 	var res overviewResult
 	s.do("GET", "/api/job", nil, &struct{ Result *overviewResult }{&res})
-	if res.Songs != 4 || res.WithVideo != 1 || res.WithImage != 1 || res.NoAudio != 1 {
+	if res.NoSong != 1 || res.Songs != 4 || res.WithVideo != 1 || res.WithImage != 1 || res.NoAudio != 1 {
 		t.Errorf("counts = %+v", res)
 	}
 	want := map[string]int{"A": 2, "Q": 1, "Z": 1}

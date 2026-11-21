@@ -19,11 +19,12 @@ import (
 )
 
 // overviewResult is the result of an overview job: what the library holds, counted from the
-// folders and file names only (no txt is read, no media probed).
+// folders and file names (a txt is only opened to see whether it is a song; no media is probed).
 type overviewResult struct {
 	Library   string        `json:"library"`
 	OutDir    string        `json:"outDir"`
-	Songs     int           `json:"songs"`
+	Songs     int           `json:"songs"`  // folders with a song txt
+	NoSong    int           `json:"noSong"` // folders the tools treat as a song folder but that have no song txt
 	Bytes     int64         `json:"bytes"`
 	WithVideo int           `json:"withVideo"`
 	WithImage int           `json:"withImage"` // a cover or background picture (any image file)
@@ -44,6 +45,7 @@ type songSummary struct {
 	bucket                      string
 	bytes                       int64
 	video, image, audio, failed bool
+	song                        bool // a song txt is there
 }
 
 // summarizeSong lists one song folder (its own files, not the subfolders).
@@ -59,6 +61,8 @@ func summarizeSong(lib, folder string) songSummary {
 		s.failed = true
 		return s
 	}
+	_, findErr := utils.FindSongTxt(nil, folder)
+	s.song = findErr == nil
 	for _, e := range entries {
 		if e.IsDir() || utils.IsHidden(e.Name()) {
 			continue
@@ -96,7 +100,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		res := overviewResult{Library: cfg.Library, OutDir: cfg.OutDir, Songs: len(folders), Buckets: []bucketCount{}, SetAside: map[string]int{}}
+		res := overviewResult{Library: cfg.Library, OutDir: cfg.OutDir, Buckets: []bucketCount{}, SetAside: map[string]int{}}
 		byBucket := map[string]*bucketCount{}
 		var mu sync.Mutex
 		err = utils.ForEachParallel(ctx, folders, utils.Parallel{
@@ -106,6 +110,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			sum := summarizeSong(cfg.Library, folder)
 			mu.Lock()
 			defer mu.Unlock()
+			if !sum.song {
+				res.NoSong++
+				return
+			}
+			res.Songs++
 			res.Bytes += sum.bytes
 			b := byBucket[sum.bucket]
 			if b == nil {

@@ -815,7 +815,8 @@ function viewOverview() {
   add(frag, h("ul", { class: "done-list" },
     h("li", null, `${fmt(o.withVideo)} with a video${pct(o.withVideo)}`),
     h("li", null, `${fmt(o.withImage)} with a picture${pct(o.withImage)}`),
-    o.noAudio ? h("li", null, `${fmt(o.noAudio)} without any audio or video file`) : null));
+    o.noAudio ? h("li", null, `${fmt(o.noAudio)} without any audio or video file`) : null,
+    o.noSong ? h("li", null, `${plural(o.noSong, "folder", "folders")} without a song text, not counted above`) : null));
   if (o.buckets.length) {
     const max = Math.max(...o.buckets.map((b) => b.songs));
     add(frag, h("h2", null, "By folder"), h("ul", { class: "buckets" }, o.buckets.map((b) => h("li", null,
@@ -1679,7 +1680,7 @@ function viewRemoveReview() {
     } }),
     h("span", null, h("strong", null, e.name), " ", h("span", { class: "path" }, e.song),
       advanced() ? h("span", { class: "muted small" }, ` (${e.pattern})`) : null)));
-  tally.append(tallyItem("rm-removed", "move", n, n === 1 ? "song is moved out of the library" : "songs are moved out of the library",
+  tally.append(tallyItem("rm-removed", "move", n, n === 1 ? "song matches and is moved out of the library" : "songs match; the ticked ones are moved out of the library",
     () => h("div", null,
       h("p", { class: "muted small" }, "Untick a song to keep it in the library."),
       h("label", { class: "check" }, h("input", { type: "checkbox", id: "rm-all", checked: S.rmKeep.size === 0, onchange: (ev) => {
