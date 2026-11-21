@@ -31,6 +31,47 @@ func warnings(hook *logtest.Hook) []string {
 	return msgs
 }
 
+// Real runs log every modification, as dry runs log every planned one: CopyInto, Rename,
+// Replace and Remove used to log only in dry-run mode (MoveInto and MoveTo log both).
+func TestRealRunLogsEveryModification(t *testing.T) {
+	hook := captureWarnings(t)
+	dir := t.TempDir()
+	song := filepath.Join(dir, "song.mp3")
+	writeFile(t, song, "a", 0o644)
+	o := New(false)
+	backup, err := o.CopyInto(song, filepath.Join(dir, "orig"), "song.mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(dir, ".tmp.mp3")
+	writeFile(t, tmp, "b", 0o644)
+	if err := o.Replace(tmp, song); err != nil {
+		t.Fatal(err)
+	}
+	renamed := filepath.Join(dir, "renamed.mp3")
+	if err := o.Rename(song, renamed); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Remove(renamed); err != nil {
+		t.Fatal(err)
+	}
+	var infos []string
+	for _, e := range hook.AllEntries() {
+		if e.Level == log.InfoLevel {
+			infos = append(infos, e.Message)
+		}
+	}
+	want := []string{
+		"Copied " + song + " -> " + backup,
+		"Replaced " + song,
+		"Renamed " + song + " -> " + renamed,
+		"Removed " + renamed,
+	}
+	if strings.Join(infos, "\n") != strings.Join(want, "\n") {
+		t.Errorf("info logs = %q, want %q", infos, want)
+	}
+}
+
 // reserveTarget tries the wanted name and the numbers (2) to (10000), and gives up after
 // that instead of looping forever.
 func TestReserveTargetLimit(t *testing.T) {

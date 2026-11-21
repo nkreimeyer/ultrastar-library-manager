@@ -49,13 +49,14 @@ type Ops struct {
 	reserveMu sync.Mutex
 	reserved  map[string]bool
 
-	// plannedMu guards plannedMoves: in dry-run mode, the sources of planned moves, so that
-	// later modules can skip what an earlier module would have moved away.
+	// plannedMu guards the fields below up to plannedDirs. plannedMoves: in dry-run mode,
+	// the sources of planned moves (MoveInto, MoveTo, a merge, RemoveEmptyDir), so that
+	// later modules can skip what an earlier module would have moved away (WouldBeMoved).
 	plannedMu    sync.Mutex
 	plannedMoves map[string]bool
 	runTargets   []string // targets of the (real or planned) moves of this run
 	// plannedPresent: in dry-run mode, the paths a planned move took away (false) or
-	// put in place (true), in the order the moves were planned; a planned CopyInto puts its
+	// put in place (true), as the latest planned move of each path left it; a planned CopyInto puts its
 	// target in place too. MoveTo, MoveInto and CopyInto use it to see the library and the
 	// out dir as a real run would have left them so far (see exists and taken).
 	plannedPresent map[string]bool
@@ -173,8 +174,9 @@ func (o *Ops) WriteFileAtomic(path string, data []byte) (bool, error) {
 }
 
 // ReadFile reads a library file as this run has left it so far. Outside dry-run mode (and
-// for a nil *Ops) it is os.ReadFile. In dry-run mode a file that an earlier MoveInto
-// planned to move away (the file itself or a parent folder, see WouldBeMoved) reads as
+// for a nil *Ops) it is os.ReadFile. In dry-run mode a file that an earlier MoveInto,
+// MoveTo, merge or RemoveEmptyDir planned to move away (the file itself or a parent
+// folder, see WouldBeMoved) reads as
 // not existing (an error wrapping fs.ErrNotExist), a file with a planned WriteFileAtomic
 // returns the planned content, and every other file is read from disk.
 //
@@ -502,6 +504,7 @@ func (o *Ops) Rename(src, dst string) error {
 		return o.fail(fmt.Errorf("renaming %s -> %s: %w", src, dst, err))
 	}
 	syncDir(filepath.Dir(dst))
+	log.Infof("Renamed %s -> %s", src, dst)
 	o.moved.Add(1)
 	return nil
 }
@@ -527,6 +530,7 @@ func (o *Ops) Replace(tmp, dst string) error {
 		return o.fail(fmt.Errorf("replacing %s: %w", dst, err))
 	}
 	syncDir(filepath.Dir(dst))
+	log.Infof("Replaced %s", dst)
 	o.replaced.Add(1)
 	return nil
 }
@@ -595,6 +599,7 @@ func (o *Ops) CopyInto(src, dstDir, relPath string) (string, error) {
 		os.Remove(dst)
 		return "", o.fail(fmt.Errorf("copying %s -> %s: %w", src, dst, err))
 	}
+	log.Infof("Copied %s -> %s", src, dst)
 	o.copied.Add(1)
 	return dst, nil
 }
@@ -708,8 +713,8 @@ func (o *Ops) Exists(path string) bool {
 }
 
 // WouldBeMoved reports whether path or one of its parent folders was moved away by an
-// earlier MoveInto in dry-run mode. It is always false outside dry-run mode, where moved
-// paths simply no longer exist. A nil *Ops plans nothing.
+// earlier MoveInto, MoveTo, merge or RemoveEmptyDir in dry-run mode. It is always false
+// outside dry-run mode, where moved paths simply no longer exist. A nil *Ops plans nothing.
 func (o *Ops) WouldBeMoved(path string) bool {
 	if o == nil {
 		return false
@@ -739,6 +744,7 @@ func (o *Ops) Remove(path string) error {
 	if err := os.Remove(path); err != nil {
 		return o.fail(fmt.Errorf("removing %s: %w", path, err))
 	}
+	log.Infof("Removed %s", path)
 	o.removed.Add(1)
 	return nil
 }
