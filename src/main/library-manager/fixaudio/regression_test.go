@@ -3,7 +3,6 @@ package fixaudio
 import (
 	"bytes"
 	"errors"
-	"maps"
 	"math"
 	"os"
 	"os/exec"
@@ -13,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	"github.com/nkreimeyer/library-manager/journal"
 )
 
@@ -22,7 +22,7 @@ import (
 // metadata as QuickTime mdta keys: the cover ("covr") and the iTunes atoms ("©nam") were
 // dropped.
 func TestM4ACoverAndTagsKept(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	// ALAC is not tested: ffmpeg cannot write an ALAC track next to a cover into MP4
 	// ("codec frame size is not set"), so no fixture can be made here.
 	for _, codec := range []string{"aac"} {
@@ -30,7 +30,7 @@ func TestM4ACoverAndTagsKept(t *testing.T) {
 			cfg, ops := newLibrary(t, false)
 			dir := addSong(t, cfg, "Artist - Cover", "song.m4a")
 			audio := filepath.Join(dir, "song.m4a")
-			ffmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=1", "-f", "lavfi", "-i", "color=red:s=16x16:d=1",
+			testutil.FFmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=1", "-f", "lavfi", "-i", "color=red:s=16x16:d=1",
 				"-map", "0:a", "-map", "1:v", "-frames:v", "1", "-c:v", "mjpeg", "-disposition:v", "attached_pic",
 				"-af", "volume=-20dB", "-c:a", codec,
 				"-metadata", "title=Cover Song", "-metadata", "artist=Tester", audio)
@@ -71,11 +71,11 @@ func TestM4ACoverAndTagsKept(t *testing.T) {
 }
 
 func TestFLACCoverAndTagsKept(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	dir := addSong(t, cfg, "Artist - Cover", "song.flac")
 	audio := filepath.Join(dir, "song.flac")
-	ffmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=1", "-f", "lavfi", "-i", "color=red:s=16x16:d=1",
+	testutil.FFmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=1", "-f", "lavfi", "-i", "color=red:s=16x16:d=1",
 		"-map", "0:a", "-map", "1:v", "-frames:v", "1", "-c:v", "mjpeg", "-disposition:v", "attached_pic",
 		"-af", "volume=-20dB", "-c:a", "flac", "-sample_fmt", "s16",
 		"-metadata", "title=Cover Song", audio)
@@ -97,7 +97,7 @@ func TestFLACCoverAndTagsKept(t *testing.T) {
 // The journal's failing Save is already counted by ops (WriteReport); processFile once
 // counted it a second time.
 func TestJournalSaveFailureCountedOnce(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
 	}
@@ -128,7 +128,7 @@ func TestJournalSaveFailureCountedOnce(t *testing.T) {
 // UltraStar uses the last occurrence of a repeated tag, so the second #VOCALS names the
 // stem the player mixes in. That file must not be normalized.
 func TestRepeatedStemTagLastWins(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	dir := addSong(t, cfg, "Artist - Stems", "song.mp3", "#VOCALS:old.mp3", "#VOCALS:vocals.mp3")
 	for _, name := range []string{"song.mp3", "vocals.mp3", "old.mp3"} {
@@ -148,7 +148,7 @@ func TestRepeatedStemTagLastWins(t *testing.T) {
 
 // ffmpeg's native aac encoder only produces AAC-LC: an HE-AAC source must be left alone.
 func TestHEAACIsNotDowngradedToLC(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	if _, err := exec.LookPath("gst-launch-1.0"); err != nil {
 		t.Skip("gst-launch-1.0 not available")
 	}
@@ -365,14 +365,14 @@ func TestLastLines(t *testing.T) {
 // ffmpegAt writes a wav whose sample peak is amplitude (linear) of full scale.
 func ffmpegAt(t *testing.T, path string, amplitude string) {
 	t.Helper()
-	ffmpeg(t, "-f", "lavfi", "-i", "aevalsrc="+amplitude+"*sin(2*PI*440*t)|"+amplitude+"*sin(2*PI*440*t):s=44100:d=1",
+	testutil.FFmpeg(t, "-f", "lavfi", "-i", "aevalsrc="+amplitude+"*sin(2*PI*440*t)|"+amplitude+"*sin(2*PI*440*t):s=44100:d=1",
 		"-c:a", "pcm_s16le", path)
 }
 
 // Without tag and journal entry, a file already at the target is left alone, and one
 // just outside the tolerance is processed.
 func TestPeakTolerance(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	atTarget := filepath.Join(addSong(t, cfg, "A - At Target", "song.wav"), "song.wav")
 	ffmpegAt(t, atTarget, "0.7079") // -3.0 dB
@@ -407,12 +407,12 @@ func TestPeakTolerance(t *testing.T) {
 }
 
 func TestSilentAudioIsLeftAlone(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	wav := filepath.Join(addSong(t, cfg, "A - Silent", "song.wav"), "song.wav")
-	ffmpeg(t, "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "1", "-c:a", "pcm_s16le", wav)
+	testutil.FFmpeg(t, "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "1", "-c:a", "pcm_s16le", wav)
 	six := filepath.Join(addSong(t, cfg, "B - Silent Six", "song.wav"), "song.wav")
-	ffmpeg(t, "-f", "lavfi", "-i", "anullsrc=r=44100:cl=5.1", "-t", "1", "-c:a", "pcm_s16le", six)
+	testutil.FFmpeg(t, "-f", "lavfi", "-i", "anullsrc=r=44100:cl=5.1", "-t", "1", "-c:a", "pcm_s16le", six)
 	before, beforeSix := readFile(t, wav), readFile(t, six)
 
 	run(t, cfg, ops)
@@ -430,10 +430,7 @@ func TestSilentAudioIsLeftAlone(t *testing.T) {
 // is the output file, the last argument).
 func fakeFFmpeg(t *testing.T, onEncode string) {
 	t.Helper()
-	realFFmpeg, err := exec.LookPath("ffmpeg")
-	if err != nil {
-		t.Skip("ffmpeg not available")
-	}
+	realFFmpeg := testutil.RequireTool(t, "ffmpeg")
 	bin := t.TempDir()
 	script := "#!/bin/sh\nfor a in \"$@\"; do out=$a; done\nfor a in \"$@\"; do\n" +
 		"  if [ \"$a\" = -map_metadata ]; then\n" + onEncode + "\n  fi\ndone\n" +
@@ -445,7 +442,7 @@ func fakeFFmpeg(t *testing.T, onEncode string) {
 }
 
 func TestEncodeFailureLeavesNoTrace(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh")
 	}
@@ -479,11 +476,11 @@ func TestEncodeFailureLeavesNoTrace(t *testing.T) {
 // A failing replace (the folder became read-only during the encode) leaves the original
 // in place, is counted once, and the file is not journaled.
 func TestReplaceFailureKeepsOriginal(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
 	}
-	fakeFFmpeg(t, "    '"+mustLookPath(t, "ffmpeg")+"' \"$@\" || exit 1; chmod 555 \"$(dirname \"$out\")\"; exit 0")
+	fakeFFmpeg(t, "    '"+testutil.RequireTool(t, "ffmpeg")+"' \"$@\" || exit 1; chmod 555 \"$(dirname \"$out\")\"; exit 0")
 	cfg, ops := newLibrary(t, false)
 	dir := addSong(t, cfg, "Artist - Quiet", "song.mp3")
 	audio := filepath.Join(dir, "song.mp3")
@@ -509,25 +506,16 @@ func TestReplaceFailureKeepsOriginal(t *testing.T) {
 	}
 }
 
-func mustLookPath(t *testing.T, tool string) string {
-	t.Helper()
-	p, err := exec.LookPath(tool)
-	if err != nil {
-		t.Skipf("%s not available", tool)
-	}
-	return p
-}
-
 // In a dry run a failing (planned) backup means the replacement is not planned either.
 func TestDryRunBackupFailureIsNotPlanned(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, true)
 	dir := addSong(t, cfg, "Artist - Quiet", "song.mp3")
 	quietMP3(t, filepath.Join(dir, "song.mp3"), "1")
 	if err := os.WriteFile(cfg.OriginalsDir(), []byte("in the way"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	before := snapshot(t, cfg.SongDir)
+	before := testutil.Snapshot(t, cfg.SongDir)
 
 	if err := Run(cfg, ops); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -535,7 +523,7 @@ func TestDryRunBackupFailureIsNotPlanned(t *testing.T) {
 	if st := ops.Stats(); st.Failed != 1 || st.Replaced != 0 || st.Copied != 0 {
 		t.Errorf("stats = %+v, want 1 failure, nothing planned", st)
 	}
-	if after := snapshot(t, cfg.SongDir); !maps.Equal(before, after) {
+	if after := testutil.Snapshot(t, cfg.SongDir); after != before {
 		t.Error("dry run changed the library")
 	}
 }
@@ -543,7 +531,7 @@ func TestDryRunBackupFailureIsNotPlanned(t *testing.T) {
 // Hidden leftovers and directories named like audio files are never processed; a folder
 // without a song txt still has its audio normalized (it has no stems).
 func TestProcessFolderSelection(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	dir := addSong(t, cfg, "Artist - Leftovers", "song.mp3")
 	for _, name := range []string{"song.mp3", ".song.sanitizer-1.mp3", "._song.mp3"} {
@@ -598,7 +586,7 @@ func TestUnreadableFolderCountedOnce(t *testing.T) {
 
 // If the song txt cannot be read, the stems are unknown: the folder is left alone.
 func TestUnreadableTxtSkipsFolder(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores file permissions")
 	}
@@ -646,7 +634,7 @@ func TestStemFiles(t *testing.T) {
 }
 
 func TestMeasurePeakErrors(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	dir := t.TempDir()
 	garbage := filepath.Join(dir, "garbage.mp3")
 	if err := os.WriteFile(garbage, []byte("this is not audio"), 0o644); err != nil {
@@ -671,7 +659,7 @@ func TestRunErrors(t *testing.T) {
 		}
 	})
 	t.Run("no ffprobe", func(t *testing.T) {
-		realFFmpeg := mustLookPath(t, "ffmpeg")
+		realFFmpeg := testutil.RequireTool(t, "ffmpeg")
 		bin := t.TempDir()
 		if err := os.Symlink(realFFmpeg, filepath.Join(bin, "ffmpeg")); err != nil {
 			t.Fatal(err)
@@ -683,7 +671,7 @@ func TestRunErrors(t *testing.T) {
 		}
 	})
 	t.Run("journal is a directory", func(t *testing.T) {
-		requireFFmpeg(t)
+		testutil.RequireFFmpeg(t)
 		cfg, ops := newLibrary(t, false)
 		dir := addSong(t, cfg, "Artist - Quiet", "song.mp3")
 		audio := filepath.Join(dir, "song.mp3")
@@ -700,7 +688,7 @@ func TestRunErrors(t *testing.T) {
 		}
 	})
 	t.Run("missing song dir", func(t *testing.T) {
-		requireFFmpeg(t)
+		testutil.RequireFFmpeg(t)
 		cfg, ops := newLibrary(t, false)
 		cfg.SongDir = filepath.Join(cfg.SongDir, "gone")
 		if err := Run(cfg, ops); err == nil || !strings.Contains(err.Error(), "reading song dir") {
@@ -714,12 +702,12 @@ func TestRunErrors(t *testing.T) {
 func squareWAV(t *testing.T, path string, amplitude string) {
 	t.Helper()
 	wave := amplitude + "*(2*gte(sin(2*PI*441*t)\\,0)-1)"
-	ffmpeg(t, "-f", "lavfi", "-i", "aevalsrc="+wave+"|"+wave+":s=44100:d=1", "-c:a", "pcm_f32le", path)
+	testutil.FFmpeg(t, "-f", "lavfi", "-i", "aevalsrc="+wave+"|"+wave+":s=44100:d=1", "-c:a", "pcm_f32le", path)
 }
 
 // A peak exactly peakToleranceDB away from the target is still within the tolerance.
 func TestPeakExactlyAtToleranceIsLeftAlone(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	below := filepath.Join(addSong(t, cfg, "A - Below", "song.wav"), "song.wav")
 	squareWAV(t, below, "0.6683439175686147") // -3.5 dB
@@ -746,7 +734,7 @@ func TestPeakExactlyAtToleranceIsLeftAlone(t *testing.T) {
 // A symlinked audio file is left alone: replacing it would turn the link into a regular
 // copy, and the file it points to (maybe shared by other songs) would stay as it is.
 func TestSymlinkedAudioIsNotProcessed(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	pool := filepath.Join(t.TempDir(), "pool.mp3")
 	quietMP3(t, pool, "1")

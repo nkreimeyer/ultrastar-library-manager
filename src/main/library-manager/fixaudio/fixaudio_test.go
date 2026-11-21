@@ -2,10 +2,6 @@ package fixaudio
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
-	"io/fs"
-	"maps"
 	"math"
 	"os"
 	"os/exec"
@@ -16,6 +12,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 )
 
 // --- pure unit tests (no ffmpeg needed) ---
@@ -136,15 +133,6 @@ func containsSeq(args, seq []string) bool {
 
 // --- fixture tests (need ffmpeg/ffprobe) ---
 
-func requireFFmpeg(t *testing.T) {
-	t.Helper()
-	for _, tool := range []string{"ffmpeg", "ffprobe"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s not available", tool)
-		}
-	}
-}
-
 // newLibrary returns a config for an empty library and a separate output dir.
 func newLibrary(t *testing.T, dryRun bool) (config.Config, *fsops.Ops) {
 	t.Helper()
@@ -174,17 +162,9 @@ func addSong(t *testing.T, cfg config.Config, rel, audio string, extraTags ...st
 	return dir
 }
 
-func ffmpeg(t *testing.T, args ...string) {
-	t.Helper()
-	cmd := exec.Command("ffmpeg", append([]string{"-nostdin", "-v", "error", "-y"}, args...)...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("ffmpeg %v: %v\n%s", args, err, out)
-	}
-}
-
 // quietMP3 writes a 320 kbit/s stereo sine whose peak is about -38 dBFS.
 func quietMP3(t *testing.T, path string, seconds string) {
-	ffmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d="+seconds, "-af", "volume=-20dB",
+	testutil.FFmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d="+seconds, "-af", "volume=-20dB",
 		"-ac", "2", "-c:a", "libmp3lame", "-b:a", "320k", path)
 }
 
@@ -245,11 +225,11 @@ func run(t *testing.T, cfg config.Config, ops *fsops.Ops) {
 }
 
 func TestDownmixSixChannels(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	dir := addSong(t, cfg, "Artist - Six", "song.wav")
 	audio := filepath.Join(dir, "song.wav")
-	ffmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=0.5", "-ac", "6", "-c:a", "pcm_s16le", audio)
+	testutil.FFmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=0.5", "-ac", "6", "-c:a", "pcm_s16le", audio)
 
 	run(t, cfg, ops)
 
@@ -274,17 +254,15 @@ func TestDownmixSixChannels(t *testing.T) {
 // Matroska audio (.mka): an AC3 5.1 track stays AC3 (downmixed, bitrate kept), a codec
 // without a known encoder (DTS) is left alone instead of becoming default-quality Vorbis.
 func TestMatroskaAudio(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	ac3Dir := addSong(t, cfg, "Artist - AC3", "a.mka")
 	ac3 := filepath.Join(ac3Dir, "a.mka")
-	ffmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=1", "-af", "volume=-20dB", "-ac", "6", "-c:a", "ac3", "-b:a", "448k", ac3)
+	testutil.FFmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=1", "-af", "volume=-20dB", "-ac", "6", "-c:a", "ac3", "-b:a", "448k", ac3)
 	dtsDir := addSong(t, cfg, "Artist - DTS", "d.mka")
 	dts := filepath.Join(dtsDir, "d.mka")
-	if out, err := exec.Command("ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=1",
-		"-af", "volume=-20dB", "-ac", "6", "-c:a", "dca", "-strict", "-2", dts).CombinedOutput(); err != nil {
-		t.Skipf("cannot encode DTS: %v\n%s", err, out)
-	}
+	testutil.GenerateMedia(t, "-f", "lavfi", "-i", "sine=f=440:d=1",
+		"-af", "volume=-20dB", "-ac", "6", "-c:a", "dca", "-strict", "-2", dts)
 	before, err := os.ReadFile(dts)
 	if err != nil {
 		t.Fatal(err)
@@ -304,7 +282,7 @@ func TestMatroskaAudio(t *testing.T) {
 }
 
 func TestQuietMP3GainKeepsBitrate(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cwd := t.TempDir()
 	t.Chdir(cwd) // the old code wrote temp files to the CWD
 	cfg, ops := newLibrary(t, false)
@@ -339,11 +317,11 @@ func TestQuietMP3GainKeepsBitrate(t *testing.T) {
 }
 
 func TestMP3CoverAndTagsKept(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	dir := addSong(t, cfg, "Artist - Cover", "song.mp3")
 	audio := filepath.Join(dir, "song.mp3")
-	ffmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=1", "-f", "lavfi", "-i", "color=red:s=16x16:d=1",
+	testutil.FFmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=1", "-f", "lavfi", "-i", "color=red:s=16x16:d=1",
 		"-map", "0:a", "-map", "1:v", "-frames:v", "1", "-c:v", "mjpeg", "-disposition:v", "attached_pic",
 		"-af", "volume=-20dB", "-c:a", "libmp3lame", "-b:a", "192k",
 		"-metadata", "title=Cover Song", "-metadata", "artist=Tester", audio)
@@ -363,7 +341,7 @@ func TestMP3CoverAndTagsKept(t *testing.T) {
 }
 
 func TestSameFileNamesProcessedConcurrently(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	old := workers
 	workers = 2 // both folders at the same time, even on a single-CPU machine
 	t.Cleanup(func() { workers = old })
@@ -393,7 +371,7 @@ func TestSameFileNamesProcessedConcurrently(t *testing.T) {
 }
 
 func TestUnreadableAudioIsSkipped(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	dir := addSong(t, cfg, "Artist - Broken", "song.mp3")
 	audio := filepath.Join(dir, "song.mp3")
@@ -415,17 +393,17 @@ func TestUnreadableAudioIsSkipped(t *testing.T) {
 }
 
 func TestDryRunLeavesTreeIdentical(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, true)
 	quietMP3(t, filepath.Join(addSong(t, cfg, "Cat/A - Quiet", "song.mp3"), "song.mp3"), "1")
 	six := filepath.Join(addSong(t, cfg, "Cat/B - Six", "song.wav"), "song.wav")
-	ffmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=0.5", "-ac", "6", "-c:a", "pcm_s16le", six)
+	testutil.FFmpeg(t, "-f", "lavfi", "-i", "sine=f=440:d=0.5", "-ac", "6", "-c:a", "pcm_s16le", six)
 
-	before := snapshot(t, cfg.SongDir)
+	before := testutil.Snapshot(t, cfg.SongDir)
 	run(t, cfg, ops)
-	after := snapshot(t, cfg.SongDir)
+	after := testutil.Snapshot(t, cfg.SongDir)
 
-	if !maps.Equal(before, after) {
+	if after != before {
 		t.Errorf("dry-run modified the library:\nbefore %v\nafter  %v", before, after)
 	}
 	if st := ops.Stats(); st.Replaced != 2 || st.Copied != 2 {
@@ -434,47 +412,17 @@ func TestDryRunLeavesTreeIdentical(t *testing.T) {
 	assertDirEntries(t, cfg.OutDir)
 }
 
-// snapshot maps every path below root to its content hash, mode and mtime.
-func snapshot(t *testing.T, root string) map[string]string {
-	t.Helper()
-	m := map[string]string{}
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		entry := info.Mode().String() + " " + info.ModTime().String()
-		if !d.IsDir() {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			sum := sha256.Sum256(data)
-			entry += " " + hex.EncodeToString(sum[:])
-		}
-		m[path] = entry
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return m
-}
-
 // Peak normalization of lossy files does not converge exactly; the marker tag must stop
 // later runs from re-encoding (and losing quality) again and again.
 func TestLossyNormalizationIsIdempotent(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	for _, ext := range []string{".m4a", ".mp3", ".ogg"} {
 		t.Run(ext, func(t *testing.T) {
 			cfg, ops := newLibrary(t, false)
 			dir := addSong(t, cfg, "Artist - Loud", "song"+ext)
 			audio := filepath.Join(dir, "song"+ext)
 			// A clipped (square-ish) signal: lossy encoders overshoot its peak, which drifts.
-			ffmpeg(t, "-f", "lavfi", "-i", "anoisesrc=d=3:c=pink:a=0.9:seed=7", "-af", "volume=12dB", "-ac", "2", audio) // clipped, like loud masters
+			testutil.FFmpeg(t, "-f", "lavfi", "-i", "anoisesrc=d=3:c=pink:a=0.9:seed=7", "-af", "volume=12dB", "-ac", "2", audio) // clipped, like loud masters
 
 			run(t, cfg, ops)
 			if got := ops.Stats().Replaced; got != 1 {
@@ -507,7 +455,7 @@ func readFile(t *testing.T, path string) []byte {
 }
 
 func TestOriginalIsKeptBeforeReplacing(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	dir := addSong(t, cfg, "Cat/Artist - Quiet", "song.mp3")
 	audio := filepath.Join(dir, "song.mp3")
@@ -538,7 +486,7 @@ func TestOriginalIsKeptBeforeReplacing(t *testing.T) {
 }
 
 func TestFailedBackupLeavesOriginalUntouched(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	dir := addSong(t, cfg, "Artist - Quiet", "song.mp3")
 	audio := filepath.Join(dir, "song.mp3")
@@ -568,7 +516,7 @@ const loudFloatSource = "aevalsrc=1.4125*sin(2*PI*440*t)|1.4125*sin(2*PI*440*t):
 // volumedetect measures on s16 and clamps such peaks to 0 dB, so the old code applied
 // -3 dB, left the file at about 0 dBFS and tagged it as normalized.
 func TestPeakAboveFullScaleIsNormalized(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	for _, tc := range []struct{ ext, codec string }{
 		{".wav", "pcm_f32le"},
 		{".mp3", "libmp3lame"},
@@ -578,7 +526,7 @@ func TestPeakAboveFullScaleIsNormalized(t *testing.T) {
 			cfg, ops := newLibrary(t, false)
 			dir := addSong(t, cfg, "Artist - Loud", "song"+tc.ext)
 			audio := filepath.Join(dir, "song"+tc.ext)
-			ffmpeg(t, "-f", "lavfi", "-i", loudFloatSource, "-c:a", tc.codec, audio)
+			testutil.FFmpeg(t, "-f", "lavfi", "-i", loudFloatSource, "-c:a", tc.codec, audio)
 			if peak, err := measurePeak(audio, false); err != nil || peak < 2 {
 				t.Fatalf("fixture peak = %.2f dB (%v), want about +3 dB", peak, err)
 			}
@@ -597,13 +545,13 @@ func TestPeakAboveFullScaleIsNormalized(t *testing.T) {
 // Raw ADTS AAC cannot carry the marker tag; the media journal must stop the peak, which
 // drifts with every lossy encode, from being "fixed" again on every run.
 func TestAACNormalizationIsIdempotentViaJournal(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	dir := addSong(t, cfg, "Artist - Loud", "song.aac")
 	audio := filepath.Join(dir, "song.aac")
 	// Clipped pink noise at a low bitrate: the encoder overshoots the peak by more than the
 	// tolerance, so without the journal every run would apply another gain.
-	ffmpeg(t, "-f", "lavfi", "-i", "anoisesrc=d=3:c=pink:a=0.9:seed=7", "-af", "volume=12dB", "-ac", "2", "-c:a", "aac", "-b:a", "64k", audio)
+	testutil.FFmpeg(t, "-f", "lavfi", "-i", "anoisesrc=d=3:c=pink:a=0.9:seed=7", "-af", "volume=12dB", "-ac", "2", "-c:a", "aac", "-b:a", "64k", audio)
 
 	run(t, cfg, ops)
 	if got := ops.Stats().Replaced; got != 1 {
@@ -625,7 +573,7 @@ func TestAACNormalizationIsIdempotentViaJournal(t *testing.T) {
 }
 
 func TestStemsAreNotNormalized(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, false)
 	// The references differ in case from the files on disk.
 	dir := addSong(t, cfg, "Artist - Stems", "song.mp3", "#VOCALS:Vocals.mp3", "#instrumental:inst.MP3")
@@ -652,7 +600,7 @@ func TestStemsAreNotNormalized(t *testing.T) {
 // In dry-run mode the cleanup module only plans its moves; fixaudio must not plan to
 // process files that would no longer be in the library.
 func TestDryRunSkipsFilesPlannedToBeMoved(t *testing.T) {
-	requireFFmpeg(t)
+	testutil.RequireFFmpeg(t)
 	cfg, ops := newLibrary(t, true)
 	dir := addSong(t, cfg, "Artist - Extra", "song.mp3")
 	quietMP3(t, filepath.Join(dir, "song.mp3"), "1")
