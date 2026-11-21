@@ -738,6 +738,11 @@ function connectEvents() {
   });
 }
 
+// resultFolders returns the library and output folder a job's result names, or null.
+function resultFolders(j) {
+  return j.result?.library ? { library: j.result.library, outDir: j.result.outDir } : null;
+}
+
 async function onJobEnd(j) {
   if (S.handled.has(j.id)) return;
   S.handled.add(j.id);
@@ -757,7 +762,8 @@ async function onJobEnd(j) {
         break;
       case "organize-apply":
         if (j.state === "done" || j.state === "cancelled") {
-          S.done = { kind: "organize", job: j, stopped: j.state === "cancelled", cfg: S.org.config };
+          // From the result: after a reload S.org is not loaded.
+          S.done = { kind: "organize", job: j, stopped: j.state === "cancelled", cfg: resultFolders(j) || S.org?.config };
           S.view = "done";
         } else if (j.result?.planChanged) {
           S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`);
@@ -769,7 +775,7 @@ async function onJobEnd(j) {
         }
         break;
       case "organize-undo":
-        S.done = { kind: "undo", job: j, cfg: j.result?.library ? { library: j.result.library, outDir: j.result.outDir } : S.done?.cfg };
+        S.done = { kind: "undo", job: j, cfg: resultFolders(j) || S.done?.cfg };
         S.view = "done";
         if (j.state === "failed") S.notice = failed("Undo did not finish");
         break;
