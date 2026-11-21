@@ -8,20 +8,22 @@ import (
 	"strings"
 	"unicode"
 
-	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/nkreimeyer/library-manager/utils"
 )
 
 // Song identity keys. Both keys are built from normalized words:
 //
 //   - NFC, Unicode case folding, compatibility decomposition ("Ｆ" == "F", "ｶﾞ" == "ガ");
 //     combining marks on Latin and Greek letters are dropped (diacritics folded:
-//     "Beyoncé" == "Beyonce"), plus keyLetterFolds for letters that do not decompose
-//     ("ø" -> "o", "æ" -> "ae", "ß" -> "ss", ...). Marks on letters of other scripts
-//     make different letters and are kept (Cyrillic "й" != "и", kana "ゲ" != "ケ");
+//     "Beyoncé" == "Beyonce"), plus the Latin spelling of letters that do not decompose
+//     ("ø" -> "o", "æ" -> "ae", "ß" -> "ss", "ƒ" -> "f", ...): utils.FoldString. Marks on
+//     letters of other scripts make different letters and are kept (Cyrillic "й" != "и",
+//     kana "ゲ" != "ケ");
 //   - invisible format and control characters (soft hyphen, zero-width space/joiner, BOM)
 //     are dropped, as FolderName drops them ("Wonder\u00adwall" == "Wonderwall");
-//   - apostrophes (' ’ ‘ ` ´ ʼ) and dots (also the middle dot '·') are removed inside
+//   - apostrophes (' ’ ‘ ` ´ ʼ ʹ ′) and dots (also the middle dot '·') are removed inside
 //     words ("Don’t" == "Dont", "R.E.M." == "REM", "Ŀa" == "La");
 //   - "&" and "+" are the word "and" ("Simon & Garfunkel" == "Simon and Garfunkel");
 //   - every other punctuation or symbol separates words ("AC/DC" == "AC-DC" == "AC DC",
@@ -32,22 +34,11 @@ import (
 // keySep separates the parts of a key. It cannot occur in a normalized word.
 const keySep = "|"
 
-// keyLetterFolds maps letters that do not decompose to their Latin spelling, for keys.
-// Case folding runs first, so only lower-case letters are listed.
-var keyLetterFolds = map[rune]string{
-	'ø': "o", 'æ': "ae", 'œ': "oe", 'ł': "l", 'đ': "d", 'ð': "d", 'þ': "th",
-	'ı': "i", 'ħ': "h", 'ŧ': "t", 'ŋ': "n", 'ĸ': "k", 'ɨ': "i", 'ƶ': "z",
-	// 'ŀ' decomposes to "l" + middle dot, which normWords removes like a dot.
-}
-
 // isApostrophe reports whether r is an apostrophe-like character that is removed from
-// words instead of separating them.
+// words instead of separating them: utils.IsApostrophe plus the primes 'ʹ' and '′', which
+// stand in for apostrophes in names.
 func isApostrophe(r rune) bool {
-	switch r {
-	case '\'', '’', '‘', '`', '´', 'ʼ', 'ʹ', '′':
-		return true
-	}
-	return false
+	return utils.IsApostrophe(r) || r == 'ʹ' || r == '′'
 }
 
 // normWords returns the normalized words of s (see the package comment above).
@@ -61,21 +52,17 @@ func normWords(s string) []string {
 		}
 		return r
 	}, s)
-	s = norm.NFKD.String(cases.Fold().String(s))
+	s = utils.FoldString(s)
 	var b strings.Builder
-	// foldMarks: combining marks after the last base character are dropped (it is not a
-	// letter of a script other than Latin and Greek). inWord: the last character written
-	// belongs to a word, so a kept mark has a letter to attach to.
-	foldMarks, inWord := true, false
+	// inWord: the last character written belongs to a word, so a mark FoldString kept
+	// has a letter to attach to.
+	inWord := false
 	for _, r := range s {
-		if unicode.Is(unicode.M, r) {
-			if !foldMarks && inWord {
+		switch {
+		case unicode.Is(unicode.M, r):
+			if inWord {
 				b.WriteRune(r)
 			}
-			continue
-		}
-		foldMarks = !unicode.IsLetter(r) || unicode.In(r, unicode.Latin, unicode.Greek)
-		switch {
 		case r == '.' || r == '·' || isApostrophe(r): // '·': also the one of NFKD("ŀ")
 		case unicode.IsSpace(r):
 			b.WriteByte(' ')
@@ -85,9 +72,6 @@ func normWords(s string) []string {
 		case r == '&' || r == '+':
 			b.WriteString(" and ")
 			inWord = false
-		case keyLetterFolds[r] != "":
-			b.WriteString(keyLetterFolds[r])
-			inWord = true
 		case unicode.IsLetter(r) || unicode.IsDigit(r):
 			b.WriteRune(r)
 			inWord = true
