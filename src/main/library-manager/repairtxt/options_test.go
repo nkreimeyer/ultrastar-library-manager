@@ -86,10 +86,30 @@ func TestRunSkipFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{": 1 repaired", "1 left.", "    1 -> 1    " + rel, "excluded, not written"} {
+	for _, want := range []string{": 1 repaired", "1 left.", "    1 -> 1    " + rel,
+		"1 of 1 would be repaired; excluded, not written, 1 left\n   planned f" + R + "r -> für"} {
 		if !strings.Contains(string(txt), want) {
 			t.Errorf("%s lacks %q:\n%s", ReportTxt, want, txt)
 		}
+	}
+	if strings.Contains(string(txt), "fixed f"+R+"r") {
+		t.Errorf("%s lists the excluded txt's plan as fixed:\n%s", ReportTxt, txt)
+	}
+	checkLeftSum(t, rep)
+	if rep.Files[0].Left != 1 || rep.Files[1].Left != 0 {
+		t.Errorf("left = %d, %d; want 1, 0", rep.Files[0].Left, rep.Files[1].Left)
+	}
+}
+
+// checkLeftSum: the files' Left add up to the characters the totals leave.
+func checkLeftSum(t *testing.T, rep Report) {
+	t.Helper()
+	left := 0
+	for _, f := range rep.Files {
+		left += f.Left
+	}
+	if left != rep.Damaged-rep.Fixed {
+		t.Errorf("files leave %d, the totals %d - %d", left, rep.Damaged, rep.Fixed)
 	}
 }
 
@@ -109,6 +129,7 @@ func TestRunSkipFilesDryRun(t *testing.T) {
 	if len(rep.Files) != 2 || rep.Files[0].Written || !rep.Files[1].Written || rep.Damaged != 2 || rep.Fixed != 1 {
 		t.Errorf("report: damaged %d, fixed %d, files %+v", rep.Damaged, rep.Fixed, rep.Files)
 	}
+	checkLeftSum(t, rep)
 }
 
 type progressLog struct {
@@ -307,6 +328,20 @@ func TestRunCancelled(t *testing.T) {
 		// The second txt was planned but not written: the totals count only the first.
 		if rep.Damaged != 2 || rep.Fixed != 1 || rep.Files[1].Fixed != 1 {
 			t.Errorf("totals: damaged %d, fixed %d (file 2 plans %d)", rep.Damaged, rep.Fixed, rep.Files[1].Fixed)
+		}
+		checkLeftSum(t, rep)
+		txt, err := os.ReadFile(cfg.ReportPath(ReportTxt))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"1 of 1 repaired, 0 left\n   fixed f" + R + "r -> für",
+			"1 of 1 would be repaired; not written, 1 left\n   planned Gl" + R + "ck -> Glück"} {
+			if !strings.Contains(string(txt), want) {
+				t.Errorf("%s lacks %q:\n%s", ReportTxt, want, txt)
+			}
+		}
+		if strings.Contains(string(txt), "excluded") {
+			t.Errorf("%s calls the stopped txt excluded:\n%s", ReportTxt, txt)
 		}
 	})
 }
