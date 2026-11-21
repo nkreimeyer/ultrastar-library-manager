@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -145,8 +146,18 @@ func (c Config) RelPath(path string) string {
 	return rel
 }
 
-// IsWithin reports whether path equals root or lies below it.
+// IsWithin reports whether path equals root or lies below it. On darwin and windows, whose
+// file systems are case-insensitive by default (APFS, NTFS), the case of the paths is ignored:
+// there "-s ~/Karaoke/Songs -o ~/karaoke/songs/out" puts the output dir inside the song dir.
 func IsWithin(path, root string) bool {
+	return isWithin(path, root, runtime.GOOS)
+}
+
+// isWithin is IsWithin for the given GOOS, so the case-insensitive rule is tested on Linux.
+func isWithin(path, root, goos string) bool {
+	if goos == "darwin" || goos == "windows" {
+		path, root = strings.ToLower(path), strings.ToLower(root)
+	}
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return false

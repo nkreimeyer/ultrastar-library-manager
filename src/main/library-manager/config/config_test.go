@@ -202,6 +202,26 @@ func TestIsWithin(t *testing.T) {
 	}
 }
 
+func TestIsWithinIgnoresCaseOnDarwinAndWindows(t *testing.T) {
+	tests := []struct {
+		path, root, goos string
+		want             bool
+	}{
+		{"/home/u/karaoke/songs/out", "/home/u/Karaoke/Songs", "darwin", true},
+		{"/home/u/karaoke/songs/out", "/home/u/Karaoke/Songs", "windows", true},
+		{"/home/u/KARAOKE/SONGS", "/home/u/karaoke/songs", "darwin", true},
+		{"/home/u/ÄRZTE/x", "/home/u/ärzte", "darwin", true},
+		{"/home/u/karaoke/songs/out", "/home/u/Karaoke/Songs", "linux", false},
+		{"/home/u/karaoke/songs-out", "/home/u/Karaoke/Songs", "darwin", false},
+		{"/home/u/Karaoke", "/home/u/karaoke/songs", "darwin", false},
+	}
+	for _, tt := range tests {
+		if got := isWithin(tt.path, tt.root, tt.goos); got != tt.want {
+			t.Errorf("isWithin(%q, %q, %s) = %v, want %v", tt.path, tt.root, tt.goos, got, tt.want)
+		}
+	}
+}
+
 func TestOriginalsDirAndJournalPath(t *testing.T) {
 	cfg := Config{SongDir: "/lib/songs", OutDir: "/lib/out"}
 	if want := filepath.Join("/lib/out", "originals"); cfg.OriginalsDir() != want {
