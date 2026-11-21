@@ -27,7 +27,8 @@ type tidyOptions struct {
 	FileTags  bool `json:"fileTags"`  // fixtxt: the tags naming files (#MP3, #VIDEO, #COVER, …)
 	FillTags  bool `json:"fillTags"`  // fixtxt: a missing #ARTIST/#TITLE from the folder name
 	Leftovers bool `json:"leftovers"` // fixtxt (extra song txts), cleanup: files no song uses to extra-files/
-	Broken    bool `json:"broken"`    // fixtxt, cleanup: folders without a song; dedupe: songs with errors to invalid/
+	Folders   bool `json:"folders"`   // fixtxt, cleanup: folders without a song to invalid/
+	Broken    bool `json:"broken"`    // dedupe: songs with errors to invalid/ (without it they stay and are listed)
 	Dedupe    bool `json:"dedupe"`    // dedupe: duplicates to duplicates/
 	Audio     bool `json:"audio"`     // fixaudio
 	Video     bool `json:"video"`     // fixvideos
@@ -51,10 +52,10 @@ func (t *tidyOptions) steps(dryRun bool) []string {
 		return []string{stepSongs}
 	}
 	var s []string
-	if t.UTF8 || t.FileTags || t.FillTags || t.Leftovers || t.Broken {
+	if t.UTF8 || t.FileTags || t.FillTags || t.Leftovers || t.Folders {
 		s = append(s, stepText)
 	}
-	if t.Leftovers || t.Broken {
+	if t.Leftovers || t.Folders {
 		s = append(s, stepCleanup)
 	}
 	if t.Dedupe || t.Broken {
@@ -207,13 +208,13 @@ func (r *stepRun) run() ([]stepResult, error) {
 		case stepText:
 			log.Infof("Fixing song texts")
 			err = fixtxt.RunWith(modCfg, r.ops, fixtxt.Options{
-				Encoding: t.UTF8, FileTags: t.FileTags, FillTags: t.FillTags, DuplicateTxts: t.Leftovers, MoveBroken: t.Broken,
+				Encoding: t.UTF8, FileTags: t.FileTags, FillTags: t.FillTags, DuplicateTxts: t.Leftovers, MoveBroken: t.Folders,
 				Ctx: r.ctx, Progress: progress(stepText),
 			})
 		case stepCleanup:
 			log.Infof("Setting aside leftover files and empty folders")
 			err = cleanup.RunWith(modCfg, r.ops, cleanup.Options{
-				LeftoverFiles: t.Leftovers, BrokenFolders: t.Broken, Ctx: r.ctx, Progress: progress(stepCleanup),
+				LeftoverFiles: t.Leftovers, BrokenFolders: t.Folders, Ctx: r.ctx, Progress: progress(stepCleanup),
 			})
 		case stepSongs:
 			opts := r.tidy.organizeOptions(r.songs)

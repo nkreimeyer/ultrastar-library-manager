@@ -123,7 +123,9 @@ const TIDY_GROUPS = [
     { key: "dedupe", label: "Set aside duplicates",
       hint: "Finds songs that are in the library more than once and keeps the best version." },
     { key: "broken", label: "Set aside broken songs",
-      hint: "Songs that cannot be played, such as songs without audio or with broken notes, and folders without a song. Each song is listed for you to look at first." },
+      hint: "Songs that cannot be played, such as songs without audio or with broken notes. Each song is listed for you to look at first. Without this they stay where they are." },
+    { key: "folders", label: "Set aside folders without a song",
+      hint: "Empty folders and folders with only a few stray files, and no song in them." },
     { key: "leftovers", label: "Set aside leftover files",
       hint: "Files no song uses, such as old covers or a second song text." },
   ] },
@@ -135,7 +137,7 @@ const TIDY_GROUPS = [
   ] },
 ];
 
-const TIDY_DEFAULTS = { utf8: true, fileTags: true, fillTags: true, dedupe: true, broken: true, leftovers: true, audio: true, video: false };
+const TIDY_DEFAULTS = { utf8: true, fileTags: true, fillTags: true, dedupe: true, broken: true, folders: true, leftovers: true, audio: true, video: false };
 
 // What the steps of a finished run did, from their stats (a step's key is its name).
 const STEP_DONE = {
@@ -1386,7 +1388,7 @@ function viewOrganizeReview() {
       files.append(tallyItem("leftovers", "dup", t.leftovers.length, t.leftovers.length === 1 ? "leftover file is set aside" : "leftover files are set aside",
         () => cappedList(t.leftovers, pathItem, "leftovers")));
     }
-    if (t.options.broken) {
+    if (t.options.folders) {
       files.append(tallyItem("emptyfolders", "bad", t.brokenFolders.length, t.brokenFolders.length === 1 ? "folder or file without a playable song is set aside" : "folders and files without a playable song are set aside",
         () => cappedList(t.brokenFolders, pathItem, "emptyfolders")));
     }

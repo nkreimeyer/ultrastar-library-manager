@@ -353,7 +353,7 @@ Same exit codes and leftover-argument rule.
   turns a panic in the job goroutine into a job error, and a panic in a module's pool counts
   in the job's `Stats.Failed`; a panic in any other goroutine still ends the program.
 - webui tidy-up ("Tidy up my library" = dedupe with `organizeRequest.Tidy`): the options page sends
-  `tidyOptions`; `stepRun` runs fixtxt → cleanup → organize (dedupe; `Broken` = SetAside or Keep,
+  `tidyOptions`; `stepRun` runs fixtxt → cleanup → organize (dedupe; `Broken` = SetAside or Keep; `Folders` = fixtxt's MoveBroken and cleanup's BrokenFolders, apart from `Broken`,
   `KeepDuplicates` = !dedupe) → fixvideos → fixaudio on ONE ops, the modules with a `config.Config`
   on the organize out dir (one output folder). The check (dry run) skips the media steps (their dry
   runs decode every file) and lists the text and cleanup steps' planned writes/moves

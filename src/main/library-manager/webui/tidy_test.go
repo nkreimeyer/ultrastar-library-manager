@@ -18,7 +18,7 @@ import (
 
 // allTidy is every tidy-up option the test server can run (no ffmpeg: no media steps).
 func allTidy() *tidyOptions {
-	return &tidyOptions{UTF8: true, FileTags: true, FillTags: true, Leftovers: true, Broken: true, Dedupe: true}
+	return &tidyOptions{UTF8: true, FileTags: true, FillTags: true, Leftovers: true, Folders: true, Broken: true, Dedupe: true}
 }
 
 // tidyLibrary is dedupeLibrary with something for every tidy-up step: a CP1252 song text, a
@@ -141,7 +141,7 @@ func TestTidyOptionsOff(t *testing.T) {
 	}
 
 	noBroken := allTidy()
-	noBroken.Broken = false
+	noBroken.Broken, noBroken.Folders = false, false
 	v = analyseOrganize(t, s, organizeRequest{Mode: "dedupe", Library: lib, Out: out, Tidy: noBroken})
 	if v.Summary.Duplicates != 1 || v.Summary.Invalid != 0 || len(v.Tidy.BrokenFolders) != 0 {
 		t.Errorf("no broken: summary %+v, broken folders %q", v.Summary, v.Tidy.BrokenFolders)
@@ -212,7 +212,7 @@ func TestTidySongStepFailureSkipsMedia(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &stepRun{
-		tidy: &tidyOptions{Broken: true, Video: true, Audio: true}, cfg: cfg, ops: fsops.New(false), ctx: context.Background(),
+		tidy: &tidyOptions{Folders: true, Broken: true, Video: true, Audio: true}, cfg: cfg, ops: fsops.New(false), ctx: context.Background(),
 		c: jobControl{r: newJobRunner(), j: &job{}}, songs: organize.NewOptions(organize.ModeOrganize, false, false, false),
 	}
 	steps, err := r.run()
