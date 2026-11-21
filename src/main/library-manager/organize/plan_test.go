@@ -246,6 +246,13 @@ func TestMakePlanTargets(t *testing.T) {
 			"hq:s: left (" + reasonTargetExists + ")",
 			"low1:s: duplicate <hq:s> (same quality; the version from the earlier source is kept)",
 		}},
+		{"library given as a source: a target that is no candidate is no song", false, map[string]string{"A/ABBA - SOS": "A/ABBA - SOS"}, []Candidate{
+			song(lib, "C/Cher - Believe", "Cher", "Believe", Quality{}),
+			song(hq, "s", "ABBA", "SOS", Quality{}),
+		}, []string{
+			"library:C/Cher - Believe: in-place C/Cher - Believe",
+			"hq:s: left (" + fmt.Sprintf(reasonNotASong, "A/ABBA - SOS") + ")",
+		}},
 		{"bucket that is a file: left in place", false, map[string]string{"A/ABBA - SOS": "A"}, []Candidate{
 			song(hq, "s", "ABBA", "SOS", Quality{}),
 		}, []string{"hq:s: left (target A/ABBA - SOS exists in the library as A; add the library as a source (-s) to deduplicate against it)"}},
@@ -274,7 +281,7 @@ func TestMakePlanTargets(t *testing.T) {
 			song(lib, "A/ABBA - SOS", "B", "C", Quality{}), // wants B/B - C, which is no candidate
 			song(hq, "s", "ABBA", "SOS", Quality{}),
 		}, []string{
-			"library:A/ABBA - SOS: left (" + reasonTargetExists + ")",
+			"library:A/ABBA - SOS: left (" + fmt.Sprintf(reasonNotASong, "B/B - C") + ")",
 			"hq:s: left (target is occupied by library:A/ABBA - SOS, which stays in place)",
 		}},
 		{"song folder named like the bucket", false, nil, []Candidate{

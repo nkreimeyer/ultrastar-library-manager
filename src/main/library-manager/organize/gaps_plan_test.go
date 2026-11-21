@@ -31,7 +31,7 @@ func TestResolveOccupiedFixpoint(t *testing.T) {
 	}
 	checkSummary(t, cands, MakePlan(cands, PlanOptions{Occupied: occ}), []string{
 		"hq:s: left (target is occupied by library:A/ABBA - SOS, which stays in place)",
-		"library:A/ABBA - SOS: left (" + reasonTargetExists + ")",
+		"library:A/ABBA - SOS: left (" + fmt.Sprintf(reasonNotASong, "B/B - C") + ")",
 	})
 
 	// A bucket chain: the library song folder "Z" cannot move (its target is taken), so
@@ -48,7 +48,7 @@ func TestResolveOccupiedFixpoint(t *testing.T) {
 	}
 	checkSummary(t, cands, MakePlan(cands, PlanOptions{Occupied: occ}), []string{
 		"hq:s: left (bucket folder Z is the song folder library:Z, which stays in place)",
-		"library:Z: left (" + reasonTargetExists + ")",
+		"library:Z: left (" + fmt.Sprintf(reasonNotASong, "A/Abba - Waterloo") + ")",
 	})
 }
 
@@ -479,7 +479,7 @@ func TestMakePlanLibraryKeeperLeftLosersMove(t *testing.T) {
 		return "", "", false
 	}
 	checkSummary(t, cands, MakePlan(cands, PlanOptions{Occupied: occ}), []string{
-		"library:old/ABBA - SOS: left (" + reasonTargetExists + ")",
+		"library:old/ABBA - SOS: left (" + fmt.Sprintf(reasonNotASong, "A/ABBA - SOS") + ")",
 		"library:x/ABBA - SOS: duplicate <library:old/ABBA - SOS> (no video)",
 	})
 }

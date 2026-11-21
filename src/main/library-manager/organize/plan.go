@@ -442,13 +442,15 @@ func isFamilyName(folder, name string) bool {
 // that stays in the library into ActLeft. A target taken by a candidate that moves away
 // is fine: the moves are ordered so it is free in time. Leaving a keeper in place can
 // make the target of another keeper unavailable, so this repeats until nothing changes.
-// With libraryInPlace every library song is a candidate, so a target taken by a
-// non-candidate is never a song.
+// With libraryInPlace, or when the library is a source (a candidate is InLibrary),
+// every library song is a candidate, so a target taken by a non-candidate is never a song.
 func resolveOccupied(cands []Candidate, ds []Decision, occupied func(string) (string, string, bool), libraryInPlace bool) {
 	libCand := map[string]int{} // NameKey of the library-relative path -> candidate
+	librarySource := libraryInPlace
 	for i := range cands {
 		if cands[i].InLibrary {
 			libCand[NameKey(cands[i].Rel)] = i
+			librarySource = true
 		}
 	}
 	// stays reports whether the candidate's folder stays where it is.
@@ -479,7 +481,7 @@ func resolveOccupied(cands []Candidate, ds []Decision, occupied func(string) (st
 			case note != "":
 				ds[i] = Decision{Action: ActLeft, Reason: fmt.Sprintf("target %s cannot be used: %s", ds[i].Target, note), Other: -1}
 				changed = true
-			case !isCand && libraryInPlace:
+			case !isCand && librarySource:
 				ds[i] = Decision{Action: ActLeft, Reason: fmt.Sprintf(reasonNotASong, occ), Other: -1}
 				changed = true
 			case !isCand:
