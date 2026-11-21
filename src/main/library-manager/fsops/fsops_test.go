@@ -255,6 +255,66 @@ func TestDryRunMoveIntoReportsCollisionName(t *testing.T) {
 	}
 }
 
+// A dry run hands out the targets a real run does: a planned MoveInto or CopyInto takes
+// its target (the next one to the same path gets " (2)"), a folder emptied by planned moves
+// is merged into an existing folder, and so is an empty folder whose target a planned move
+// put in place.
+func TestMoveIntoCopyIntoDryRunTargetsMatchRealRun(t *testing.T) {
+	run := func(dry bool) ([]string, Stats) {
+		lib, out := t.TempDir(), t.TempDir()
+		writeFile(t, filepath.Join(lib, "a", "cover.jpg"), "a", 0o644)
+		writeFile(t, filepath.Join(lib, "b", "cover.jpg"), "b", 0o644)
+		writeFile(t, filepath.Join(lib, "c", "song.mp3"), "c", 0o644)
+		writeFile(t, filepath.Join(lib, "Cat", "f.txt"), "f", 0o644)
+		writeFile(t, filepath.Join(out, "Cat", "Old", "song.txt"), "old", 0o644)
+		writeFile(t, filepath.Join(lib, "x", "Song", "song.txt"), "x", 0o644)
+		if err := os.MkdirAll(filepath.Join(lib, "y", "Song"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		before := snapshot(t, lib)
+
+		ops := New(dry)
+		var got []string
+		add := func(dst string, err error) {
+			t.Helper()
+			if err != nil {
+				t.Fatalf("dry=%v: %v", dry, err)
+			}
+			rel, _ := filepath.Rel(out, dst)
+			got = append(got, filepath.ToSlash(rel))
+		}
+		add(ops.MoveInto(filepath.Join(lib, "a", "cover.jpg"), out, "S/cover.jpg"))
+		add(ops.MoveInto(filepath.Join(lib, "b", "cover.jpg"), out, "S/cover.jpg"))
+		add(ops.CopyInto(filepath.Join(lib, "c", "song.mp3"), out, "O/song.mp3"))
+		add(ops.CopyInto(filepath.Join(lib, "c", "song.mp3"), out, "O/song.mp3"))
+		// Cat is empty once f.txt is moved away: merged into the existing out/Cat.
+		add(ops.MoveInto(filepath.Join(lib, "Cat", "f.txt"), out, "extra/f.txt"))
+		add(ops.MoveInto(filepath.Join(lib, "Cat"), out, "Cat"))
+		// The empty y/Song is merged into the folder x/Song was just moved to.
+		add(ops.MoveInto(filepath.Join(lib, "x", "Song"), out, "New"))
+		add(ops.MoveInto(filepath.Join(lib, "y", "Song"), out, "New"))
+		if dry {
+			if after := snapshot(t, lib); strings.Join(after, "\n") != strings.Join(before, "\n") {
+				t.Errorf("library changed in dry-run: %v", after)
+			}
+		}
+		return got, ops.Stats()
+	}
+	realRun, realStats := run(false)
+	want := []string{"S/cover.jpg", "S/cover (2).jpg", "O/song.mp3", "O/song (2).mp3",
+		"extra/f.txt", "Cat", "New", "New"}
+	if strings.Join(realRun, "|") != strings.Join(want, "|") {
+		t.Fatalf("real run targets = %q, want %q", realRun, want)
+	}
+	dry, dryStats := run(true)
+	if strings.Join(dry, "|") != strings.Join(realRun, "|") {
+		t.Errorf("dry run targets = %q, real run %q", dry, realRun)
+	}
+	if dryStats != realStats {
+		t.Errorf("dry run stats %+v, real run %+v", dryStats, realStats)
+	}
+}
+
 func TestMoveIntoMirrorsRelPath(t *testing.T) {
 	lib, out := t.TempDir(), t.TempDir()
 	src := filepath.Join(lib, "Category", "Artist - Song", "cover.jpg")

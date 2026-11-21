@@ -55,9 +55,13 @@ type Ops struct {
 	plannedMoves map[string]bool
 	runTargets   []string // targets of the (real or planned) moves of this run
 	// plannedPresent: in dry-run mode, the paths a planned move took away (false) or
-	// put in place (true), in the order the moves were planned. MoveTo uses it to see
-	// the library as a real run would have left it so far (see dryRunExists).
+	// put in place (true), in the order the moves were planned; a planned CopyInto puts its
+	// target in place too. MoveTo, MoveInto and CopyInto use it to see the library and the
+	// out dir as a real run would have left them so far (see exists and taken).
 	plannedPresent map[string]bool
+	// plannedDirs: in dry-run mode, whether the item a planned move put at a path is a
+	// folder (see isDirNow).
+	plannedDirs map[string]bool
 
 	// writesMu guards plannedWrites: in dry-run mode, the content of every planned write
 	// that changes a file (cleaned path -> data), so that later modules read the txts as
@@ -70,7 +74,7 @@ type Ops struct {
 // change is logged with a "[dry-run]" prefix instead.
 func New(dryRun bool) *Ops {
 	return &Ops{DryRun: dryRun, reserved: map[string]bool{}, plannedMoves: map[string]bool{},
-		plannedPresent: map[string]bool{}, plannedWrites: map[string][]byte{}, failedKeys: map[string]bool{}}
+		plannedPresent: map[string]bool{}, plannedDirs: map[string]bool{}, plannedWrites: map[string][]byte{}, failedKeys: map[string]bool{}}
 }
 
 // Stats returns a snapshot of the counters.
@@ -231,9 +235,10 @@ func (o *Ops) MoveInto(src, dstDir, relPath string) (string, error) {
 	// A folder is merged into an existing target folder instead of creating "X (2)" if
 	// this run already moved something into that target (a category whose songs were just
 	// moved there), or if it is empty. A song folder colliding with one from an earlier run
-	// is not merged: it gets its own " (2)" folder.
+	// is not merged: it gets its own " (2)" folder. In dry-run mode "empty" and "existing
+	// folder" are judged after the planned moves, as a real run would see them.
 	if want := filepath.Join(dstDir, relPath); srcInfo.IsDir() &&
-		(o.movedBelowThisRun(want) || (isEmptyDir(src) && isDir(want))) {
+		(o.movedBelowThisRun(want) || (o.isEmptyDirNow(src) && o.isDirNow(want))) {
 		return want, o.mergeInto(src, dstDir, relPath)
 	}
 	dst, err := o.reserveTarget(filepath.Join(dstDir, relPath), srcInfo.IsDir())
@@ -310,19 +315,84 @@ func (o *Ops) MoveTo(src, dst string) error {
 // exists reports whether path exists as this run has left it so far: on disk outside
 // dry-run mode, and in dry-run mode after the planned moves (see MoveTo).
 func (o *Ops) exists(path string) bool {
+	taken, err := o.taken(path)
+	return err == nil && taken
+}
+
+// taken is exists with the error of a disk check that cannot tell (e.g. EACCES, or a parent
+// that is a file); a path that does not exist is not an error.
+func (o *Ops) taken(path string) (bool, error) {
 	if o.DryRun {
 		o.plannedMu.Lock()
 		present, known := o.plannedPresent[path]
 		o.plannedMu.Unlock()
 		if known {
-			return present
+			return present, nil
+		}
+		if o.WouldBeMoved(path) {
+			return false, nil
+		}
+	}
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("checking %s: %w", path, err)
+	}
+	return true, nil
+}
+
+// isDirNow reports whether path is a folder (os.Stat, like isDir) as this run has left it
+// so far: in dry-run mode a path a planned move took away is none, and one a planned move
+// put in place is a folder if the moved item was one.
+func (o *Ops) isDirNow(path string) bool {
+	path = filepath.Clean(path)
+	if o.DryRun {
+		o.plannedMu.Lock()
+		present, known := o.plannedPresent[path]
+		dir := o.plannedDirs[path]
+		o.plannedMu.Unlock()
+		if known {
+			return present && dir
 		}
 		if o.WouldBeMoved(path) {
 			return false
 		}
 	}
-	_, err := os.Lstat(path)
-	return err == nil
+	return isDir(path)
+}
+
+// isEmptyDirNow reports whether the folder dir is empty as this run has left it so far (see
+// dryRunEmpty); false if it cannot be read.
+func (o *Ops) isEmptyDirNow(dir string) bool {
+	if o.DryRun {
+		empty, err := o.dryRunEmpty(filepath.Clean(dir))
+		return err == nil && empty
+	}
+	return isEmptyDir(dir)
+}
+
+// dryRunEmpty reports whether the folder path (cleaned) is empty after the planned moves:
+// every entry on disk is planned to be moved away, and no planned move put anything below
+// it or the folder itself in place (such content is unknown, so it is never empty).
+func (o *Ops) dryRunEmpty(path string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range entries {
+		if o.exists(filepath.Join(path, e.Name())) {
+			return false, nil
+		}
+	}
+	o.plannedMu.Lock()
+	defer o.plannedMu.Unlock()
+	prefix := path + string(filepath.Separator)
+	for p, present := range o.plannedPresent {
+		if present && (p == path || strings.HasPrefix(p, prefix)) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // AppendJournal appends line (a newline is added if it lacks one) to the journal file
@@ -389,25 +459,11 @@ func (o *Ops) RemoveEmptyDir(path string) (bool, error) {
 		return false, nil
 	}
 	if o.DryRun {
-		entries, err := os.ReadDir(path)
-		if err != nil {
+		if empty, err := o.dryRunEmpty(path); err != nil {
 			return false, o.fail(fmt.Errorf("reading %s: %w", path, err))
+		} else if !empty {
+			return false, nil
 		}
-		for _, e := range entries {
-			if o.exists(filepath.Join(path, e.Name())) {
-				return false, nil
-			}
-		}
-		o.plannedMu.Lock()
-		prefix := path + string(filepath.Separator)
-		for p, present := range o.plannedPresent {
-			// A folder a planned move put in place has unknown content: never empty.
-			if present && (p == path || strings.HasPrefix(p, prefix)) {
-				o.plannedMu.Unlock()
-				return false, nil
-			}
-		}
-		o.plannedMu.Unlock()
 		o.markPlanned(path, "")
 		log.Infof("[dry-run] would remove the empty folder %s", path)
 		return true, nil
@@ -524,6 +580,11 @@ func (o *Ops) CopyInto(src, dstDir, relPath string) (string, error) {
 	defer o.release(dst)
 	if o.DryRun {
 		log.Infof("[dry-run] would copy %s -> %s", src, dst)
+		// The planned copy takes its target, so a later CopyInto or MoveInto of this run
+		// picks the next free name, as in a real run.
+		o.plannedMu.Lock()
+		o.plannedPresent[filepath.Clean(dst)] = true
+		o.plannedMu.Unlock()
 		o.copied.Add(1)
 		return dst, nil
 	}
@@ -540,11 +601,13 @@ func (o *Ops) CopyInto(src, dstDir, relPath string) (string, error) {
 
 // markPlanned records a planned (dry-run) move of src to dst ("" if src just disappears).
 func (o *Ops) markPlanned(src, dst string) {
+	srcIsDir := dst != "" && o.isDirNow(src)
 	o.plannedMu.Lock()
 	o.plannedMoves[filepath.Clean(src)] = true
 	o.plannedPresent[filepath.Clean(src)] = false
 	if dst != "" {
 		o.plannedPresent[filepath.Clean(dst)] = true
+		o.plannedDirs[filepath.Clean(dst)] = srcIsDir
 	}
 	o.plannedMu.Unlock()
 	if dst != "" {
@@ -726,8 +789,9 @@ func tempBase(name string) string {
 	return name[:n]
 }
 
-// reserveTarget returns a path based on want that neither exists nor is reserved by a
-// concurrent move. For files the suffix goes before the extension ("cover (2).jpg"); for
+// reserveTarget returns a path based on want that neither exists (as this run has left it
+// so far, see taken: in dry-run mode a planned move or copy takes its target, so a dry run
+// hands out the names a real run does) nor is reserved by a concurrent move. For files the suffix goes before the extension ("cover (2).jpg"); for
 // folders it is appended, since folder names often contain dots ("Mr. Brightside (2)").
 func (o *Ops) reserveTarget(want string, isDir bool) (string, error) {
 	o.reserveMu.Lock()
@@ -742,11 +806,11 @@ func (o *Ops) reserveTarget(want string, isDir bool) (string, error) {
 	base := strings.TrimSuffix(want, ext)
 	candidate := want
 	for i := 2; ; i++ {
-		if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) && !o.reserved[candidate] {
+		if taken, err := o.taken(candidate); err != nil {
+			return "", err
+		} else if !taken && !o.reserved[candidate] {
 			o.reserved[candidate] = true
 			return candidate, nil
-		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("checking %s: %w", candidate, err)
 		}
 		if i > 10000 {
 			return "", fmt.Errorf("no free target name for %s", want)
