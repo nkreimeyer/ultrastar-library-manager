@@ -70,6 +70,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               organize.go (validate/analyse/exclude/apply/history/undo),
                               check.go (the Check task: a dry-run check.Run shown as a report; "set aside broken songs" re-runs it
                               with MoveBroken, not journaled so not covered by undo),
+                              setaside.go (the restore browser: list/restore over organize.ListSetAside/Restore; the origin is the
+                              journal's src, else the mirrored path for extra-files/ and invalid/; a restore is one journal run, so undo covers it),
                               remove.go (the Remove task: validate/analyse/apply over organize.Remove, patterns as text; apply
                               re-plans as a dry run and stops if the removed songs differ; undo is the shared organize undo),
                               tidy.go (the tidy-up options and stepRun: the steps of one job on one ops),

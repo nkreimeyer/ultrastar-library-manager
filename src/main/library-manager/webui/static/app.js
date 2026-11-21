@@ -66,6 +66,10 @@ const TASKS = {
     title: "Add new songs to my library",
     desc: "Bring songs from other folders into the library. Songs it already has are compared, and only the best version is kept.",
   },
+  restore: {
+    title: "Put back set-aside songs",
+    desc: "Look at the duplicates, broken songs, removed songs and leftover files that were set aside, and put back the ones you want to keep.",
+  },
   check: {
     title: "Check my songs for problems",
     desc: "Find songs that cannot be played or have problems, such as missing audio, damaged files or notes that do not fit the music. Nothing is changed.",
@@ -88,6 +92,7 @@ const PHASES = {
   video: "Converting videos",
   audio: "Evening out the volume",
   undo: "Moving songs back",
+  restore: "Putting songs back",
 };
 
 // The tidy-up options, in groups. Every option goes to the server as it is (tidyOptions).
@@ -142,6 +147,7 @@ const JOB_TITLES = {
   "organize-analyse": "Checking first. Nothing is changed yet.",
   "organize-apply": "Moving songs",
   "organize-undo": "Undoing the last run",
+  "setaside-restore": "Putting songs back",
   "check-analyse": "Checking the songs. Nothing is changed.",
   "check-apply": "Checking and setting aside broken songs",
   "remove-analyse": "Checking first. Nothing is changed yet.",
@@ -153,6 +159,7 @@ const STOP_HINTS = {
   "organize-apply": "Stopping finishes the current move; undo puts back what was moved.",
   "organize-undo": "Stopping finishes the current move; undo again to move back the rest.",
   "remove-apply": "Stopping finishes the current move; undo puts back what was moved.",
+  "setaside-restore": "Stopping finishes the current move; undo takes back what was put back.",
   "check-apply": "Stopping finishes the current move. Nothing is moved if you stop before the check is done.",
 };
 
@@ -188,6 +195,8 @@ const S = {
   org: null, // organize review view
   rem: null, // remove review view
   chk: null, // check report view
+  aside: null, // set-aside browser: { config, items }
+  pick: new Set(), // keys (section/rel) of the items chosen to put back
   open: new Set(), // open review sections
   notice: null,
   done: null,
@@ -220,6 +229,9 @@ function render() {
       break;
     case "options":
       content = viewOptions();
+      break;
+    case "aside":
+      content = viewAside();
       break;
     default:
       content = viewSetup();
@@ -490,6 +502,7 @@ function organizeRequest(withTidy) {
   if (S.task === "check") {
     return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "", deep: advanced() && S.f.deep };
   }
+  if (S.task === "restore") return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "" };
   return {
     tidy: withTidy && S.task === "dedupe" ? tidyRequest() : undefined,
     mode: S.task,
@@ -519,7 +532,7 @@ async function validate() {
     return;
   }
   try {
-    const res = await post(`/api/${S.task === "remove" ? "remove" : S.task === "check" ? "check" : "organize"}/validate`, organizeRequest());
+    const res = await post(`/api/${{ remove: "remove", check: "check", restore: "setaside" }[S.task] || "organize"}/validate`, organizeRequest());
     if (seq !== validateSeq) return;
     S.resolved = res;
     S.resolveError = null;
@@ -553,7 +566,7 @@ function updateResolved() {
   } else if (S.resolved) {
     const out = S.resolved.outDir;
     el.replaceChildren(
-      S.task === "check" ? "The reports go to " : "Set-aside songs, reports and the record for undoing go to ",
+      S.task === "check" ? "The reports go to " : S.task === "restore" ? "Looking in " : "Set-aside songs, reports and the record for undoing go to ",
       h("span", { class: "path" }, out),
       ".",
     );
@@ -597,6 +610,9 @@ function viewSetup() {
     case "check":
       fields.append(folderField("Your library", "library", "The folder that holds your songs. It is only read, never changed."));
       break;
+    case "restore":
+      fields.append(folderField("Your library", "library", "The library the songs were set aside from. Its output folder is where they are now."));
+      break;
     case "remove":
       fields.append(folderField("Your library", "library", "The folder that holds your songs. The songs you name are moved out of it."));
       fields.append(patternsField());
@@ -612,7 +628,7 @@ function viewSetup() {
       opts.append(checkField("Priority decides first (-priority)", "priority", "A song from an earlier priority group always wins, before quality is compared."));
       opts.append(checkField("Sort “The …” by the next word (-ignore-the)", "ignoreThe", "“The Beatles” goes into B instead of T."));
     }
-    if (S.task !== "remove") opts.append(checkField("Decode every media file completely (-deep)", "deep", "Finds damaged audio and video, but is slow."));
+    if (S.task === "dedupe" || S.task === "add" || S.task === "organize" || S.task === "check") opts.append(checkField("Decode every media file completely (-deep)", "deep", "Finds damaged audio and video, but is slow."));
     opts.append(h("div", { class: "field" }, h("div", { class: "label" }, "Output folder (-o)"),
       folderInput(S.f.out, (v) => setField("out", v), "Output folder"),
       h("p", { class: "hint" }, "Empty: organize-output next to the library.")));
@@ -627,9 +643,11 @@ function viewSetup() {
       render();
       window.scrollTo(0, 0);
     } }, "Next")
-    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: startAnalysis }, S.task === "check" ? "Check songs" : "Check first"),
+    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: S.task === "restore" ? loadAside : startAnalysis },
+      S.task === "check" ? "Check songs" : S.task === "restore" ? "Look" : "Check first"),
   h("span", { class: "muted small" }, S.task === "dedupe" ? "Next you choose what to tidy up."
     : S.task === "check" ? "Nothing in the library is changed. It can take a while for a big library."
+    : S.task === "restore" ? "You choose what to put back on the next page."
     : "Nothing is changed yet. You see what would happen and decide then."),
   ));
   if (advanced()) {
@@ -665,6 +683,26 @@ async function startJob(path, body) {
     S.notice = { kind: "bad", title: e.message, details: e.details };
     render();
   }
+}
+
+// loadAside lists what is set aside for the restore task and shows the browser.
+async function loadAside() {
+  const btn = document.getElementById("start");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Looking…";
+  }
+  try {
+    S.aside = await post("/api/setaside/list", organizeRequest());
+    S.pick = new Set();
+    S.open = new Set();
+    S.view = "aside";
+    S.notice = null;
+  } catch (e) {
+    S.notice = { kind: "bad", title: e.message, details: e.details };
+  }
+  render();
+  window.scrollTo(0, 0);
 }
 
 function startAnalysis() {
@@ -895,6 +933,11 @@ async function onJobEnd(j) {
           S.view = S.org ? "review" : "setup";
           S.notice = failed("Moving did not finish");
         }
+        break;
+      case "setaside-restore":
+        S.done = { kind: "organize", restore: true, job: j, stopped: j.state === "cancelled", cfg: resultFolders(j) || S.aside?.config };
+        S.view = "done";
+        if (j.state === "failed") S.notice = failed("Not everything could be put back");
         break;
       case "check-analyse":
         if (j.state === "done") {
@@ -1203,6 +1246,79 @@ function viewOrganizeReview() {
   return frag;
 }
 
+const ASIDE_SECTIONS = {
+  invalid: ["Broken songs and folders", "Songs and folders that could not be played or were empty."],
+  duplicates: ["Duplicates", "The versions that lost against a better copy of the same song."],
+  removed: ["Removed songs", "Songs taken out of the library on your request."],
+  "extra-files": ["Leftover files", "Files no song used, such as old covers or a second song text."],
+};
+
+function viewAside() {
+  const v = S.aside;
+  const frag = h("div");
+  const items = v.items;
+  const key = (it) => `${it.section}/${it.rel}`;
+  add(frag, h("h1", null, items.length ? "What was set aside" : "Nothing is set aside"));
+  add(frag, noticeBox(S.notice));
+  add(frag, h("p", { class: "muted" }, "In ", h("span", { class: "path" }, v.config.outDir), ". Nothing is deleted: choose what goes back to the library."));
+  const update = () => {
+    const n = S.pick.size;
+    go.disabled = n === 0;
+    go.textContent = n ? `Put back ${plural(n, "item", "items")}` : "Choose what to put back";
+    for (const c of document.querySelectorAll("input[data-key]")) c.checked = S.pick.has(c.dataset.key);
+  };
+  const go = h("button", { class: "btn primary", type: "button", disabled: true, onclick: async () => {
+    const chosen = items.filter((it) => S.pick.has(key(it)));
+    const ok = await confirmDialog(`Put back ${plural(chosen.length, "item", "items")}?`, [
+      "They go back to where they came from. Nothing is overwritten: an item whose old place is taken stays here.",
+      "Every move is recorded, so you can undo it afterwards.",
+    ], "Put back");
+    if (ok) startJob("/api/setaside/restore", { library: v.config.library, out: v.config.outDir, items: chosen.map((it) => ({ section: it.section, rel: it.rel })) });
+  } }, "Choose what to put back");
+  const row = (it) => {
+    const note = it.blocked ? it.blocked : !it.exact && advanced() ? `probably goes back to ${it.origin}` : "";
+    return h("li", null, h("label", { class: it.blocked ? "check off" : "check" },
+      h("input", { type: "checkbox", "data-key": key(it), disabled: !!it.blocked, checked: S.pick.has(key(it)), onchange: (e) => {
+        e.target.checked ? S.pick.add(key(it)) : S.pick.delete(key(it));
+        update();
+      } }),
+      h("span", null, it.name ? h("strong", null, it.name, " ") : null, h("span", { class: "path" }, it.rel),
+        note ? h("span", { class: "hint small muted" }, h("br"), note) : null)));
+  };
+  const tally = h("ul", { class: "tally" });
+  for (const section of Object.keys(ASIDE_SECTIONS)) {
+    const list = items.filter((it) => it.section === section);
+    if (!list.length) continue;
+    const [title, hint] = ASIDE_SECTIONS[section];
+    tally.append(tallyItem(`as-${section}`, "stay", list.length, `${title}: ${hint}`, () => {
+      const free = list.filter((it) => !it.blocked);
+      const all = free.length > 0 && free.every((it) => S.pick.has(key(it)));
+      const limit = S.open.has(`as-${section}:all`) ? Infinity : 200;
+      return h("div", null,
+        h("label", { class: "check" }, h("input", { type: "checkbox", checked: all, disabled: !free.length, onchange: (e) => {
+          for (const it of free) e.target.checked ? S.pick.add(key(it)) : S.pick.delete(key(it));
+          update();
+        } }), h("span", null, "Choose all")),
+        h("ul", { class: "songs" }, list.slice(0, limit).map(row)),
+        list.length > limit ? h("button", { class: "link", type: "button", onclick: () => {
+          S.open.add(`as-${section}:all`);
+          render();
+        } }, `Show all ${fmt(list.length)}`) : null);
+    }));
+  }
+  if (tally.childNodes.length) add(frag, tally);
+  add(frag, h("div", { class: "actions" }, go,
+    h("button", { class: "btn", type: "button", onclick: loadAside }, "Look again"),
+    h("button", { class: "btn", type: "button", onclick: () => {
+      S.view = "setup";
+      S.notice = null;
+      render();
+      validate();
+    } }, "Change folders")));
+  queueMicrotask(update);
+  return frag;
+}
+
 function viewCheckReview() {
   const v = S.chk;
   const rep = v.report;
@@ -1381,6 +1497,24 @@ function viewDone() {
     if (d.cfg) add(frag, h("p", null, "Set-aside songs and files are in ", h("span", { class: "path" }, d.cfg.outDir), ", together with the reports. Look through them before you delete anything."));
     add(frag, h("div", { class: "actions" },
       songsMoved && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Put back the set-aside songs") : null,
+      again));
+  } else if (d.restore) {
+    add(frag, h("h1", null, d.stopped ? "Stopped part-way" : j.state === "done" && !st.failed ? "Done" : "Not everything could be put back"));
+    add(frag, noticeBox(S.notice));
+    add(frag, h("p", null, `${plural(st.moved, "item was", "items were")} put back${d.stopped ? " before you stopped" : ""}.`));
+    if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "item", "items")} stayed where ${st.failed === 1 ? "it was" : "they were"}`,
+      text: `Something was in the way, or it is not known where ${st.failed === 1 ? "it" : "they"} came from.${advanced() ? " The log below says which." : " Switch to Advanced to see the log."}` }));
+    add(frag, h("div", { class: "actions" },
+      st.moved && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Undo this run") : null,
+      h("button", { class: "btn", type: "button", onclick: () => {
+        if (S.aside) {
+          loadAside();
+        } else {
+          S.view = "setup";
+          render();
+          validate();
+        }
+      } }, "Back to the list"),
       again));
   } else if (d.check) {
     add(frag, h("h1", null, d.stopped ? "Stopped part-way" : "Done"));
