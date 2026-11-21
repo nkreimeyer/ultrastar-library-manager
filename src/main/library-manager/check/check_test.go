@@ -353,6 +353,20 @@ func testVideo(t *testing.T, out string, sec float64, withAudio bool) {
 	lavfi(t, out, append(args, "-c:v", "libx264", "-pix_fmt", "yuv420p")...)
 }
 
+// A Matroska video whose BPS tag carries a language: check reads the bitrate fixvideos
+// decides on (both use mediatools.VideoBitrate), so organize's comparison with
+// fixvideos.BitrateThreshold matches what fixvideos will do with the video.
+func TestProbeMediaVideoBitrateFromLanguageBPSTag(t *testing.T) {
+	requireFFmpeg(t)
+	mkv := filepath.Join(t.TempDir(), "v.mkv")
+	lavfi(t, mkv, "-f", "lavfi", "-i", "testsrc=d=1:s=64x64:r=10", "-f", "lavfi", "-i", "sine=d=1",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "libvorbis", "-metadata:s:v:0", "BPS-ger=4500000")
+	info, err := probeMedia(mkv)
+	if err != nil || info.VideoBitrate != 4500000 || !info.HasAudio {
+		t.Errorf("probeMedia = %+v, %v; want the BPS-ger bitrate 4500000", info, err)
+	}
+}
+
 func garbage(n int) string {
 	b := make([]byte, n)
 	rand.New(rand.NewSource(1)).Read(b)

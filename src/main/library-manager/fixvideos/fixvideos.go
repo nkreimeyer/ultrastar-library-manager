@@ -960,17 +960,20 @@ func hasMarker(tags map[string]string) bool {
 }
 
 // videoBitrate returns the bitrate of the first video stream of file in bit/s, from its
-// ffprobe result probe. Matroska and WebM store no per-stream bitrate; then the BPS
-// statistics tag (mkvmerge) is used, or the sizes of the video packets are summed up
-// (another ffprobe run, reading every packet). The container bitrate is never used: it
-// includes the audio, so a large audio track would make a low-bitrate video look high.
+// ffprobe result probe, by mediatools.VideoBitrate (the rule check uses, whose value
+// organize compares with BitrateThreshold): the stream bit_rate, else its BPS tag, else
+// the container rate of a file without audio. Where that is unknown (Matroska/WebM
+// with audio and no BPS tag), the sizes of the video packets are summed up: another
+// ffprobe run that reads every packet, too slow for check, which reports 0 (unknown)
+// for such a file. The container rate is never used for a file with audio: it includes
+// the audio, so a large audio track would make a low-bitrate video look high.
 func videoBitrate(file string, probe mediatools.ProbeInfo) (int, error) {
 	video, ok := probe.FirstStream("video")
 	if !ok {
 		return 0, errors.New("no video stream")
 	}
-	if bitrate, ok := streamBitrate(video); ok {
-		return bitrate, nil
+	if bitrate := mediatools.VideoBitrate(probe, video); bitrate > 0 {
+		return int(bitrate), nil
 	}
 	duration, err := formatDuration(probe)
 	if err != nil {
@@ -981,33 +984,6 @@ func videoBitrate(file string, probe mediatools.ProbeInfo) (int, error) {
 		return 0, err
 	}
 	return packetBitrate(out, duration)
-}
-
-// streamBitrate returns the bitrate of the stream: its bit_rate, else its BPS tag ("BPS",
-// "BPS-eng"). ok is false if neither is a positive number.
-func streamBitrate(st mediatools.Stream) (bitrate int, ok bool) {
-	if b, err := strconv.Atoi(st.BitRate); err == nil && b > 0 {
-		return b, true
-	}
-	// Plain "BPS" first, then the "BPS-<lang>" tags in sorted order, so that the result
-	// does not depend on map iteration order.
-	var keys, langKeys []string
-	for k := range st.Tags {
-		switch {
-		case strings.EqualFold(k, "BPS"):
-			keys = append(keys, k)
-		case strings.HasPrefix(strings.ToUpper(k), "BPS-"):
-			langKeys = append(langKeys, k)
-		}
-	}
-	slices.Sort(keys)
-	slices.Sort(langKeys)
-	for _, k := range append(keys, langKeys...) {
-		if b, err := strconv.Atoi(strings.TrimSpace(st.Tags[k])); err == nil && b > 0 {
-			return b, true
-		}
-	}
-	return 0, false
 }
 
 // packetBitrate returns the bitrate of a stream from its packet sizes (ffprobe

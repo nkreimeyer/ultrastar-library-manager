@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -220,7 +221,7 @@ func TestGetNeedsReEncodeMKVAudioNotCountedAsVideoBitrate(t *testing.T) {
 	}
 }
 
-// A high-bitrate H.264 video in MKV is still detected from its packet sizes.
+// A high-bitrate H.264 video in MKV without audio is detected from the container rate.
 func TestGetVideoBitrateMKVHighBitrate(t *testing.T) {
 	requireFFmpeg(t)
 	mkv := filepath.Join(t.TempDir(), "video.mkv")
@@ -231,6 +232,34 @@ func TestGetVideoBitrateMKVHighBitrate(t *testing.T) {
 	}
 	if !getNeedsReEncode(mkv, "h264") {
 		t.Errorf("high-bitrate H.264 in MKV must be re-encoded (bitrate %d)", br)
+	}
+}
+
+// A Matroska video without audio and without a BPS tag gets the container rate, as in
+// check (mediatools.VideoBitrate). fixvideos used to sum up its packet sizes instead, so
+// check and fixvideos could fall on different sides of BitrateThreshold. With audio the
+// packet sizes are still summed up (the container rate would count the audio).
+func TestVideoBitrateSharedWithCheck(t *testing.T) {
+	requireFFmpeg(t)
+	dir := t.TempDir()
+	videoOnly := filepath.Join(dir, "video-only.mkv")
+	makeMediaFrom(t, videoOnly, "testsrc2=size=320x240:rate=25:duration=1", "-c:v", "libx264", "-an")
+	probe := probeOf(videoOnly)
+	video, _ := probe.FirstStream("video")
+	if _, bps := video.Tags["BPS"]; bps || video.BitRate != "" || probe.Format.BitRate == "" {
+		t.Fatalf("fixture = %+v, want a stream without bit_rate or BPS in a container with a bit_rate", probe)
+	}
+	want, _ := strconv.Atoi(probe.Format.BitRate)
+	if got, err := videoBitrate(videoOnly, probe); err != nil || got != want || want == 0 {
+		t.Errorf("videoBitrate(video only) = %d, %v; want the container rate %d", got, err, want)
+	}
+
+	withAudio := filepath.Join(dir, "with-audio.mkv")
+	makeMediaFrom(t, withAudio, "testsrc2=size=320x240:rate=25:duration=1", "-c:v", "libx264", "-c:a", "pcm_s16le")
+	probe = probeOf(withAudio)
+	container, _ := strconv.Atoi(probe.Format.BitRate)
+	if got, err := videoBitrate(withAudio, probe); err != nil || got <= 0 || got >= container {
+		t.Errorf("videoBitrate(with audio) = %d, %v; want the packet sum, below the container rate %d", got, err, container)
 	}
 }
 

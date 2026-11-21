@@ -207,6 +207,12 @@ func TestParseProbeEdgeCases(t *testing.T) {
 		{"video bitrate from the BPS-eng tag",
 			`{"streams":[{"codec_type":"video","width":1280,"height":720,"tags":{"BPS":"N/A","BPS-eng":"3500000"}}],"format":{}}`,
 			mediaInfo{HasVideo: true, VideoWidth: 1280, VideoHeight: 720, VideoBitrate: 3500000}},
+		// mkvmerge names the tag after the track's language. Before check and fixvideos
+		// shared mediatools.VideoBitrate, only fixvideos read BPS-ger: check reported 0
+		// (unknown, preferred by organize) for a video fixvideos re-encodes as too high.
+		{"video bitrate from a BPS tag of another language",
+			`{"streams":[{"codec_type":"video","width":1280,"height":720,"tags":{"BPS-ger":"4500000"}},{"codec_type":"audio","bit_rate":"128000"}],"format":{"bit_rate":"9000000"}}`,
+			mediaInfo{HasVideo: true, HasAudio: true, VideoWidth: 1280, VideoHeight: 720, VideoBitrate: 4500000, AudioBitrate: 128000}},
 		{"video bitrate from the container without audio",
 			`{"streams":[{"codec_type":"video","width":640,"height":360}],"format":{"bit_rate":"1500000"}}`,
 			mediaInfo{HasVideo: true, VideoWidth: 640, VideoHeight: 360, VideoBitrate: 1500000}},

@@ -307,3 +307,35 @@ func TestProbeInfoHelpers(t *testing.T) {
 		}
 	}
 }
+
+func TestVideoBitrate(t *testing.T) {
+	tests := []struct {
+		name, json string
+		want       int64
+	}{
+		{"stream bit_rate", `{"streams":[{"codec_type":"video","bit_rate":"1500000","tags":{"BPS":"9"}}],"format":{"bit_rate":"7"}}`, 1500000},
+		{"BPS tag", `{"streams":[{"codec_type":"video","tags":{"DURATION":"x","BPS":"2500000"}},{"codec_type":"audio"}]}`, 2500000},
+		{"BPS-eng with blanks", `{"streams":[{"codec_type":"video","tags":{"bps-eng":" 700000 "}}]}`, 700000},
+		{"BPS of another language", `{"streams":[{"codec_type":"video","tags":{"BPS-ger":"4500000"}},{"codec_type":"audio"}],"format":{"bit_rate":"9000000"}}`, 4500000},
+		{"plain BPS wins", `{"streams":[{"codec_type":"video","tags":{"BPS-eng":"111","BPS":"222","BPS-ger":"333"}}]}`, 222},
+		{"sorted BPS-* keys", `{"streams":[{"codec_type":"video","tags":{"BPS-zzz":"9","BPS-ger":"333","BPS-eng":"111"}}]}`, 111},
+		{"invalid tags skipped", `{"streams":[{"codec_type":"video","tags":{"BPS":"N/A","BPS-aaa":"0","BPS-eng":"111"}}]}`, 111},
+		{"BPS- alone is no tag", `{"streams":[{"codec_type":"video","tags":{"BPS-":"5","BPSX":"6"}}],"format":{"bit_rate":"7"}}`, 7},
+		{"container without audio", `{"streams":[{"codec_type":"video"},{"codec_type":"subtitle"}],"format":{"bit_rate":"1500000"}}`, 1500000},
+		{"container with audio", `{"streams":[{"codec_type":"video"},{"codec_type":"audio","bit_rate":"128000"}],"format":{"bit_rate":"1500000"}}`, 0},
+		{"unknown", `{"streams":[{"codec_type":"video","bit_rate":"N/A"}],"format":{"bit_rate":"N/A"}}`, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := ParseProbe([]byte(tt.json))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 20 { // map order is randomized
+				if got := VideoBitrate(p, p.Streams[0]); got != tt.want {
+					t.Fatalf("VideoBitrate = %d, want %d", got, tt.want)
+				}
+			}
+		})
+	}
+}

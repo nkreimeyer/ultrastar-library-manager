@@ -107,13 +107,9 @@ func fromProbe(probe mediatools.ProbeInfo) mediaInfo {
 			info.HasVideo = true
 			if info.VideoHeight == 0 && s.Width > 0 && s.Height > 0 {
 				info.VideoWidth, info.VideoHeight = s.Width, s.Height
-				// Matroska/WebM streams carry no bit_rate; mkvmerge writes a BPS tag.
-				info.VideoBitrate = mediatools.ParseBitrate(s.BitRate)
-				for _, tag := range []string{"BPS", "BPS-eng"} {
-					if info.VideoBitrate == 0 {
-						info.VideoBitrate = mediatools.ParseBitrate(tagFold(s.Tags, tag))
-					}
-				}
+				// The rule fixvideos uses as well: organize compares this value with
+				// fixvideos.BitrateThreshold.
+				info.VideoBitrate = mediatools.VideoBitrate(probe, s)
 			}
 		}
 	}
@@ -122,23 +118,9 @@ func fromProbe(probe mediatools.ProbeInfo) mediaInfo {
 	if info.HasAudio && info.AudioBitrate == 0 && info.VideoHeight == 0 {
 		info.AudioBitrate = mediatools.ParseBitrate(probe.Format.BitRate)
 	}
-	// Likewise the container rate is the video rate of a file without audio.
-	if !info.HasAudio && info.VideoHeight > 0 && info.VideoBitrate == 0 {
-		info.VideoBitrate = mediatools.ParseBitrate(probe.Format.BitRate)
-	}
 	// "N/A" or missing for streams without a known length.
 	info.DurationSec, info.HasDuration = mediatools.ParseSeconds(probe.Format.Duration)
 	return info
-}
-
-// tagFold returns the value of the tag key, matched case-insensitively.
-func tagFold(tags map[string]string, key string) string {
-	for k, v := range tags {
-		if strings.EqualFold(k, key) {
-			return v
-		}
-	}
-	return ""
 }
 
 // decodeCheck decodes the whole file with ffmpeg. decodeErr is set if ffmpeg failed,

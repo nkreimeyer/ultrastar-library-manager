@@ -76,12 +76,14 @@ func firstStream(data []byte) (mediatools.Stream, bool, error) {
 	return probe.Streams[0], true, nil
 }
 
+// parseStreamBitrate applies the shared bitrate rule to the first stream of the JSON.
 func parseStreamBitrate(data []byte) (int, bool) {
-	st, ok, err := firstStream(data)
-	if err != nil || !ok {
+	probe, err := mediatools.ParseProbe(data)
+	if err != nil || len(probe.Streams) == 0 {
 		return 0, false
 	}
-	return streamBitrate(st)
+	b := mediatools.VideoBitrate(probe, probe.Streams[0])
+	return int(b), b > 0
 }
 
 func parseVideoStreamDuration(data []byte) (float64, error) {

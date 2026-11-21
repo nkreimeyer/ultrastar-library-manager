@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -141,4 +142,41 @@ func ParseSeconds(s string) (sec float64, ok bool) {
 		return d, true
 	}
 	return 0, false
+}
+
+// VideoBitrate returns the bitrate in bit/s of the video stream s of probe, by the rule
+// check and fixvideos share (organize compares check's value with
+// fixvideos.BitrateThreshold, so both must read the same number):
+//
+//  1. the stream's bit_rate;
+//  2. else its BPS statistics tag (mkvmerge writes one per Matroska track, as "BPS" or,
+//     for a track with a language, "BPS-<lang>"): a plain BPS (any case) first, then the
+//     BPS-* tags in sorted order, so the result does not depend on map order;
+//  3. else the container bit_rate, if the file has no audio stream: it is then the video
+//     rate plus the container overhead. With audio it would count the audio as video;
+//  4. else 0 (unknown).
+func VideoBitrate(probe ProbeInfo, s Stream) int64 {
+	if b := ParseBitrate(s.BitRate); b > 0 {
+		return b
+	}
+	var plain, lang []string
+	for k := range s.Tags {
+		switch {
+		case strings.EqualFold(k, "BPS"):
+			plain = append(plain, k)
+		case len(k) > 4 && strings.EqualFold(k[:4], "BPS-"):
+			lang = append(lang, k)
+		}
+	}
+	slices.Sort(plain)
+	slices.Sort(lang)
+	for _, k := range append(plain, lang...) {
+		if b := ParseBitrate(s.Tags[k]); b > 0 {
+			return b
+		}
+	}
+	if !probe.HasStream("audio") {
+		return ParseBitrate(probe.Format.BitRate)
+	}
+	return 0
 }
