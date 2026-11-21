@@ -83,6 +83,11 @@ func runUI(args []string, output io.Writer, noArgs bool) int {
 		return exitUsage
 	}
 	hs := &http.Server{Handler: srv, ReadHeaderTimeout: 10 * time.Second}
+	// Set before the browser opens. SIGHUP: the terminal window was closed. Stopping lets a
+	// running job end cleanly (organize gets a song parked under a temporary name out of it
+	// and journals the moves).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
 
 	url := srv.StartURL()
 	fmt.Fprintf(output, "library-manager %s: the UI runs at\n\n    %s\n\n", version, url)
@@ -98,10 +103,6 @@ func runUI(args []string, output io.Writer, noArgs bool) int {
 		}
 	}
 
-	// SIGHUP: the terminal window was closed. Stopping lets a running job end cleanly
-	// (organize gets a song parked under a temporary name out of it and journals the moves).
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer stop()
 	served := make(chan error, 1)
 	go func() { served <- hs.Serve(ln) }()
 	select {
