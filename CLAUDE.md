@@ -147,7 +147,9 @@ Same exit codes and leftover-argument rule.
 
 ## Architecture notes
 
-- `config.New` resolves symlinks and refuses an out dir inside the song dir. `PrepareOutDir`
+- `config.New` resolves symlinks and refuses an out dir inside the song dir (`IsWithin`
+  ignores case on darwin and windows, and Unicode normalization on darwin, like APFS/NTFS;
+  GOOS is a parameter of `isWithin`). `PrepareOutDir`
   writes the `.library-manager-output` marker; discovery skips folders containing it (and the
   legacy `.songs-sanitizer-output` of the old program name). The program was called
   songs-sanitizer until 2026-11-14; the media tags (`SANITIZER_*`), the default
@@ -181,7 +183,12 @@ Same exit codes and leftover-argument rule.
   `Replace` and `Rename` fsync the (ffmpeg-written) file before the rename and keep the
   original if that fails; the folder fsync after it is best effort (none on Windows).
   `AppendJournal` starts a new line after a crash-truncated last line. Collision names keep
-  dotfiles intact (`.DS_Store (2)`).
+  dotfiles intact (`.DS_Store (2)`). Temp names keep only the first 100 bytes of the file
+  name (`tempBase`), so they stay within NAME_MAX. Real-run copies, renames and removals are
+  logged at Info, `Replace` at Debug (fixaudio/fixvideos log their own result); writes are
+  logged by the modules. In a dry run, the targets of `MoveInto`/`CopyInto` count as taken
+  (a second move to the same name gets ` (2)`, as in a real run), and the merge decision
+  sees folders emptied or put in place by planned moves (`plannedDirs`).
 - Concurrency: fixtxt and cleanup run batches of 100 goroutines, one batch after another.
   fixaudio uses a worker pool of min(16, NumCPU) over folders, and fixvideos one of 4 workers
   over video files. Per-run state lives in a collector or processor struct with a mutex (no
@@ -249,7 +256,14 @@ Same exit codes and leftover-argument rule.
 - repair (`repairtxt`): every U+FFFD is one lost CP1252/CP1250 byte, so it is replaced by
   exactly one rune that one of those codepages has (`allowedRune`); only the U+FFFD bytes
   of the raw file change (tested: originals and repaired files differ nowhere else). Only
-  UTF-8 txts without a decode Problem are repaired. Words are rebuilt across note syllables
+  UTF-8 txts without a decode Problem are repaired. A fix with a rune outside `allowedRune`
+  (e.g. an upper-cased `µ`/`ƒ`) is dropped. The totals (`Report.Fixed`/`Weak`) count only
+  written txts (in a dry run: those that would be written); an excluded, stopped or failed
+  txt keeps its plan in its `FileReport`, its `Left` is what it still holds, and the text
+  report labels its fixes `planned`. `-wordlist lang=` must name a code `languagePrefixes`
+  has, or one language by name (CLI exit 2, UI 400). In `languagePrefixes` the first match
+  wins, so names that start like another language get their own code or an empty one
+  (`Esperanto`, `Frisian`, `Latino`, `Niederdeutsch`, `Romani`). Words are rebuilt across note syllables
   (`~` is transparent, breaks and player markers end a line). Evidence levels in order:
   reviewed spellings (`-words`, unique), song (the folder name and subfolder names uncut,
   file names without the extension, fetched lyrics, own undamaged words; min 1, ratio 3;
@@ -295,8 +309,9 @@ Same exit codes and leftover-argument rule.
   else the container rate of a file without audio; 0 = unknown.
 - webui: one job at a time, because the modules log through the global logrus logger and the
   job's log is what a hook collects while it runs (never log while holding `jobRunner.mu`). The
-  analysis keeps `organize.Review` (candidates, plan, `Replan`); exclusions replan in memory
-  (`PlanOptions.Exclude`, pure). Apply runs `organize.Run` for real with a `Review` hook that
+  analysis keeps `organize.Review` (candidates, plan, `Replan`); exclusions replan with
+  `PlanOptions.Exclude` (`MakePlan` is pure; `Replan` reads the buckets it has not seen yet
+  from the library, read-only). Apply runs `organize.Run` for real with a `Review` hook that
   compares the new plan with the reviewed one (`organize.PlanDiff`: action, target, keeper per
   `Ref`) and stops before the first move if they differ (the analysis then holds the new plan).
   `organize.Options` and `repairtxt.Options` have `Ctx` (checked before each inspection/move,
@@ -315,7 +330,11 @@ Same exit codes and leftover-argument rule.
   `ui_cmd_test.go` stubs `openBrowser` in `init` (no test may open a browser).
 - organize: when a keeper from another source cannot reach the library, the library's own
   copies of that song stay in place (not moved to duplicates/). The report's duplicate and
-  invalid `Dest` is the actual target (with ` (2)`), also in dry runs.
+  invalid `Dest` is the actual target (with ` (2)`), also in dry runs. Moves a stopped run or
+  a journal failure never tried are `skipped` with an `outcomeNote` ("the run was stopped",
+  "the journal could not be written"). The fallback move of a parked song after a stop is
+  journaled (unless the journal failed). `PlanOptions.LibrarySource` (set by `Run` when a
+  `-s` is the library) tells `MakePlan` the library is a source even when it has no songs.
 - organize `_dupl<n>` copies (`StripCopySuffix`, case-insensitive, at the end): `newCandidate`
   strips it from `#ARTIST`/`#TITLE` (so keys and folder names ignore it) and sets
   `MarkedCopy` if the folder, the song txt, `#AUDIO`/`#MP3`/`#VIDEO` (extension ignored) or
@@ -373,7 +392,10 @@ stripped from the only audio source, and the README.
   if the audio is kept) is discarded and the original listed in
   `potentiallyCorruptedFiles.txt`: ffmpeg exits 0 on an AVI with a damaged section and
   drops it, so the video would run ahead of the song with no original left. Such a file is
-  encoded (and discarded) again on every run, like unreadable input.
+  encoded (and discarded) again on every run, like unreadable input. Unreadable input is
+  exit 183, or exit 1 with "Invalid data found" (ffmpeg 5.1/6.0). Each real run rebuilds
+  `potentiallyCorruptedFiles.txt`: an old entry is dropped when the run found the video
+  readable or the file is gone; a dry run never writes it and only logs what it would drop.
 - Symlinked media count as media (discovery, `collectVideos`), but fixaudio and fixvideos
   skip them with a warning: `Replace` would turn the link into a regular copy.
 
@@ -392,7 +414,7 @@ Still open (roadmap items):
   counts them, and the `#VIDEO` rewrite of an extension-changing conversion is not recorded
   as a planned txt write); no later module depends on them today (fixaudio, the only module
   after fixvideos, reads only audio files and `#VOCALS`/`#INSTRUMENTAL`). Also not
-  simulated: moves or renames *into* a path, and new files from planned writes in directory
+  simulated: renames *into* a path (planned `MoveInto`/`CopyInto`/`MoveTo` targets are), and new files from planned writes in directory
   listings (`os.ReadDir` and `utils.ResolveFileName` list the disk). A future module that
   reads `#VIDEO` after fixvideos would need `PlanReplace` to record the txt change.
 - Peak normalization of heavily clipped material at low bitrates can miss -3 dBFS by about
@@ -407,7 +429,8 @@ Still open (roadmap items):
   with check; fills are merged into `filled_tags.txt`, which keeps the written fills of all
   runs and replaces a dry run's planned lines). fixtxt finds the tag lines the way songtxt
   does (`nameTagLine`: leading blanks and blanks around the key ignored, last occurrence),
-  so `#ARTIST :x` counts as present. check names the fill in its message (seen only with
+  so `#ARTIST :x` counts as present. check names the fill in its message (not for a symlinked
+  txt, which fixtxt never rewrites) (seen only with
   `-t=false`: otherwise check reads the filled txt, in a dry run the planned one). Songs whose folder
   name is not obvious (no or several ` - `, reversed naming, a prefix before the artist,
   a track-number artist) still need a manual fix.
@@ -601,7 +624,8 @@ Slice 2 is **done** (2026-11):
   all Windows/ISO/KOI8 codepages (Latin-1 is read as CP1252, unknown codecs are a Problem);
   CP1250 via `#LANGUAGE`; CP1250 artefacts are detected; `classifyUTF8Sequences` separates
   accidental UTF-8 (isolated sequences such as `ß…`) from real UTF-8 (runs, Latin-1 leads,
-  `’ “ –`, emoji); a stale tag is only dropped when every character fits the declared codepage;
+  `’ “ –`, emoji); a stale tag is only dropped when every character fits the declared codepage
+  (U+FFFD, a lost character, does not count against it);
 - [x] safer audio choice (stems excluded, name preference, report when ambiguous),
   `#MP3` for video-only songs, and stem spelling fixes;
 - [x] folders with non-UTF-8 names skipped, unreadable txts counted once and never treated

@@ -117,8 +117,10 @@ after the video module, handles audio files and the `#VOCALS`/`#INSTRUMENTAL` ta
     header, after a leading `#VERSION`. Every fill is added to `filled_tags.txt` for review;
     tags that stay missing are listed in `missing_files.txt` with the reason
   - moves songs without an UltraStar song `.txt` or without any audio/video to `invalid/`
-  - writes `missing_files.txt` (songs without cover / background, ambiguous `#MP3`, a
-    missing `#ARTIST`/`#TITLE` that cannot be filled)
+  - writes `missing_files.txt` (songs without cover / background, ambiguous `#MP3` or
+    `#VIDEO`, a missing `#ARTIST`/`#TITLE` that cannot be filled). Of several videos, the
+    one an existing `#VIDEO`, `#MP3` or `#AUDIO` names wins, then one named like the txt,
+    the folder or `Artist - Title`; otherwise `#VIDEO` is left as it is
 - **cleanup**
   - moves files not referenced by the song's `.txt` to `extra-files/`
   - moves folders with at most one file to `invalid/`
@@ -150,7 +152,9 @@ after the video module, handles audio files and the `#VOCALS`/`#INSTRUMENTAL` ta
   - removes the video's audio track if `#MP3`/`#AUDIO` names a separate audio file
   - flags files ffmpeg cannot read in `potentiallyCorruptedFiles.txt`, and keeps the
     original (and lists it there) when the processed video comes out shorter or longer
-    than the original, as with an AVI whose damaged section ffmpeg drops
+    than the original, as with an AVI whose damaged section ffmpeg drops. Each run
+    rebuilds the list: a video found readable, or gone, is dropped from it (a dry run
+    leaves the file alone)
   - a conversion that changes the name (`.avi` → `.mp4`) is not started when the song's txt
     cannot be updated afterwards (no reference to the video, an encoding problem, not
     UTF-8: run the txt fix first); the log names the reason
@@ -551,7 +555,8 @@ What a damaged word stood for is decided from evidence, strongest first:
    language detected from its words when the tag is missing or clearly wrong);
 3. **word lists** given with `-wordlist`, e.g. a German hunspell dictionary
    (`-wordlist de=/usr/share/hunspell/de_DE.dic`; plain one-word-per-line lists and
-   frequency lists work too, and a list without `lang=` applies to every song);
+   frequency lists work too, and a list without `lang=` applies to every song; `lang=` is
+   a language code or name, and one no song can have, such as `ge=`, is refused);
 4. the undamaged txts of all languages.
 
 A level decides only if one candidate clearly wins (`für` over `fór`); otherwise the next
@@ -573,7 +578,8 @@ only repaired by matching a file in the folder.
 
 Run with `-n` first and read `<out>/fffd_repair.txt`: it lists every damaged txt (U+FFFD
 before → left), every repair with its evidence and lines, and every word left with its lyric
-line and candidates. Put the answers for words left over into a `-words` file and run
+line and candidates. A txt that was not written (excluded in the UI, a stopped run, a failed
+write) lists its repairs as `planned` and does not count in the totals. Put the answers for words left over into a `-words` file and run
 again. **Weak** repairs (a single candidate seen once, or a word the song's
 language never uses) are applied but marked for review; `-strict` leaves them undone.
 Spelling-model guesses with little evidence are never applied, only suggested. The same
