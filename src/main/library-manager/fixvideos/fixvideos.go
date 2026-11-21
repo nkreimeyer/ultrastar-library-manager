@@ -58,8 +58,10 @@ const (
 	// processed version did not keep their duration.
 	corruptedReportName = "potentiallyCorruptedFiles.txt"
 
-	// exitInvalidData is ffmpeg's exit code for AVERROR_INVALIDDATA ("Invalid data found
-	// when processing input"), i.e. the input file is probably corrupted.
+	// exitInvalidData is the exit code of newer ffmpeg releases for AVERROR_INVALIDDATA
+	// ("Invalid data found when processing input"), i.e. the input file is probably
+	// corrupted. Older releases in the supported range (5.1, 6.0) exit with 1 (see
+	// isCorruptInput).
 	exitInvalidData = 183
 
 	showEntries   = "-show_entries"
@@ -437,7 +439,7 @@ func (p *processor) encode(dir, file string, pl encodePlan) {
 	if err != nil {
 		os.Remove(tmp) // our own temp file, not a library file
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == exitInvalidData {
+		if errors.As(err, &exitErr) && isCorruptInput(exitErr.ExitCode(), out) {
 			// ffmpeg could not read the input: report it instead of counting a failure.
 			p.flagCorrupted(file, "ffmpeg could not read it")
 			return
@@ -454,6 +456,15 @@ func (p *processor) encode(dir, file string, pl encodePlan) {
 
 	p.markReadable(file)
 	p.replaceOriginal(dir, file, tmp, pl)
+}
+
+// isCorruptInput reports whether an ffmpeg run that exited with code and printed output
+// failed because it could not read its input: exit code exitInvalidData, or, from older
+// ffmpeg releases that exit with 1 on every error, exit code 1 with the "Invalid
+// data found" message.
+func isCorruptInput(code int, output []byte) bool {
+	return code == exitInvalidData ||
+		code == 1 && strings.Contains(strings.ToLower(string(output)), "invalid data found")
 }
 
 // replaceOriginal replaces file with the processed tmp file, the output of pl. A larger

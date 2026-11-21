@@ -741,3 +741,30 @@ func TestFailedRemuxFallsBackToJournal(t *testing.T) {
 		t.Error("tagByRemux(garbage) = nil, want an error")
 	}
 }
+
+// Regression: only exit code 183 counted as a corrupt input. ffmpeg 5.1 and 6.0 exit with 1
+// on an input they cannot read, so there a corrupt video was a failure on every run and
+// never listed in potentiallyCorruptedFiles.txt.
+func TestIsCorruptInput(t *testing.T) {
+	invalid := []byte("[mov,mp4,m4a,3gp,3g2,mj2 @ 0x1] moov atom not found\nin.mp4: Invalid data found when processing input\n")
+	tests := []struct {
+		name   string
+		code   int
+		output []byte
+		want   bool
+	}{
+		{"ffmpeg 7: AVERROR_INVALIDDATA", exitInvalidData, nil, true},
+		{"ffmpeg 5.1/6.0: exit 1 with the message", 1, invalid, true},
+		{"message in another case", 1, []byte("in.avi: INVALID DATA FOUND when processing input"), true},
+		{"exit 1 for another reason", 1, []byte("Unknown encoder 'libx264'"), false},
+		{"another exit code with the message", 2, invalid, false},
+		{"success", 0, invalid, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isCorruptInput(tt.code, tt.output); got != tt.want {
+				t.Errorf("isCorruptInput(%d, %q) = %v, want %v", tt.code, tt.output, got, tt.want)
+			}
+		})
+	}
+}
