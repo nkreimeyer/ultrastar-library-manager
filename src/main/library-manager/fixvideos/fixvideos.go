@@ -952,19 +952,18 @@ func markerFromProbe(probe mediatools.ProbeInfo) markerProbe {
 }
 
 // videoBitrate returns the bitrate of the first video stream of file in bit/s, from its
-// ffprobe result probe, by mediatools.VideoBitrate (the rule check uses, whose value
-// organize compares with BitrateThreshold): the stream bit_rate, else its BPS tag, else
-// the container rate of a file without audio. Where that is unknown (Matroska/WebM
-// with audio and no BPS tag), the sizes of the video packets are summed up: another
-// ffprobe run that reads every packet, too slow for check, which reports 0 (unknown)
-// for such a file. The container rate is never used for a file with audio: it includes
-// the audio, so a large audio track would make a low-bitrate video look high.
+// ffprobe result probe: the stream bit_rate, else its BPS tag (mediatools.StreamBitrate),
+// else the sum of its packet sizes over the container duration (another ffprobe run that
+// reads every packet, too slow for check). The container rate is never used: with audio
+// it counts the audio, and without it the padding of a CBR stream, so a low-bitrate video
+// would look high and be re-encoded for nothing. check uses mediatools.VideoBitrate,
+// which falls back to the container rate of a file without audio instead of measuring.
 func videoBitrate(file string, probe mediatools.ProbeInfo) (int, error) {
 	video, ok := probe.FirstStream("video")
 	if !ok {
 		return 0, errors.New("no video stream")
 	}
-	if bitrate := mediatools.VideoBitrate(probe, video); bitrate > 0 {
+	if bitrate := mediatools.StreamBitrate(video); bitrate > 0 { // no container rate: see VideoBitrate
 		return int(bitrate), nil
 	}
 	duration, err := formatDuration(probe)

@@ -165,7 +165,24 @@ func ParseSeconds(s string) (sec float64, ok bool) {
 //  3. else the container bit_rate, if the file has no audio stream: it is then the video
 //     rate plus the container overhead. With audio it would count the audio as video;
 //  4. else 0 (unknown).
+//
+// fixvideos uses only steps 1 and 2 (StreamBitrate) and then measures the packet sizes:
+// a container rate also counts padding (a CBR MPEG-TS muxed at 8 Mbit/s holds a 300 kbit/s
+// video) and would make it re-encode a video for nothing, which cannot be undone. check
+// keeps the container rate, as before: it has no packet scan.
 func VideoBitrate(probe ProbeInfo, s Stream) int64 {
+	if b := StreamBitrate(s); b > 0 {
+		return b
+	}
+	if !probe.HasStream("audio") {
+		return ParseBitrate(probe.Format.BitRate)
+	}
+	return 0
+}
+
+// StreamBitrate returns steps 1 and 2 of VideoBitrate: the stream's bit_rate, else its BPS
+// statistics tag; 0 if neither is known.
+func StreamBitrate(s Stream) int64 {
 	if b := ParseBitrate(s.BitRate); b > 0 {
 		return b
 	}
@@ -184,9 +201,6 @@ func VideoBitrate(probe ProbeInfo, s Stream) int64 {
 		if b := ParseBitrate(s.Tags[k]); b > 0 {
 			return b
 		}
-	}
-	if !probe.HasStream("audio") {
-		return ParseBitrate(probe.Format.BitRate)
 	}
 	return 0
 }

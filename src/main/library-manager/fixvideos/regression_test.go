@@ -236,29 +236,33 @@ func TestGetVideoBitrateMKVHighBitrate(t *testing.T) {
 	}
 }
 
-// A Matroska video without audio and without a BPS tag gets the container rate, as in
-// check (mediatools.VideoBitrate). fixvideos used to sum up its packet sizes instead, so
-// check and fixvideos could fall on different sides of BitrateThreshold. With audio the
-// packet sizes are still summed up (the container rate would count the audio).
-func TestVideoBitrateSharedWithCheck(t *testing.T) {
+// A video stream without bit_rate or BPS tag is measured by its packet sizes, with or
+// without audio, never by the container rate (mediatools.StreamBitrate). A CBR MPEG-TS
+// pads a 300 kbit/s video to its 8 Mbit/s mux rate: the container rate would make a
+// video-only song re-encoded (and its original deleted) for nothing.
+func TestVideoBitrateIgnoresContainerRate(t *testing.T) {
 	requireFFmpeg(t)
 	dir := t.TempDir()
-	videoOnly := filepath.Join(dir, "video-only.mkv")
-	makeMediaFrom(t, videoOnly, "testsrc2=size=320x240:rate=25:duration=1", "-c:v", "libx264", "-an")
-	probe := probeOf(videoOnly)
+	padded := filepath.Join(dir, "padded.mpg")
+	makeMediaFrom(t, padded, "testsrc2=size=320x240:rate=25:duration=5", "-map", "0:v", "-c:v", "libx264", "-b:v", "300k",
+		"-f", "mpegts", "-muxrate", "8000000")
+	probe := probeOf(padded)
 	video, _ := probe.FirstStream("video")
-	if _, bps := video.Tags["BPS"]; bps || video.BitRate != "" || probe.Format.BitRate == "" {
-		t.Fatalf("fixture = %+v, want a stream without bit_rate or BPS in a container with a bit_rate", probe)
+	container, _ := strconv.Atoi(probe.Format.BitRate)
+	if video.BitRate != "" || probe.HasStream("audio") || container <= BitrateThreshold {
+		t.Fatalf("fixture = %+v, want a video-only stream without bit_rate in a container above the threshold", probe)
 	}
-	want, _ := strconv.Atoi(probe.Format.BitRate)
-	if got, err := videoBitrate(videoOnly, probe); err != nil || got != want || want == 0 {
-		t.Errorf("videoBitrate(video only) = %d, %v; want the container rate %d", got, err, want)
+	if got, err := videoBitrate(padded, probe); err != nil || got <= 0 || got > BitrateThreshold {
+		t.Errorf("videoBitrate(padded MPEG-TS) = %d, %v; want the packet sum, below %d (container %d)", got, err, BitrateThreshold, container)
+	}
+	if needsReEncode(padded, "h264", probe) {
+		t.Error("a 300 kbit/s H.264 video must not be re-encoded because of its container's padding")
 	}
 
 	withAudio := filepath.Join(dir, "with-audio.mkv")
 	makeMediaFrom(t, withAudio, "testsrc2=size=320x240:rate=25:duration=1", "-c:v", "libx264", "-c:a", "pcm_s16le")
 	probe = probeOf(withAudio)
-	container, _ := strconv.Atoi(probe.Format.BitRate)
+	container, _ = strconv.Atoi(probe.Format.BitRate)
 	if got, err := videoBitrate(withAudio, probe); err != nil || got <= 0 || got >= container {
 		t.Errorf("videoBitrate(with audio) = %d, %v; want the packet sum, below the container rate %d", got, err, container)
 	}
