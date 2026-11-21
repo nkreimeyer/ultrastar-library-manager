@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
@@ -577,5 +580,38 @@ func TestOrganizeUndoStopped(t *testing.T) {
 	s.do("POST", "/api/organize/history", folderRequest{Library: lib, Out: out}, &hist)
 	if len(hist.Runs) != 1 || !hist.Runs[0].Undone {
 		t.Errorf("history after the second undo = %+v", hist)
+	}
+}
+
+// The song's earlier spelling is found as the -words reader finds it: a section spelled
+// otherwise ("[a - weg]", the txt name), a file saved as CP1252, an NFD spelling.
+func TestWriteChoicesFindsEarlierSpellingLikeReader(t *testing.T) {
+	weg := filepath.Join("A - Weg", "song.txt")
+	for name, old := range map[string]string{
+		"other spelling": "[a - weg]\nsörprise\n[*]\n",
+		"txt name":       "[Song]\nsörprise\n",
+		"CP1252":         "[A - Weg]\ns\xf6rprise\n",
+		"NFD":            "[A - Weg]\nsörprise\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), uiWordsName)
+			if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeChoices(fsops.New(false), path, []repairChoice{{Path: weg, Word: "s" + R + "rprise", Form: "sürprise"}}); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := os.ReadFile(path)
+			if !utf8.Valid(got) || strings.Contains(norm.NFC.String(string(got)), "sörprise") || !strings.HasSuffix(string(got), "[A - Weg]\nsürprise\n[*]\n") {
+				t.Errorf("words file:\n%s", got)
+			}
+		})
+	}
+	// Another song's section keeps its spelling.
+	path := filepath.Join(t.TempDir(), uiWordsName)
+	os.WriteFile(path, []byte("[A - Other]\nsörprise\n"), 0o644)
+	writeChoices(fsops.New(false), path, []repairChoice{{Path: weg, Word: "s" + R + "rprise", Form: "sürprise"}})
+	if got, _ := os.ReadFile(path); !strings.HasPrefix(string(got), "[A - Other]\nsörprise\n") {
+		t.Errorf("another song's spelling was taken out:\n%s", got)
 	}
 }

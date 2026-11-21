@@ -136,6 +136,19 @@ func loadReviewed(paths []string) (*reviewedWords, error) {
 // forSong returns the lexicon of the sections that name the damaged txt rel (relative to
 // the song dir) by its folder, its file name or its "#ARTIST - #TITLE" (compared like
 // lyrics records: case, accents, punctuation and U+FFFD do not matter), or nil.
+// SectionNamesTxt reports whether the -words section name names the txt rel (relative to
+// the song dir) by its folder or file name, compared as forSong does (case, accents and
+// punctuation ignored). The "#ARTIST - #TITLE" spelling forSong also accepts is not checked.
+func SectionNamesTxt(section, rel string) bool {
+	key := matchKey(section)
+	for _, n := range []string{filepath.Base(filepath.Dir(rel)), strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel))} {
+		if looseEqual(key, matchKey(n)) {
+			return true
+		}
+	}
+	return false
+}
+
 func (rw *reviewedWords) forSong(rel, artist, title string) *langLex {
 	if rw == nil || len(rw.songs) == 0 {
 		return nil

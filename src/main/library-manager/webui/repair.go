@@ -236,8 +236,10 @@ func fits(word, form string) bool {
 
 // writeChoices saves the chosen spellings in the UI's words file, one section per song
 // folder (the -words section name a damaged txt is matched by). A spelling chosen earlier
-// for the same damaged word of that folder is taken out: it fits the word as well, and two
-// reviewed spellings for one word decide nothing, so the new choice would be ignored.
+// for the same damaged word of that song is taken out: it fits the word as well, and two
+// reviewed spellings for one word decide nothing, so the new choice would be ignored. The
+// song's sections are found as the -words reader finds them (repairtxt.SectionNamesTxt),
+// also when written by hand in another spelling.
 func writeChoices(ops *fsops.Ops, path string, choices []repairChoice) error {
 	raw, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -255,8 +257,8 @@ func writeChoices(ops *fsops.Ops, path string, choices []repairChoice) error {
 	}
 	superseded := func(sec, form string) bool {
 		form = norm.NFC.String(form)
-		for _, c := range bySection[sec] {
-			if fits(norm.NFC.String(c.Word), form) {
+		for _, c := range choices {
+			if repairtxt.SectionNamesTxt(sec, c.Path) && fits(norm.NFC.String(c.Word), form) {
 				return true
 			}
 		}
@@ -278,7 +280,7 @@ func writeChoices(ops *fsops.Ops, path string, choices []repairChoice) error {
 			if sec = strings.TrimSpace(t[1 : len(t)-1]); sec == "*" {
 				sec = ""
 			}
-		case sec != "" && len(bySection[sec]) > 0:
+		case sec != "":
 			fields := strings.Fields(t)
 			kept := slices.DeleteFunc(slices.Clone(fields), func(f string) bool { return superseded(sec, f) })
 			if len(kept) == 0 {
