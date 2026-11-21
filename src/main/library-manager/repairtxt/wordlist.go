@@ -21,21 +21,33 @@ type WordList struct {
 }
 
 // ParseWordListFlag parses a -wordlist value: "path" or "lang=path" where lang is a code
-// ("de") or a language name ("German").
+// ("de") or a language name ("German"). Only languages LanguageCodes knows are accepted:
+// a song's languages come from there, so a list for any other code ("ge") would never be
+// used.
 func ParseWordListFlag(v string) (WordList, error) {
 	if i := strings.IndexByte(v, '='); i > 0 && !strings.ContainsAny(v[:i], `/\`) {
 		lang := v[:i]
-		code := lang
-		if len(lang) != 2 {
+		code := strings.ToLower(lang)
+		if !knownLanguageCode(code) {
 			codes := LanguageCodes(lang)
 			if len(codes) != 1 {
 				return WordList{}, fmt.Errorf("-wordlist %s: unknown language %q (use a code such as de)", v, lang)
 			}
 			code = codes[0]
 		}
-		return WordList{Lang: strings.ToLower(code), Path: v[i+1:]}, nil
+		return WordList{Lang: code, Path: v[i+1:]}, nil
 	}
 	return WordList{Path: v}, nil
+}
+
+// knownLanguageCode reports whether LanguageCodes can return code.
+func knownLanguageCode(code string) bool {
+	for _, lp := range languagePrefixes {
+		if lp.code == code {
+			return true
+		}
+	}
+	return false
 }
 
 // readWordList reads a word list: one word per line, as plain lists, hunspell .dic files

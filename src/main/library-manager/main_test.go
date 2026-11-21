@@ -512,6 +512,7 @@ func TestRunRepairCommand(t *testing.T) {
 		{"missing word list", []string{"repair", "-s", lib, "-wordlist", filepath.Join(base, "nope.dic")}, exitUsage},
 		{"missing words file", []string{"repair", "-s", lib, "-words", filepath.Join(base, "nope.txt")}, exitUsage},
 		{"unknown word list language", []string{"repair", "-s", lib, "-wordlist", "Klingon=" + wl}, exitUsage},
+		{"unknown word list code", []string{"repair", "-s", lib, "-wordlist", "ge=" + wl}, exitUsage},
 		{"missing song dir", []string{"repair", "-s", filepath.Join(base, "nope")}, exitUsage},
 		{"bad log level", []string{"repair", "-s", lib, "-v", "loud"}, exitUsage},
 		{"help", []string{"repair", "-h"}, exitOK},

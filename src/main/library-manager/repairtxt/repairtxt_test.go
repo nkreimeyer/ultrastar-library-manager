@@ -448,13 +448,19 @@ func TestReadWordList(t *testing.T) {
 		"/a/de.dic":    {Path: "/a/de.dic"},
 		"de=/a/de.dic": {Lang: "de", Path: "/a/de.dic"},
 		"German=x.dic": {Lang: "de", Path: "x.dic"},
+		"DE=x.dic":     {Lang: "de", Path: "x.dic"},
+		"lv=x.dic":     {Lang: "lv", Path: "x.dic"},
+		"dt=x.dic":     {Lang: "de", Path: "x.dic"}, // a name prefix, not a code
 	} {
 		if got, err := ParseWordListFlag(in); err != nil || got != want {
 			t.Errorf("ParseWordListFlag(%q) = %+v, %v; want %+v", in, got, err, want)
 		}
 	}
-	if _, err := ParseWordListFlag("Klingon=x.dic"); err == nil {
-		t.Error("unknown language accepted")
+	// "ge" and "xx" are no codes a song's language can have: such a list is never used.
+	for _, in := range []string{"Klingon=x.dic", "ge=x.dic", "xx=x.dic"} {
+		if _, err := ParseWordListFlag(in); err == nil {
+			t.Errorf("ParseWordListFlag(%q): unknown language accepted", in)
+		}
 	}
 }
 
