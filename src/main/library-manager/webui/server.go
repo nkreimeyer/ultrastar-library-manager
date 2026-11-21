@@ -153,7 +153,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !s.signedIn(r) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusForbidden)
-		io.WriteString(w, "Not signed in. Open the link that library-manager printed when it started (it contains ?token=…).\n")
+		io.WriteString(w, "Not signed in. Open the address library-manager printed when it started (it contains ?token=…). "+
+			"It works once: if this browser lost its sign-in, restart library-manager and open the new address.\n")
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {

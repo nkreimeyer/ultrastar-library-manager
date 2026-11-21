@@ -241,7 +241,9 @@ Same exit codes and leftover-argument rule.
   stopped (`UndoOptions.Ctx`, checked before each entry but never while a song is at a
   `.organize-tmp-*` name). Each move back is journaled as `reverted` (entry number in the
   run, 1-based), and a retry skips those entries: the paths cannot tell, since both exist
-  again after a swap is undone (`ops.Exists` is only the fallback for a lost record). A dry run executes the same steps through ops (MoveTo
+  again after a swap is undone (`ops.Exists` is only the fallback for a lost record). Undo
+  returns an error when moves back went unrecorded and the run is not recorded `undone` (a
+  retry could repeat them). An undo stopped in the UI keeps its folders in the job result. A dry run executes the same steps through ops (MoveTo
   simulates the ordered moves), so its plan and move count match the real run
   (`TestRunDryRunMatchesRealRun`).
 - repair (`repairtxt`): every U+FFFD is one lost CP1252/CP1250 byte, so it is replaced by
@@ -305,7 +307,8 @@ Same exit codes and leftover-argument rule.
   redirected); the cookie is `lm_session_<port>`, as browsers share cookies across ports.
   Only the newest analysis of each kind is kept. Event streams send `id: <job>/<next line>`
   with each log event and resume from `Last-Event-ID`; `Server.Close` ends them (before
-  `http.Server.Shutdown`). `ui` stops on SIGINT, SIGTERM and SIGHUP; `-addr` is checked
+  `http.Server.Shutdown`; each sends the final job state first). `ui` stops on SIGINT, SIGTERM
+  and SIGHUP, unless the signal was ignored at the start (`nohup`; `stopSignals`); `-addr` is checked
   before listening (exit 2), a listen failure exits 1. The UI's words file is rewritten
   (`writeChoices`): an earlier spelling that fits the same damaged word in that folder's
   section is dropped. Tests: `webui/*_test.go` run the real server with `httptest` against temp libraries;

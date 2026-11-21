@@ -190,10 +190,12 @@ empty folders are merged into an existing target instead.
 Start `library-manager` without arguments (on Windows: double-click the `.exe`), or run
 `library-manager ui`. It starts a small web server on `127.0.0.1` and opens the browser. Keep
 the terminal window open while you use it; closing it (or Ctrl-C) stops the UI and any
-running job (a move or undo finishes the song it is on). The printed address signs one
+running job (a move or undo finishes the song it is on; on Windows closing the window
+leaves only a few seconds for that, so press Stop or Ctrl-C and wait instead). The printed address signs one
 browser in and then stops working, so a copy of it (browser history) lets no one else in;
 if your browser lost its sign-in, restart library-manager for a new address. Several UIs
-can run at once, each on its own port. A port given with `-addr` that is in use ends the
+can run at once, each on its own port. Started with `nohup`, the UI keeps running after you
+log out. A port given with `-addr` that is in use ends the
 program with exit code 1.
 
 The UI covers `dedupe`, `add`, `organize` and `repair`:
