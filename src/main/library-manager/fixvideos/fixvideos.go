@@ -97,6 +97,7 @@ type processor struct {
 
 	mu        sync.Mutex
 	corrupted map[string]struct{} // videos ffmpeg could not read
+	readable  map[string]struct{} // videos this run found readable (see markReadable)
 }
 
 // Run processes the videos of all song folders below cfg.SongDir with a pool of workers,
@@ -350,16 +351,20 @@ func (p *processor) processVideoFile(dir, file string) {
 	}
 	if p.journal.Has(journalChecked, file) || p.journal.Has(journalProcessed, file) {
 		log.Debugf("Skipping %s: recorded in the media journal", file)
+		p.markReadable(file)
 		return
 	}
 	if m, err := probeMarker(file); err == nil && m.tagged {
 		log.Debugf("Skipping %s: it carries the %s tag", file, markerTag)
+		p.markReadable(file)
 		return
 	}
 
 	pl, ok := p.plan(dir, file)
 	if !ok {
+		// plan only skips a video whose codec ffprobe read (an unreadable one is re-encoded).
 		log.Debugf("No processing needed for: %s", file)
+		p.markReadable(file)
 		return
 	}
 
@@ -447,6 +452,7 @@ func (p *processor) encode(dir, file string, pl encodePlan) {
 		return
 	}
 
+	p.markReadable(file)
 	p.replaceOriginal(dir, file, tmp, pl)
 }
 
@@ -841,15 +847,29 @@ func (p *processor) flagCorrupted(file, why string) {
 	p.mu.Unlock()
 }
 
+// markReadable records that this run found file readable: it was skipped as already
+// processed or checked, needed no processing (ffprobe read its codec), or ffmpeg processed
+// it. Its entry in an existing corrupted-files report is dropped.
+func (p *processor) markReadable(file string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.readable == nil {
+		p.readable = map[string]struct{}{}
+	}
+	p.readable[file] = struct{}{}
+}
+
 // writeCorruptedReport merges the videos flagged in this run with the entries of an
-// existing report and writes them sorted and deduplicated. Nothing is written if no video
-// was flagged.
+// existing report and writes them sorted and deduplicated. Entries of earlier runs are
+// dropped if this run found the video readable (fixed, replaced, tagged) or the file no
+// longer exists (converted, removed, moved; in a dry run also a file an earlier module
+// would move away); the others stay, because a video this run did not try to read (a
+// blocked conversion, another library writing to the same out dir, a dry run, which runs
+// no ffmpeg) may still be corrupted. Nothing is written if there is neither a report nor a
+// flagged video.
 func (p *processor) writeCorruptedReport() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if len(p.corrupted) == 0 {
-		return
-	}
 
 	path := p.cfg.ReportPath(corruptedReportName)
 	entries := maps.Clone(p.corrupted)
@@ -857,18 +877,31 @@ func (p *processor) writeCorruptedReport() {
 	switch {
 	case err == nil:
 		for _, line := range strings.Split(string(existing), "\n") {
-			if line = strings.TrimSpace(line); line != "" {
-				entries[line] = struct{}{}
+			line = strings.TrimSpace(line)
+			if _, ok := p.readable[line]; line == "" || ok {
+				continue
 			}
+			if _, err := os.Lstat(line); errors.Is(err, os.ErrNotExist) || p.ops.WouldBeMoved(line) {
+				continue
+			}
+			entries[line] = struct{}{}
 		}
 	case !errors.Is(err, os.ErrNotExist):
 		// Do not overwrite a report we cannot read.
 		log.Errorf("reading %s: %v; not updating it", path, err)
 		p.ops.Fail()
 		return
+	case len(entries) == 0:
+		return
 	}
 
-	data := strings.Join(slices.Sorted(maps.Keys(entries)), "\n") + "\n"
+	var data string
+	if len(entries) > 0 {
+		data = strings.Join(slices.Sorted(maps.Keys(entries)), "\n") + "\n"
+	}
+	if err == nil && data == string(existing) {
+		return
+	}
 	if err := p.ops.WriteReport(path, []byte(data)); err != nil {
 		log.Errorf("%v", err)
 	}

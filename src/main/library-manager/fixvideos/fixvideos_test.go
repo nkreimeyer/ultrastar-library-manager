@@ -130,19 +130,64 @@ func TestParseMarkerProbe(t *testing.T) {
 }
 
 func TestWriteCorruptedReportMergesSorted(t *testing.T) {
-	cfg, _, outDir := newLibrary(t, false)
-	report := filepath.Join(outDir, corruptedReportName)
-	if err := os.WriteFile(report, []byte("/lib/b.avi\n\n/lib/a.avi\n"), 0o644); err != nil {
-		t.Fatal(err)
+	cfg, songDir, outDir := newLibrary(t, false)
+	a, b, c := filepath.Join(songDir, "a.avi"), filepath.Join(songDir, "b.avi"), filepath.Join(songDir, "c.avi")
+	for _, f := range []string{a, b, c} {
+		writeFile(t, f, "v")
 	}
+	report := filepath.Join(outDir, corruptedReportName)
+	writeFile(t, report, b+"\n\n"+a+"\n")
 	p := &processor{cfg: cfg, ops: fsops.New(false), corrupted: map[string]struct{}{}}
-	p.flagCorrupted("/lib/c.avi", "test")
-	p.flagCorrupted("/lib/a.avi", "test")
+	p.flagCorrupted(c, "test")
+	p.flagCorrupted(a, "test")
 	p.writeCorruptedReport()
 
 	got := readFile(t, report)
-	if want := "/lib/a.avi\n/lib/b.avi\n/lib/c.avi\n"; got != want {
+	if want := a + "\n" + b + "\n" + c + "\n"; got != want {
 		t.Errorf("report = %q, want %q", got, want)
+	}
+}
+
+// Regression: potentiallyCorruptedFiles.txt only ever grew, so videos that were fixed,
+// converted or removed stayed listed forever. Entries of videos this run found readable
+// and of files that are gone are dropped; a video this run did not read stays listed.
+func TestWriteCorruptedReportDropsStaleEntries(t *testing.T) {
+	p, songDir, outDir := newProcessor(t, false)
+	still := filepath.Join(songDir, "Song", "still.avi")   // not read by this run: stays
+	fixed := filepath.Join(songDir, "Song", "fixed.avi")   // journaled as checked: readable
+	gone := filepath.Join(songDir, "Song", "gone.avi")     // converted or removed
+	flagged := filepath.Join(songDir, "Song", "again.avi") // flagged again
+	for _, f := range []string{still, fixed, flagged} {
+		writeFile(t, f, "v "+f)
+	}
+	if err := p.journal.Add(journalChecked, fixed); err != nil {
+		t.Fatal(err)
+	}
+	report := filepath.Join(outDir, corruptedReportName)
+	writeFile(t, report, strings.Join([]string{fixed, gone, still, flagged}, "\n")+"\n")
+
+	p.processVideoFile(filepath.Dir(fixed), fixed) // skipped via the journal, no ffmpeg needed
+	p.flagCorrupted(flagged, "test")
+	p.writeCorruptedReport()
+	if got, want := readFile(t, report), flagged+"\n"+still+"\n"; got != want {
+		t.Errorf("report = %q, want %q", got, want)
+	}
+
+	// Once nothing is left, the report is emptied rather than kept stale.
+	if err := os.Remove(still); err != nil {
+		t.Fatal(err)
+	}
+	p = &processor{cfg: p.cfg, ops: fsops.New(false), journal: p.journal, corrupted: map[string]struct{}{}} // the next run
+	p.writeCorruptedReport()
+	if got := readFile(t, report); got != flagged+"\n" {
+		t.Errorf("report = %q, want only %q", got, flagged)
+	}
+	if err := os.Remove(flagged); err != nil {
+		t.Fatal(err)
+	}
+	p.writeCorruptedReport()
+	if got := readFile(t, report); got != "" {
+		t.Errorf("report = %q, want it empty", got)
 	}
 }
 
