@@ -2,6 +2,7 @@ package organize
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
+	log "github.com/sirupsen/logrus"
 )
 
 // notesTxt is a valid song body: 10 notes ending at 1.9 s, then E. The lyrics are lyric,
@@ -1069,5 +1071,71 @@ func TestRunIgnoreThe(t *testing.T) {
 	_, rep := runOrganize(t, organizeCfg(t, [][]string{{src}}, filepath.Join(base, "lib"), filepath.Join(base, "out"), true), Options{IgnoreThe: true})
 	if len(rep.ToLibrary) != 1 || rep.ToLibrary[0].Target != "B/The Beatles - Help!" || !rep.IgnoreThe {
 		t.Errorf("to library = %+v, ignoreThe = %v", rep.ToLibrary, rep.IgnoreThe)
+	}
+}
+
+// TestApplyUnparkFallbackFails: a parked song that can neither go back (its place is
+// taken by the swap's other song) nor to its planned target stays at the temporary name.
+// The log tells the user how to get it out: -undo if the journal works (a stop), by hand
+// if the journal failed.
+func TestApplyUnparkFallbackFails(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		journalFail bool
+		want        string
+	}{
+		{"stopped", false, "the song stays at the temporary name, -undo moves it back"},
+		{"journal failed", true, "the song stays at the temporary name, move it by hand"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			noFFprobe(t)
+			base := t.TempDir()
+			lib, out := filepath.Join(base, "lib"), filepath.Join(base, "out")
+			writeFiles(t, lib, merge(songFiles("A/a", "Bee", "B"), songFiles("B/b", "Abba", "A")))
+			before := tree(t, lib)
+			cfg := organizeCfg(t, [][]string{{lib}}, lib, out, false)
+			ops := fsops.New(false)
+			cands := []Candidate{
+				{Label: "lib", Rel: "A/a", Folder: filepath.Join(lib, "A", "a"), InLibrary: true},
+				{Label: "lib", Rel: "B/b", Folder: filepath.Join(lib, "B", "b"), InLibrary: true},
+			}
+			plan := Plan{Decisions: []Decision{{Action: ActMove, Target: "B/b", Other: -1}, {Action: ActMove, Target: "A/a", Other: -1}}}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			a := newApplier(cfg, ops, cands, map[int]moveOutcome{})
+			a.ctx = ctx
+			if tc.journalFail {
+				// The park is journaled, the swap's middle move is not.
+				failingJournal(ops, a.j, func(line string) bool { return strings.Contains(line, `"move"`) && !strings.Contains(line, tempPrefix) })
+			}
+			a.moveTo = func(src, dst string) error {
+				if strings.HasPrefix(filepath.Base(src), tempPrefix) {
+					ops.Fail()
+					return fmt.Errorf("injected failure")
+				}
+				if !tc.journalFail && !strings.HasPrefix(filepath.Base(dst), tempPrefix) {
+					defer cancel() // the swap's middle move completes, then the run stops
+				}
+				return ops.MoveTo(src, dst)
+			}
+			hook := captureLog(t)
+			a.apply(plan)
+			var found bool
+			for _, m := range messages(hook, log.ErrorLevel) {
+				found = found || strings.Contains(m, tc.want)
+			}
+			if !found {
+				t.Errorf("no error with %q in:\n%s", tc.want, strings.Join(messages(hook, log.ErrorLevel), "\n"))
+			}
+			if tc.journalFail {
+				return
+			}
+			if st := runUndo(t, organizeCfg(t, nil, lib, out, false)); st.Failed != 0 {
+				t.Errorf("undo: %+v", st)
+			}
+			if got := tree(t, lib); !reflect.DeepEqual(got, before) {
+				t.Errorf("library after undo:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(before, "\n"))
+			}
+		})
 	}
 }
