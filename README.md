@@ -44,7 +44,6 @@ library-manager organize -s <dir> [-s ...] -l <library> [flags]   # see "Organiz
 library-manager dedupe -l <library> [flags]                       # see "Removing duplicates in place"
 library-manager add -s <dir> [-s ...] -l <library> [flags]        # see "Adding songs to a library"
 library-manager remove -l <library> -artist <name> | -song "Artist - Title" | -from <file>   # see "Removing songs or artists"
-library-manager repair -s <song-dir> [-wordlist <file>] [-lyrics] [flags]   # see "Repairing damaged txts"
 ```
 
 | Flag | Default | Description |
@@ -203,7 +202,7 @@ can run at once, each on its own port. Started with `nohup`, the UI keeps runnin
 log out. A port given with `-addr` that is in use ends the
 program with exit code 1.
 
-The UI covers `dedupe`, `add`, `organize` and `repair`:
+The UI covers `dedupe`, `add` and `organize`:
 
 1. Choose what to do and pick the folders (a folder picker or a pasted path).
 2. **Check first**: a dry run. Nothing in the library changes.
@@ -216,16 +215,8 @@ The UI covers `dedupe`, `add`, `organize` and `repair`:
 5. **Undo this run** reverts the moves, like `<cmd> -undo`. An undo can be stopped; undo
    again to move back the rest.
 
-For `repair` the review lists the automatic repairs (best guesses marked) and the words that
-need a choice: click a suggestion or type the word. Choices are written to
-`<out>/ui-reviewed-words.txt` (a `-words` file with a section per song folder), so later runs
-from the UI keep them; choosing another spelling for the same word later replaces the
-earlier one. A file can be left unchanged. Online lyrics (lrclib.net) are off unless
-you tick the box, since they send each damaged song's artist and title to that site.
-
 **Easy** mode (the default) shows plain choices. **Advanced** adds the flags (`-priority`,
-priority groups, `-ignore-the`, `-deep`, `-o`, `-strict`, word lists, `-words`, the lyrics
-cache), a table of every song folder with its decision and media quality, the plan as JSON,
+priority groups, `-ignore-the`, `-deep`, `-o`), a table of every song folder with its decision and media quality, the plan as JSON,
 the earlier runs of the output folder and the live log.
 
 The header shows whether `ffmpeg`/`ffprobe` are installed and new enough (5.1 or later);
@@ -512,94 +503,6 @@ that matched it, and the patterns that matched nothing (usually a typo).
 
 `remove` shares the journal with organize, dedupe and add, so `-undo` of any of them reverts
 the most recent of these runs.
-
-## Repairing damaged txts (`repair`)
-
-```bash
-library-manager repair -s <song-dir> [-wordlist [lang=]<file>]... [-words <file>]... [-lyrics] [-strict] [-o <out>] [-n] [-v level]
-```
-
-An earlier conversion (an old version of this tool, or another program) left some txts with
-`�` (U+FFFD, the replacement character) in place of every character it could not
-decode: `f�r`, `I�m`, `Gl�ck`. fixtxt and check list these files (`encoding_issues.txt`,
-`damaged-text`); `repair` puts the characters back. Each `�` stands for exactly one lost
-CP1252/CP1250 character, so it is replaced by exactly one character. Nothing else in the
-file changes (line endings, BOM and all other bytes stay), and the original of every
-rewritten txt is copied to `<out>/originals/` first (`-o` defaults to `sanitizer-output/`
-next to `-s`).
-
-What a damaged word stood for is decided from evidence, strongest first:
-
-0. **your reviewed spellings** from `-words <file>` (one or more words per line, e.g.
-   `Täterätätä`): a damaged word that exactly one of them fits is repaired that way in every
-   song. Words below a line `[Artist - Title]` apply to that song only and come first there,
-   for words that differ between songs (`f�hrt` is `fährt` in one song, `führt` in another);
-   `[*]` goes back to words for every song:
-
-   ```
-   Täterätätä
-   [Patrick Lindner - Mandeln und Zimt]
-   fährt
-   [Eisregen - Farbenfinsternis, Kapitel 4 - Mein Reich komme]
-   Hülle Mühen
-   [*]
-   Säcken
-   ```
-
-   The name in brackets is compared with the song's folder name, its txt name and its
-   `#ARTIST - #TITLE`; case, accents, punctuation and a U+FFFD in the name do not matter.
-   Sections that match no damaged txt are listed in the report;
-1. **the song itself**: its folder name, the names of the files and folders in it
-   (`Drömhus - Vill Ha Dig.mp3`; a dot in a folder name is no extension, `Dr. Alban - …`),
-   its lyrics from lrclib.net with `-lyrics`, and its own undamaged words;
-2. **the library**: all undamaged song txts in the song's language (`#LANGUAGE`, plus the
-   language detected from its words when the tag is missing or clearly wrong);
-3. **word lists** given with `-wordlist`, e.g. a German hunspell dictionary
-   (`-wordlist de=/usr/share/hunspell/de_DE.dic`; plain one-word-per-line lists and
-   frequency lists work too, and a list without `lang=` applies to every song; `lang=` is
-   a language code or name, and one no song can have, such as `ge=`, is refused);
-4. the undamaged txts of all languages.
-
-A level decides only if one candidate clearly wins (`für` over `fór`); otherwise the next
-level breaks the tie. Ambiguous words (Swedish `f�r` = `för` or `får`) are decided by
-the neighbouring words if the song itself (its lyrics, its undamaged lines) or the library
-has seen those pairs (a pair only the song has wins: its lyrics' `För jag tror` beats the
-library's many `får jag`), else left as they are. The
-library also knows words with their edge apostrophes and punctuation (`goin’`, `¡Oh`), so
-`goin�` becomes `goin’` but `tomb�` becomes `tombé`. A word that no list has as a whole is
-repaired by its parts at an apostrophe (`d'�tre` = `d'être`), as one word with its
-hyphen-split syllables (`l� - cher - lich` = `lächerlich`), or by letter combinations:
-first the song's own (`aufzuhören` in the lyrics spells `aufzuh�r'n`; only if two different
-five-letter combinations around the gap agree and none points to another letter), then those
-of its language (`revoluci�n` = `revolución`). An apostrophe written `'` in the fetched
-lyrics counts as the song's own apostrophe (`’`, or `´` if the song uses that), because a lost
-character was never plain ASCII: `j'espère` repairs `j�esp�re`. Case follows the word
-(`F�R` = `FÜR`, `�rger` = `Ärger` mid-line). Tags naming files (`#MP3`, `#VIDEO`, …) are
-only repaired by matching a file in the folder.
-
-Run with `-n` first and read `<out>/fffd_repair.txt`: it lists every damaged txt (U+FFFD
-before → left), every repair with its evidence and lines, and every word left with its lyric
-line and candidates. A txt that was not written (excluded in the UI, a stopped run, a failed
-write) lists its repairs as `planned` and does not count in the totals. Put the answers for words left over into a `-words` file and run
-again. **Weak** repairs (a single candidate seen once, or a word the song's
-language never uses) are applied but marked for review; `-strict` leaves them undone.
-Spelling-model guesses with little evidence are never applied, only suggested. The same
-data is in `fffd_repair.json`.
-
-With `-lyrics`, artist and title of every song that still has unrepaired words after the
-offline pass are sent to [lrclib.net](https://lrclib.net) (no account needed). The answers
-are cached in `<out>/lyrics-cache/` (`-lyrics-cache` to choose another folder, never one
-inside the song dir), so a second run sends no request for the same song; if the cache
-cannot be written, the answer is still used for this run. A song that is not found by artist and title is
-searched again by its first artist (`Shakira feat. …` = `Shakira`) and its title without
-bracketed qualifiers (`(Duett)`, `(Live)`, `[VIDEO]`), then by that title alone; titles match
-without accents (`Desole'` = `Désolé`). A word's capital letter follows the song's lyrics
-(`of Ísland`) before the library's habit. Txts repaired by an earlier run (they have a copy
-in `originals/`) are left out of the library evidence, and a song's own evidence comes from
-its oldest copy there, so a second run decides like the first and never builds on its own
-earlier repairs. Txts with a decoding problem, txts that are not UTF-8 (run fixtxt first) and
-symlinked txts are listed as skipped. A repaired `#ARTIST`/`#TITLE` does not rename the
-folder; `organize` with the library as a source does.
 
 ## Development
 

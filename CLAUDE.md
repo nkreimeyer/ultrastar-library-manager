@@ -14,12 +14,11 @@ is superseded.
 ```
 src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (go 1.24)
   main.go                     flags, validation, runs the modules in fixed order, summary + exit code;
-                              os.Args[1] == "organize"/"dedupe"/"add"/"remove"/"repair"/"ui" dispatches to the subcommand;
+                              os.Args[1] == "organize"/"dedupe"/"add"/"remove"/"ui" dispatches to the subcommand;
                               no arguments at all starts the UI (double-click); main.version is set with -ldflags -X
   ui_cmd.go                   the ui subcommand: -addr (loopback only), -no-browser, -v; opens the browser, stops on a signal
   organize_cmd.go             the organize, dedupe and add subcommands (organize.Mode): own FlagSet, -s tier lists, -undo, validation
   remove_cmd.go               the remove subcommand: -artist/-song/-from patterns, -undo
-  repair_cmd.go               the repair subcommand: -s, -wordlist [lang=]file, -words file, -lyrics, -strict
   cmd_common.go               the steps all commands share: usageError/leftoverError, setLogLevel (-v), subcommand
                               (FlagSet + -v: parse, undoFlag, checkUndoFolder), journaledRun (organize/dedupe/add/remove:
                               config or undo config, organize.Undo or PrepareOutDir + run, "<name> failed", summary line)
@@ -37,11 +36,11 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   utils/utils.go              media type checks, non-UTF-8 media names, FileTags/IsFileTag (the seven tags naming files),
                               IsNoiseEntry (hidden, @eaDir, planned dry-run move: no song content)
   utils/language.go           #LANGUAGE names -> codes: LanguageCodes (prefix table languagePrefixes, first match
-                              wins, empty code = stop; whole words notLanguageNames), KnownLanguageCode;
-                              shared by repairtxt and DecodeTxt's CP1250 choice
+                              wins, empty code = stop; whole words notLanguageNames); used by DecodeTxt's
+                              CP1250 choice
   utils/fold.go               FoldString (NFC, case folding, marks dropped on Latin/Greek letters and non-letters,
                               letterFolds for ø æ œ ł đ ð þ ß ı ħ ŧ ŋ ĸ ɨ ƶ and hooked letters), IsApostrophe (' ` ’ ‘ ´ ʼ);
-                              used by organize keys/Bucket, LanguageCodes, repair's lrclib matching
+                              used by organize keys/Bucket and LanguageCodes
   utils/parallel.go           ForEachParallel: the one worker pool (Parallel{Workers, Progress, OnPanic}),
                               ctx stops new items, a panic is recovered per item
   utils/songname.go           TagsFromFolderName: obvious #ARTIST/#TITLE fills from "Artist - Title" folder names
@@ -62,14 +61,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   webui/                      browser UI: server.go (single-use token -> session cookie lm_session_<port>, CheckAddr,
                               Host/Origin/JSON checks, CSP, routes),
                               jobs.go (one job at a time, logrus hook, SSE /api/job/events), system.go (tools, folder lister),
-                              organize.go (validate/analyse/exclude/apply/history/undo), repair.go (analyse/apply, choices ->
-                              <out>/ui-reviewed-words.txt), static/ (index.html, style.css, app.js: embedded, no build step)
-  repairtxt/                  repair of U+FFFD-damaged txts: lexicon.go (corpus per language: words, edge forms,
-                              bigrams, char 4/5-grams, punctuation classes), language.go (naive Bayes language
-                              detection; the #LANGUAGE codes come from utils.LanguageCodes), text.go (tag/lyric segments with byte offsets), resolve.go (evidence
-                              levels, case), plan.go + words.go (per-file planning), wordlist.go, inputs.go (ResolveWordFiles,
-                              LyricsCacheDir: shared by the CLI and the UI, error prefixes from InputNames), lyrics.go (lrclib.net
-                              client with cache), repair.go (Run, fffd_repair.txt/.json)
+                              organize.go (validate/analyse/exclude/apply/history/undo),
+                              static/ (index.html, style.css, app.js: embedded, no build step)
   organize/                   organize/dedupe/add: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey, StripCopySuffix),
                               content.go (ContentHash, union-find joining of groups by content),
                               remove.go (Pattern, ParsePatternFile, planRemove (pure), Remove, remove_plan.json/.txt),
@@ -78,7 +71,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               dedupe drops -priority/-ignore-the), quality.go (keeper order), plan.go (MakePlan, orderMoves; pure), organize.go (Run, Undo),
                               journal.go (organize-journal.jsonl), report.go (organize_plan.json/.txt;
                               writeReportFiles also writes remove_plan.*)
-old/                          legacy Python/shell (duplicate detection by folder name, fuzzy txt compare)
+old/                          legacy Python/shell (duplicate detection by folder name, fuzzy txt compare);
+                              old/repair/: the archived U+FFFD repair (repairtxt, CLI, UI), not built (see its README)
 test-assets/                  local fixture library (gitignored, not in the repo)
 ```
 
@@ -110,9 +104,6 @@ Subcommands: `organize -s <dir>[:<dir>…] [-s …] -l <library> [-o <out>] [-pr
 `dedupe -l <library> [-o <out>] [-deep] [-n]` (in place: the library is the only source, keepers stay),
 `add -s … -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-n]` (the library is always the first
 source of the first tier, library keepers stay, new keepers go to their bucket),
-`repair -s <dir> [-wordlist [lang=]<file>]… [-words <file>]… [-lyrics] [-strict] [-o <out>] [-n]` (U+FFFD repair; `-words`
-files have `[Artist - Title]` sections for one song (`reviewed.go`, matched like lyrics records, before the global words), see
-"Architecture notes"; uses `config.New`, so `-o` defaults to `sanitizer-output/`),
 `remove -l <library> [-artist <name>]… [-song "Artist - Title"]… [-from <file>]… [-o <out>] [-n]` (matching songs
 go to `<out>/removed/<rel>`; artist patterns match a subset of the collaboration names (`artistNames`), song
 patterns the SongKey with or without the duet marker; missing tags come from `utils.TagsFromFolderName`;
@@ -224,15 +215,13 @@ Same exit codes and leftover-argument rule.
 - Concurrency: every module pool is `utils.ForEachParallel(ctx, items, utils.Parallel{Workers,
   Progress, OnPanic}, fn)`. Workers: fixtxt and cleanup 100 over folders (the size of the old
   batches, now a pool), fixaudio, check and organize (inspection, remove's tag reading)
-  min(16, NumCPU) over folders, fixvideos 4 over video files, repair `Options.Workers`
-  (default 16) for scan and planning. It never starts more goroutines than items; once ctx is
+  min(16, NumCPU) over folders, fixvideos 4 over video files. It never starts more goroutines than items; once ctx is
   done no item starts and it returns ctx.Err() (nil = every item ran); Progress calls are
   serialized. A panic in fn is recovered and logged with the item and stack, then OnPanic
   runs: modules log the song and call `ops.Fail()`, and the other songs still run, so fn must
   release locks with defer. Fatal runtime errors (concurrent map writes, OOM) are not
   recoverable. A song whose organize inspection panics stays in place as unreadable (in
-  remove it never matches); a repair txt whose first planning panics is not written; a panic
-  in the re-plan with fetched lyrics keeps its first plan. Per-run state
+  remove it never matches). Per-run state
   lives in a collector or processor struct with a mutex (no globals). `fsops` serializes
   target-name reservation.
 - Moving a folder onto an existing target merges it in two cases: this run already moved
@@ -295,54 +284,6 @@ Same exit codes and leftover-argument rule.
   retry could repeat them). An undo stopped in the UI keeps its folders in the job result. A dry run executes the same steps through ops (MoveTo
   simulates the ordered moves), so its plan and move count match the real run
   (`TestRunDryRunMatchesRealRun`).
-- repair (`repairtxt`): every U+FFFD is one lost CP1252/CP1250 byte, so it is replaced by
-  exactly one rune that one of those codepages has (`allowedRune`); only the U+FFFD bytes
-  of the raw file change (tested: originals and repaired files differ nowhere else). Only
-  UTF-8 txts without a decode Problem are repaired. A fix with a rune outside `allowedRune`
-  (e.g. an upper-cased `µ`/`ƒ`) is dropped. The totals (`Report.Fixed`/`Weak`) count only
-  written txts (in a dry run: those that would be written); an excluded, stopped or failed
-  txt keeps its plan in its `FileReport`, its `Left` is what it still holds, and the text
-  report labels its fixes `planned`. `-wordlist lang=` must name a code `languagePrefixes`
-  has, or one language by name (CLI exit 2, UI 400). In `languagePrefixes` the first match
-  wins, so names that start like another language get their own code or an empty one
-  (`Esperanto`, `Frisian`, `Latino`, `Niederdeutsch`, `Romani`). Words are rebuilt across note syllables
-  (`~` is transparent, breaks and player markers end a line). Evidence levels in order:
-  reviewed spellings (`-words`, unique), song (the folder name and subfolder names uncut,
-  file names without the extension, fetched lyrics, own undamaged words; min 1, ratio 3;
-  a file tag such as `#MP3` is filled only from a whole file name of the same length), corpus of
-  the song's languages (min 2, ratio 5), word lists (unique), global corpus (weak if the song
-  has a language); an undecided level narrows the candidate pool for the next. Then `¿`/`¡`
-  by the line's `?`/`!` (Spanish only), bigram context, apostrophe split, the char n-gram
-  model (weak = suggestion only), and edge punctuation only if no letter forms a known
-  4-gram there (never an apostrophe: words with edge apostrophes/punctuation are corpus
-  forms of their own, `goin’`, `¡oh`). Words still left that are split by a hyphen
-  syllable (`l� - cher - lich`) are looked up joined, known words only (never the
-  spelling model: `j�ng - ste` would become `jängste` after `Angst`). Languages =
-  `#LANGUAGE` codes plus the detected one if it beats them by 0.5 nats/word; detection is
-  naive Bayes with Jelinek-Mercer smoothing against the whole corpus (add-one or Dirichlet
-  smoothing let a word missing from both corpora cost a big corpus more, so songs drifted
-  to the small Dutch corpus). lrclib lookups fall back to first artist + title without
-  `(…)`/`[…]`, then the title alone; titles and artists match with `utils.FoldString`, rune by rune (a U+FFFD
-  stands for one non-ASCII rune) and, without U+FFFD, also as whole folded keys (`Mø` = `Mo`,
-  `Straße` = `Strasse`; `й` ≠ `и`); old
-  "not found" cache entries (no `version` 2) are looked up again. Lookups take the run's ctx
-  (a cancel stops a request or a rate-limit wait; Run returns the ctx error right after the
-  lookup); an answer whose cache entry cannot be written is still used; a `-lyrics-cache`
-  inside `-s` is refused (CLI exit 2, UI 400: it would become a song folder). The mid-line case of a
-  repaired first letter follows the song's own lexicon (lyrics) before the corpus. The song's
-  own lexicon is built from its oldest copy in `originals/` if there is one (`oldestOriginal`),
-  so words an earlier run repaired are no evidence (a context-repaired `får` decided the
-  song's other `F�r` before the lyrics were asked). In `byContext` a candidate that alone
-  has the song's own bigrams wins over the corpus; otherwise they count twice next to it. It
-  comes first in `spell`
-  (`localSpellAt`: two distinct 5-gram windows support one letter, none another; counts and
-  4-grams of one song are noise, `très` made `dor�s` = `dorès`). An ASCII `'` in fetched
-  lyrics is read as the song's apostrophe (`songApostrophe`, default `’`).
-  Txts with a copy in `<out>/originals/` (repaired
-  before) are kept out of the corpus so repairs never become evidence. On songs.organized
-  (14,871 txts, 2026-11-20, txt-only copy): 1,203 damaged txts, 19,183 U+FFFD; 15,697 repaired
-  offline, 17,948 with `-lyrics` and the reviewed `Täterätätä`/`Määänner` (589 weak); no
-  file had NUL bytes.
 - check: `analyze` is a pure function over the parsed song and probed file info, so every
   rule is table-tested without ffmpeg. Findings are not `ops.Fail`s and don't change the
   exit code. Repeated tags resolve like UltraStar does (the last header occurrence wins;
@@ -374,10 +315,8 @@ Same exit codes and leftover-argument rule.
   from the library, read-only). Apply runs `organize.Run` for real with a `Review` hook that
   compares the new plan with the reviewed one (`organize.PlanDiff`: action, target, keeper per
   `Ref`) and stops before the first move if they differ (the analysis then holds the new plan).
-  `organize.Options` and `repairtxt.Options` have `Ctx` (checked before each inspection/move,
-  scan/plan/lyrics/write; a run stopped during the moves is journaled, a parked song is moved
-  out of its temporary name) and `Progress`. Repair choices are `-words` sections named by the
-  song folder (`forSong` matches the folder name). `fsops.Stats` has JSON names (the UI reads
+  `organize.Options` has `Ctx` (checked before each inspection and move; a run stopped during the moves is journaled, a parked song is moved
+  out of its temporary name) and `Progress`. `fsops.Stats` has JSON names (the UI reads
   them). The start URL's token works once (a signed-in browser opening it again is only
   redirected); the cookie is `lm_session_<port>`, as browsers share cookies across ports.
   Only the newest analysis of each kind is kept. Every job handler starts its job with
@@ -386,9 +325,7 @@ Same exit codes and leftover-argument rule.
   with each log event and resume from `Last-Event-ID`; `Server.Close` ends them (before
   `http.Server.Shutdown`; each sends the final job state first). `ui` stops on SIGINT, SIGTERM
   and SIGHUP, unless the signal was ignored at the start (`nohup`; `stopSignals`); `-addr` is checked
-  before listening (exit 2), a listen failure exits 1. The UI's words file is rewritten
-  (`writeChoices`): an earlier spelling that fits the same damaged word in that folder's
-  section is dropped. Tests: `webui/*_test.go` run the real server with `httptest` against temp libraries;
+  before listening (exit 2), a listen failure exits 1. Tests: `webui/*_test.go` run the real server with `httptest` against temp libraries;
   `ui_cmd_test.go` stubs `openBrowser` in `init` (no test may open a browser); `stopSignals`
   reads `signal.Ignored` through `signalIgnored`, because a test's `signal.Ignore` stays
   visible there after `signal.Reset`. `runSafely`
@@ -582,8 +519,8 @@ case-sensitive, it scans the top level only, picks a winner by listing order, an
 - [x] NFC-insensitive file references;
 - [x] non-UTF-8 file names reported.
 
-**Still open:** mojibake repair. The `U+FFFD` repair is **done** (2026-11) as the `repair`
-subcommand (`repairtxt`, tiers 1 and 3 below plus the library corpus, bigram context and
+**Still open:** mojibake repair. The `U+FFFD` repair was **done** (2026-11) as the `repair`
+subcommand, archived in `old/repair/` on 2026-11-21 (`repairtxt`, tiers 1 and 3 below plus the library corpus, bigram context and
 a char n-gram model, reviewed spellings with `-words`; no LLM pass). Still open there:
 UTF-8 sequences lost as a whole (several U+FFFD for one character; stretched singing such as
 `M���nner` = `Määänner` is one per character and works), non-Latin scripts (Korean CP949),
