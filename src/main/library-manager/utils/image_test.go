@@ -193,10 +193,12 @@ func TestReadImageHeaderFFmpeg(t *testing.T) {
 		w, h                int
 		format              string
 	}{
-		{"a.bmp", "color=c=red:s=301x203", "bgr24", nil, 301, 203, "bmp"},
+		// ",format=rgb24": without a format filter, the color source of ffmpeg 6.1 makes
+		// yuv420p frames and rounds odd sizes down to even ones (301x203 became 300x202).
+		{"a.bmp", "color=c=red:s=301x203,format=rgb24", "bgr24", nil, 301, 203, "bmp"},
 		{"b.bmp", "color=c=red:s=64x48", "pal8", nil, 64, 48, "bmp"},
-		{"lossy.webp", "color=c=red:s=301x203", "yuv420p", []string{"-c:v", "libwebp"}, 301, 203, "webp"},
-		{"lossless.webp", "color=c=red:s=1921x1081", "", []string{"-c:v", "libwebp", "-lossless", "1"}, 1921, 1081, "webp"},
+		{"lossy.webp", "color=c=red:s=301x203,format=rgb24", "yuv420p", []string{"-c:v", "libwebp"}, 301, 203, "webp"},
+		{"lossless.webp", "color=c=red:s=1921x1081,format=rgb24", "", []string{"-c:v", "libwebp", "-lossless", "1"}, 1921, 1081, "webp"},
 		// Several different frames make libwebp_anim write an extended (VP8X) file.
 		{"anim.webp", "testsrc=s=641x361:r=5", "", []string{"-frames:v", "3", "-c:v", "libwebp_anim"}, 641, 361, "webp"},
 		{"c.tiff", "color=c=red:s=10x10", "rgb24", nil, 0, 0, "tiff"},
