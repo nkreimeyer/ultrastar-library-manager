@@ -6,6 +6,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/nkreimeyer/library-manager/fsops"
 )
 
 // mkdirs creates root/<rel> for every rel and returns root.
@@ -326,7 +329,8 @@ func TestNewRejectsDanglingSymlinkOutDir(t *testing.T) {
 	}
 }
 
-// PrepareOutDir removes only stale temp files of reports/the journal, directly in the out dir.
+// PrepareOutDir removes only stale temp files of reports/the journal (named as WriteReport
+// names them, older than fsops.StaleCacheTemp), directly in the out dir.
 func TestPrepareOutDirRemovesOnlyStaleTempFiles(t *testing.T) {
 	root := mkdirs(t, "songs", "out/sub")
 	cfg, err := New(filepath.Join(root, "songs"), filepath.Join(root, "out"), false)
@@ -334,15 +338,25 @@ func TestPrepareOutDirRemovesOnlyStaleTempFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := filepath.Join(cfg.OutDir, ".report.txt.123.tmp")
+	fresh := filepath.Join(cfg.OutDir, ".check_report.json.456.tmp") // maybe another run's write
 	keep := []string{
+		fresh,
 		filepath.Join(cfg.OutDir, "report.txt"),
 		filepath.Join(cfg.OutDir, "media-journal.txt"),
-		filepath.Join(cfg.OutDir, "notes.tmp"), // not hidden: not one of ours
-		filepath.Join(cfg.OutDir, "sub", ".x.tmp"),
+		filepath.Join(cfg.OutDir, "notes.tmp"),  // not hidden: not one of ours
+		filepath.Join(cfg.OutDir, ".notes.tmp"), // a user's file: no random part
+		filepath.Join(cfg.OutDir, ".x.abc.tmp"), // the random part is digits only
+		filepath.Join(cfg.OutDir, "sub", ".x.123.tmp"),
 	}
+	old := time.Now().Add(-2 * fsops.StaleCacheTemp)
 	for _, f := range append([]string{stale}, keep...) {
 		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
+		}
+		if f != fresh {
+			if err := os.Chtimes(f, old, old); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	if err := cfg.PrepareOutDir(); err != nil {

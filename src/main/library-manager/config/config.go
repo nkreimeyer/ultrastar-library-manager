@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/nkreimeyer/library-manager/fsops"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -134,12 +135,8 @@ func (c Config) PrepareOutDir() error {
 	if err := os.MkdirAll(c.OutDir, 0o755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
-	// Remove temp files of reports/journal left behind by an interrupted run.
-	if stale, err := filepath.Glob(filepath.Join(c.OutDir, ".*.tmp")); err == nil {
-		for _, f := range stale {
-			os.Remove(f)
-		}
-	}
+	// Remove temp files of reports/the journal left behind by an interrupted run.
+	fsops.RemoveStaleReportTemps(c.OutDir)
 	marker := filepath.Join(c.OutDir, OutputMarker)
 	if err := os.WriteFile(marker, []byte("Output folder of library-manager. Song folder discovery skips folders containing this file.\n"), 0o644); err != nil {
 		return fmt.Errorf("creating %s: %w", marker, err)

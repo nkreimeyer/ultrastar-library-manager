@@ -170,7 +170,7 @@ func (o *Ops) WriteFileAtomic(path string, data []byte) (bool, error) {
 		return true, nil
 	}
 
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+tempBase(filepath.Base(path))+".*.tmp")
+	tmp, err := os.CreateTemp(filepath.Dir(path), tempPattern(filepath.Base(path)))
 	if err != nil {
 		return false, o.fail(fmt.Errorf("creating temp file for %s: %w", path, err))
 	}
@@ -235,7 +235,7 @@ func (o *Ops) WriteReport(path string, data []byte) error {
 	}
 	// Write atomically (temp file + rename): a crash must not truncate a report or the
 	// media journal.
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+tempBase(filepath.Base(path))+".*.tmp")
+	tmp, err := os.CreateTemp(filepath.Dir(path), tempPattern(filepath.Base(path)))
 	if err != nil {
 		return o.fail(fmt.Errorf("writing report %s: %w", path, err))
 	}
@@ -325,6 +325,65 @@ func removeCacheTemps(path string, before time.Time) {
 			log.Debugf("Removed the leftover cache temp file %s", filepath.Join(dir, name))
 		}
 	}
+}
+
+// RemoveStaleReportTemps removes, directly in the output folder dir, the temp files that
+// WriteReport (and so WriteJSONReport and the media journal's Save) leaves behind when a
+// run is killed between creating and renaming them: "." + name + "." + <digits> + ".tmp",
+// the names os.CreateTemp gives them, last modified more than StaleCacheTemp ago (a younger
+// one may belong to a report another process is writing into the same folder right now).
+// Nothing else is touched: a user's ".notes.tmp" or a temp file in a subfolder stays.
+// It runs in a dry run too, like the report writes it cleans up after. Each removal is
+// logged; errors are only logged, because a leftover temp file is clutter, not a failure.
+func RemoveStaleReportTemps(dir string) {
+	removeReportTemps(dir, time.Now().Add(-StaleCacheTemp))
+}
+
+// removeReportTemps is RemoveStaleReportTemps with the cut-off time as a parameter.
+func removeReportTemps(dir string, before time.Time) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !isReportTempName(name) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || !info.Mode().IsRegular() || !info.ModTime().Before(before) {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			log.Warnf("Cannot remove the leftover temp file %s: %v", path, err)
+		} else if err == nil {
+			log.Infof("Removed the leftover temp file %s of an interrupted run", path)
+		}
+	}
+}
+
+// isReportTempName reports whether name has the shape of a WriteReport temp name:
+// "." + a non-empty file name + "." + the decimal random part of os.CreateTemp + ".tmp".
+func isReportTempName(name string) bool {
+	rest, ok := strings.CutPrefix(name, ".")
+	if !ok {
+		return false
+	}
+	rest, ok = strings.CutSuffix(rest, ".tmp")
+	if !ok {
+		return false
+	}
+	dot := strings.LastIndexByte(rest, '.')
+	if dot <= 0 || dot == len(rest)-1 {
+		return false
+	}
+	for _, r := range rest[dot+1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // RemoveEmptyDirWithCache is RemoveEmptyDir for a folder that may also hold the scan cache
@@ -961,6 +1020,11 @@ func TempFileNear(target, ext string) (string, error) {
 // rest of the temp name (".", ".<random>.tmp", ".sanitizer-<random>.mp4") then always fits
 // NAME_MAX (255 bytes on ext4 and most other file systems), even for a name close to it.
 const maxTempBase = 100
+
+// tempPattern is the os.CreateTemp pattern of the temp file WriteFileAtomic and WriteReport
+// write before renaming it over the file named name: "." + name + "." + <digits> + ".tmp"
+// (isReportTempName recognizes them).
+func tempPattern(name string) string { return "." + tempBase(name) + ".*.tmp" }
 
 // tempBase returns name cut to at most maxTempBase bytes, at a rune boundary, for use in a
 // temp name: the temp file keeps a recognizable name without growing past NAME_MAX.

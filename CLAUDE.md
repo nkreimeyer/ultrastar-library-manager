@@ -33,6 +33,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   fsops/                      the ONLY place that modifies files: dry-run (planned writes/moves visible via ReadFile), atomic writes, moves, stats;
                               planned.go: Stats.Sub, PlannedWrites/PlannedMoves (a dry run's list, for the UI review);
                               MoveTo (exact target, ordered dry-run moves), AppendJournal, RemoveEmptyDir (undo),
+                              RemoveStaleReportTemps (PrepareOutDir: own .<name>.<digits>.tmp report/journal temps in the
+                              out dir, older than StaleCacheTemp, logged),
                               RemoveEmptyDirWithCache (undo of a created library root),
                               WriteJSONReport/MarshalReport (the one JSON report encoding), WriteCacheFile (the media
                               cache: atomic, also in a dry run, not in Stats, sweeps stale own temps), FailUnreadable (the
