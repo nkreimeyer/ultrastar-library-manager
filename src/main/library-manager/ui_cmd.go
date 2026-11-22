@@ -38,6 +38,9 @@ var openBrowser = func(url string) error {
 	return nil
 }
 
+// listen opens the UI's listener; a variable so tests can make the server stop by itself.
+var listen = net.Listen
+
 // stopSignals are the signals that stop the UI: Ctrl-C, SIGTERM and SIGHUP (the terminal
 // window was closed). A signal the program was started with ignored stays ignored: Notify
 // would install a handler, and "nohup library-manager ui &" would stop at the logout.
@@ -100,7 +103,7 @@ func runUI(args []string, output io.Writer, noArgs bool) int {
 		fmt.Fprintf(output, "invalid -addr %q: %v\n", *addr, err)
 		return exitUsage
 	}
-	ln, err := net.Listen("tcp", *addr) // fails e.g. if the port is in use: not a usage error
+	ln, err := listen("tcp", *addr) // fails e.g. if the port is in use: not a usage error
 	if err != nil {
 		log.Errorf("Cannot listen on %s: %v", *addr, err)
 		return exitFailures

@@ -136,7 +136,7 @@ func RunWith(cfg config.Config, ops *fsops.Ops, opts Options) error {
 			log.Errorf("fixaudio: %s not finished: internal error (logged above)", folders[i])
 			ops.Fail()
 		},
-	}, func(_ int, folder string) { p.processFolder(folder) })
+	}, func(_ int, folder string) { folderProcessor(p, folder) })
 
 	if err := j.Save(ops); err != nil {
 		log.Errorf("Saving media journal: %v", err) // counted by ops
@@ -153,6 +153,9 @@ func RunWith(cfg config.Config, ops *fsops.Ops, opts Options) error {
 	log.Infof("All audio files have been processed.")
 	return nil
 }
+
+// folderProcessor is what RunWith runs per folder; a variable so tests can make it panic.
+var folderProcessor = (*processor).processFolder
 
 // processor holds the state of one run. It is safe for concurrent use.
 type processor struct {

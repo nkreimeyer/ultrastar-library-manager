@@ -85,6 +85,9 @@ type checker struct {
 	checked int
 }
 
+// folderInspector is what Run runs per folder; a variable so tests can make it panic.
+var folderInspector = (*Inspector).Inspect
+
 // Run checks every song folder below cfg.SongDir and writes the reports. It returns an
 // error only if the library cannot be listed or a report cannot be written; findings are
 // not failures. A panic while checking one folder is logged and counted as a failure (the
@@ -110,7 +113,7 @@ func Run(cfg config.Config, ops *fsops.Ops, opts Options) error {
 			ops.Fail()
 		},
 	}, func(_ int, folder string) {
-		res, err := insp.Inspect(folder)
+		res, err := folderInspector(insp, folder)
 		if err != nil {
 			return // logged and counted by Inspect
 		}

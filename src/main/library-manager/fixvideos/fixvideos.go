@@ -155,6 +155,9 @@ type Options struct {
 // progress (see RunWith).
 func Run(cfg config.Config, ops *fsops.Ops) error { return RunWith(cfg, ops, Options{}) }
 
+// videoProcessor is what RunWith runs per video; a variable so tests can make it panic.
+var videoProcessor = (*processor).processVideoFile
+
 // RunWith processes the videos of all song folders below cfg.SongDir with a pool of
 // workers, then writes the corrupted-files report and the media journal. A panic while
 // processing one video is logged and counted as a failure, and the other videos are still
@@ -203,7 +206,7 @@ func RunWith(cfg config.Config, ops *fsops.Ops, opts Options) error {
 			log.Errorf("fixvideos: %s not finished: internal error (logged above)", videos[i])
 			ops.Fail()
 		},
-	}, func(_ int, file string) { p.processVideoFile(filepath.Dir(file), file) })
+	}, func(_ int, file string) { videoProcessor(p, filepath.Dir(file), file) })
 
 	// The pool only reports videos it never started; a video stopped at a probe counts
 	// too.
@@ -656,7 +659,8 @@ func (p *processor) replaceOriginal(dir, file, tmp string, pl encodePlan) {
 
 	p.rememberProcessed(newPath)
 
-	// If this fails, the unreferenced original is moved to extra-files by the next cleanup.
+	// If this fails (ops.Remove counts it as a failure), the unreferenced original is moved
+	// to extra-files by the next cleanup.
 	if err := p.ops.Remove(file); err != nil {
 		log.Errorf("Deleting the original video: %v", err)
 	}

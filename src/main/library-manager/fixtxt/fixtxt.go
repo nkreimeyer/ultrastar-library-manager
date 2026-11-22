@@ -174,7 +174,7 @@ func RunWith(cfg config.Config, ops *fsops.Ops, opts Options) error {
 			log.Errorf("fixtxt: %s not finished: internal error (logged above)", folders[i])
 			ops.Fail()
 		},
-	}, func(_ int, folder string) { handleFolder(cfg, ops, col, opts, folder) })
+	}, func(_ int, folder string) { folderHandler(cfg, ops, col, opts, folder) })
 	if err != nil {
 		log.Warnf("fixtxt stopped: %v (reports not written)", err)
 		return err
@@ -224,6 +224,9 @@ func writeFilledReport(cfg config.Config, ops *fsops.Ops, lines []string) {
 	slices.Sort(lines)
 	writeReport(cfg, ops, filledTagsReport, slices.Compact(lines))
 }
+
+// folderHandler is what RunWith runs per folder; a variable so tests can make it panic.
+var folderHandler = handleFolder
 
 // handleFolder checks a song folder and fixes its song txt. Broken songs (no txt, neither
 // audio nor video, or no song txt) are moved to invalid/ as a whole (if opts.MoveBroken),

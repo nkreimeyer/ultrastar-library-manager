@@ -78,12 +78,15 @@ func RunWith(cfg config.Config, ops *fsops.Ops, opts Options) error {
 			log.Errorf("cleanup: %s not finished: internal error (logged above)", validEntries[i])
 			ops.Fail()
 		},
-	}, func(_ int, entry string) { cleanupDirectory(cfg, ops, entry) })
+	}, func(_ int, entry string) { directoryCleaner(cfg, ops, entry) })
 	if err != nil {
 		return fmt.Errorf("cleanup stopped: %w", err)
 	}
 	return nil
 }
+
+// directoryCleaner is what Run runs per folder; a variable so tests can make it panic.
+var directoryCleaner = cleanupDirectory
 
 // filterEntries moves folders with at most one visible entry to the invalid folder (only
 // if moveBroken is set; otherwise they stay and are returned like the others) and returns

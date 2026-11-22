@@ -12,6 +12,15 @@ type presence struct {
 	open int
 	seen bool      // a page was open at some time
 	last time.Time // when the last page went away
+
+	now func() time.Time // the clock; nil = time.Now (tests set a fake one)
+}
+
+func (p *presence) clock() time.Time {
+	if p.now != nil {
+		return p.now()
+	}
+	return time.Now()
 }
 
 func (p *presence) opened() {
@@ -24,7 +33,7 @@ func (p *presence) opened() {
 func (p *presence) closed() {
 	p.mu.Lock()
 	p.open--
-	p.last = time.Now()
+	p.last = p.clock()
 	p.mu.Unlock()
 }
 
@@ -40,7 +49,7 @@ func (p *presence) gone(grace time.Duration, since time.Time) bool {
 	if since.After(at) {
 		at = since
 	}
-	return time.Since(at) >= grace
+	return p.clock().Sub(at) >= grace
 }
 
 // idleSince reports whether a job runs, and when the last one ended (zero if none did).
@@ -51,6 +60,13 @@ func (r *jobRunner) idleSince() (running bool, ended time.Time) {
 		return false, time.Time{}
 	}
 	return r.cur.State == stateRunning, r.cur.Ended
+}
+
+// clientsGone is one look of the watch: no job runs and every page has been gone for grace
+// (a job that ended after the last page left starts the period over).
+func (s *Server) clientsGone(grace time.Duration) bool {
+	running, ended := s.jobs.idleSince()
+	return !running && s.presence.gone(grace, ended)
 }
 
 // WatchClients returns a channel that is closed when every page of the UI has been gone for
@@ -68,7 +84,7 @@ func (s *Server) WatchClients(grace time.Duration) <-chan struct{} {
 			case <-s.closed:
 				return
 			case <-tick.C:
-				if running, ended := s.jobs.idleSince(); !running && s.presence.gone(grace, ended) {
+				if s.clientsGone(grace) {
 					close(gone)
 					return
 				}

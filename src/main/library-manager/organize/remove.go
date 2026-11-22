@@ -211,6 +211,9 @@ func noTagsSong(lib, folder string) removeSong {
 	return removeSong{Folder: folder, Rel: filepath.ToSlash(rel), NoTags: true}
 }
 
+// readSong reads one song folder's tags; a variable so tests can make it panic.
+var readSong = readRemoveSong
+
 // readRemoveSong reads the tags of one song folder. A missing #ARTIST or #TITLE is taken
 // from an obvious "Artist - Title" folder name, so a library that was not sanitized yet
 // can be cleaned too.
@@ -304,7 +307,7 @@ func RemoveWith(cfg config.OrganizeConfig, ops *fsops.Ops, patterns []Pattern, o
 			ops.Fail()
 			songs[i] = noTagsSong(cfg.Library, folders[i])
 		},
-	}, func(i int, folder string) { songs[i] = readRemoveSong(ops, cfg.Library, folder) })
+	}, func(i int, folder string) { songs[i] = readSong(ops, cfg.Library, folder) })
 	// Also after a stop during the last folders: nothing is moved.
 	if err := ctx.Err(); err != nil {
 		log.Warnf("Remove: stopped while reading the songs; nothing was moved")

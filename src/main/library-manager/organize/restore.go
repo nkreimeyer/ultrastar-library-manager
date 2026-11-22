@@ -212,7 +212,7 @@ func listSongFolders(ops *fsops.Ops, section, dir string, names bool) ([]SetAsid
 		_ = utils.ForEachParallel(context.Background(), folders, utils.Parallel{
 			Workers: workers,
 			OnPanic: func(i int, _ any) { songs[i] = noTagsSong(dir, folders[i]) },
-		}, func(i int, folder string) { songs[i] = readRemoveSong(ops, dir, folder) })
+		}, func(i int, folder string) { songs[i] = readSong(ops, dir, folder) })
 	}
 	items := make([]SetAsideItem, len(songs))
 	for i, s := range songs {
