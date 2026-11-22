@@ -145,6 +145,11 @@ Same exit codes and leftover-argument rule.
 
 ### Rules for working on the code
 
+- **Update `CHANGELOG.md` in every commit that changes something a user can see** (new or changed
+  flags, subcommands, UI behaviour, output, fixed bugs). Add one short line under `## [Unreleased]` in
+  the matching Keep a Changelog group (Added, Changed, Deprecated, Removed, Fixed, Security). Pure
+  refactors, tests, CI and docs-only commits need no entry. A release moves `[Unreleased]` to a
+  dated version heading.
 - **All library modifications go through `fsops.Ops`** (`WriteFileAtomic`, `MoveInto`,
   `MoveTo`, `Rename`, `Replace`, `Remove`, `RemoveEmptyDir`, `PlanReplace`). Never call `os.Rename/Remove/WriteFile/Create`
   on library paths. The only exception is removing your own `fsops.TempFileNear` file after

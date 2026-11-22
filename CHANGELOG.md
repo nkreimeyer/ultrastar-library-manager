@@ -1,0 +1,54 @@
+# Changelog
+
+All notable user-visible changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- MIT license.
+
+## [0.2.0] - 2026-11-22
+
+### Added
+
+- Browser UI (`ui` subcommand, also started when the program is launched without arguments) with an easy and an advanced mode, a library overview and a "Tidy up my library" task.
+- Starting the program by double-click opens its own terminal window; the UI stops when the last browser tab is closed.
+- Hidden per-library scan cache for media probes, so repeated runs skip unchanged files (`-no-cache` turns it off).
+- `organize`, `dedupe`, `add` and `remove` subcommands with a journal and `-undo`; duplicates are found by content and by similar charts, not only by name.
+- ffmpeg/ffprobe detection with a version check.
+
+### Changed
+
+- The program is now called `library-manager` (was `songs-sanitizer`).
+- Tidy-up lists folders without a song apart from broken songs.
+
+### Fixed
+
+- Moves to another drive on Windows.
+- fixvideos keeps the original when the processed video changed length.
+- Processed media is fsynced before it replaces the original.
+- fixaudio and fixvideos never process symlinked media.
+- organize moves a library song back when its keeper does not arrive, and retries a run whose undo failed.
+- A repeated header tag resolves to its last occurrence everywhere.
+
+## [0.1.1] - 2026-11-21
+
+### Fixed
+
+- CI: GitLab jobs run only on runners tagged `docker`.
+
+## [0.1.0] - 2026-11-21
+
+### Added
+
+- Modules fixtxt, cleanup, check (`-k`), fixvideos (`-m`) and fixaudio (`-a`) with dry run (`-n`), one output folder and nothing deleted.
+- Release builds for Linux, Windows and macOS.
+
+[Unreleased]: https://github.com/nkreimeyer/library-manager/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/nkreimeyer/library-manager/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/nkreimeyer/library-manager/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/nkreimeyer/library-manager/releases/tag/v0.1.0
