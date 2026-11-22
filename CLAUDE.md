@@ -208,7 +208,7 @@ Same exit codes and leftover-argument rule.
   check).
 - Mutation testing (`~/go/bin/gremlins`): always run it inside a memory cgroup, one package at
   a time: `systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 -p OOMPolicy=continue
-  gremlins unleash --workers 2 --timeout-coefficient 30 ./<pkg>` (80 for fixvideos; the root
+  gremlins unleash --workers 4 --timeout-coefficient 30 ./<pkg>` (80 for fixvideos; the root
   package with `-E '^[a-z]+/' .`). Some mutants (e.g. in `utils.utf8Sequences`) become endless
   allocating loops that OOM the machine otherwise. Never pass `--test-cpu`: it makes every
   mutant count as KILLED. Don't use `-D <ref>` either: the diff paths are relative to the repo
