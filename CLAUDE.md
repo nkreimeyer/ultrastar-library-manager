@@ -266,7 +266,8 @@ Same exit codes and leftover-argument rule.
   If that delete fails, the move still counts as done and the leftover is logged.
   `Replace` and `Rename` fsync the (ffmpeg-written) file before the rename and keep the
   original if that fails; the folder fsync after it is best effort (none on Windows).
-  `AppendJournal` starts a new line after a crash-truncated last line. Collision names keep
+  `MoveTo` fails when src or dst cannot be checked (`taken`'s error; a dst that may exist is
+  never renamed onto). `AppendJournal` starts a new line after a crash-truncated last line. Collision names keep
   dotfiles intact (`.DS_Store (2)`). Temp names keep only the first 100 bytes of the file
   name (`tempBase`), so they stay within NAME_MAX. Real-run copies, renames and removals are
   logged at Info, `Replace` at Debug (fixaudio/fixvideos log their own result); writes are
@@ -333,15 +334,20 @@ Same exit codes and leftover-argument rule.
   first (`MoveInto`), then library moves with `MoveTo` in `orderMoves` order (targets freed
   first, cycles and self-nesting through a hidden `.organize-tmp-*` name); right before each
   library move the bucket is checked again (an earlier move away of a song folder named like
-  the bucket may have failed). The journal (`organize-journal.jsonl`: `run`, `mkdir`,
+  the bucket may have failed). The journal (`organize-journal.jsonl`: `run` (with the run's `library`), `mkdir`,
   `move`, `reverted`, `undone`) is appended and fsynced per entry, only in real runs; a journal write
-  failure stops all further moves, and a song parked under the temporary name is moved back
+  failure stops all further moves and all further records (`journalMove` refuses once one
+  failed: a gap could make undo park a song again), and a song parked under the temporary name is moved back
   (or, if its place is taken, to its target) so it never stays hidden. After the library
   moves, `restoreLibraryLosers` moves library duplicates (in dedupe/add also broken library
   songs) whose keeper from another source did not arrive (failed, refused, stopped) back,
   journaled (report outcome `moved back`). `-undo` walks the
   newest not-undone run backwards; a run is only recorded `undone` if no retryable move
-  failed (a move whose source and target are both gone does not block) and it was not
+  failed (a move whose source and target are both gone does not block; a path that cannot be
+  checked, `ops.ExistsErr`, is a failure, not gone; an origin outside the library and the out dir
+  whose parent folder is gone is refused like Restore's `blockedNoFolder`, `goneOriginFolder`; without
+  `-l` the library comes from the run line's `library`, and a journal of an older version without
+  it recreates every gone folder, as before) and it was not
   stopped (`UndoOptions.Ctx`, checked before each entry but never while a song is at a
   `.organize-tmp-*` name). Each move back is journaled as `reverted` (entry number in the
   run, 1-based), and a retry skips those entries: the paths cannot tell, since both exist

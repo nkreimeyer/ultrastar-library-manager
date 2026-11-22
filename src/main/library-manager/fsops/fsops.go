@@ -514,17 +514,23 @@ func (o *Ops) MoveInto(src, dstDir, relPath string) (string, error) {
 // temporary name), but files below such a refilled path are not simulated.
 func (o *Ops) MoveTo(src, dst string) error {
 	src, dst = filepath.Clean(src), filepath.Clean(dst)
-	if !o.exists(src) {
+	if there, err := o.taken(src); err != nil {
+		return o.fail(fmt.Errorf("moving %s -> %s: %w", src, dst, err))
+	} else if !there {
 		return o.fail(fmt.Errorf("moving %s -> %s: %w", src, dst, fs.ErrNotExist))
 	}
 	o.reserveMu.Lock()
-	switch {
-	case o.reserved[dst]:
+	if o.reserved[dst] {
 		o.reserveMu.Unlock()
 		return o.fail(fmt.Errorf("moving %s -> %s: target is reserved by another move", src, dst))
-	case o.exists(dst):
+	}
+	// A target that cannot be checked (EACCES, EIO) may exist: a rename would replace it.
+	if there, err := o.taken(dst); err != nil || there {
 		o.reserveMu.Unlock()
-		return o.fail(fmt.Errorf("moving %s -> %s: target exists", src, dst))
+		if err == nil {
+			err = errors.New("target exists")
+		}
+		return o.fail(fmt.Errorf("moving %s -> %s: %w", src, dst, err))
 	}
 	o.reserved[dst] = true
 	o.reserveMu.Unlock()
@@ -569,7 +575,7 @@ func (o *Ops) taken(path string) (bool, error) {
 			return false, nil
 		}
 	}
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+	if _, err := lstatTaken(path); errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	} else if err != nil {
 		return false, fmt.Errorf("checking %s: %w", path, err)
@@ -951,6 +957,12 @@ func (o *Ops) Exists(path string) bool {
 	return o.exists(filepath.Clean(path))
 }
 
+// ExistsErr is Exists with the error of a check that cannot tell (EACCES, EIO, a parent
+// that is a file), which Exists reports as absent; a path that does not exist is no error.
+func (o *Ops) ExistsErr(path string) (bool, error) {
+	return o.taken(filepath.Clean(path))
+}
+
 // WouldBeMoved reports whether path or one of its parent folders was moved away by an
 // earlier MoveInto, MoveTo, merge or RemoveEmptyDir in dry-run mode. It is always false
 // outside dry-run mode, where moved paths simply no longer exist. A nil *Ops plans nothing.
@@ -1074,6 +1086,10 @@ func (o *Ops) release(path string) {
 	delete(o.reserved, path)
 	o.reserveMu.Unlock()
 }
+
+// lstatTaken is os.Lstat for taken; tests replace it to simulate a check that fails (EIO)
+// on a path that exists.
+var lstatTaken = os.Lstat
 
 // rename is os.Rename; tests replace it to simulate a move across file systems (EXDEV).
 var rename = os.Rename

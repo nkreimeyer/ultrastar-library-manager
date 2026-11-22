@@ -629,7 +629,8 @@ func TestMoveToRealFailures(t *testing.T) {
 	file := filepath.Join(root, "file")
 	writeFile(t, file, "f", 0o644)
 	ops := New(false)
-	if err := ops.MoveTo(src, filepath.Join(file, "child", "A")); err == nil || !strings.Contains(err.Error(), "creating") {
+	// The target cannot be checked (ENOTDIR): it fails before anything is created.
+	if err := ops.MoveTo(src, filepath.Join(file, "child", "A")); err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Errorf("MoveTo below a file = %v", err)
 	}
 	if err := ops.MoveTo(src, filepath.Join(src, "sub")); err == nil {
@@ -1026,4 +1027,66 @@ func TestRenameSyncsFiles(t *testing.T) {
 func TestSyncDirIsBestEffort(t *testing.T) {
 	syncDir(filepath.Join(t.TempDir(), "missing")) // logs, never fails or panics
 	syncDir(t.TempDir())
+}
+
+// ExistsErr tells a path that is not there from one that cannot be checked, which Exists
+// reports as absent too.
+func TestExistsErr(t *testing.T) {
+	testutil.SkipIfRoot(t)
+	root := t.TempDir()
+	locked := filepath.Join(root, "locked")
+	if err := os.Mkdir(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	ops := New(false)
+	if there, err := ops.ExistsErr(filepath.Join(root, "missing")); there || err != nil {
+		t.Errorf("missing: %v, %v; want false, nil", there, err)
+	}
+	if there, err := ops.ExistsErr(locked); !there || err != nil {
+		t.Errorf("locked: %v, %v; want true, nil", there, err)
+	}
+	if there, err := ops.ExistsErr(filepath.Join(locked, "x")); there || err == nil {
+		t.Errorf("below locked: %v, %v; want false and an error", there, err)
+	}
+	if err := ops.MoveTo(locked, filepath.Join(locked, "x", "y")); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("MoveTo to an unchecked target = %v", err)
+	}
+}
+
+// A target whose check fails (EIO on a share) may exist: MoveTo does not rename onto it,
+// which would replace it.
+func TestMoveToUncheckableTarget(t *testing.T) {
+	root := t.TempDir()
+	src, dst := filepath.Join(root, "src"), filepath.Join(root, "dst")
+	writeFile(t, src, "new", 0o644)
+	writeFile(t, dst, "old", 0o644)
+	orig := lstatTaken
+	t.Cleanup(func() { lstatTaken = orig })
+	lstatTaken = func(p string) (os.FileInfo, error) {
+		if p == dst {
+			return nil, &fs.PathError{Op: "lstat", Path: p, Err: syscall.EIO}
+		}
+		return orig(p)
+	}
+	ops := New(false)
+	if err := ops.MoveTo(src, dst); err == nil || !errors.Is(err, syscall.EIO) {
+		t.Errorf("MoveTo = %v, want the EIO", err)
+	}
+	if data, _ := os.ReadFile(dst); string(data) != "old" {
+		t.Errorf("target = %q: it was replaced", data)
+	}
+	// The source check fails the same way.
+	lstatTaken = func(p string) (os.FileInfo, error) {
+		if p == src {
+			return nil, &fs.PathError{Op: "lstat", Path: p, Err: syscall.EIO}
+		}
+		return orig(p)
+	}
+	if err := ops.MoveTo(src, filepath.Join(root, "other")); err == nil || !errors.Is(err, syscall.EIO) {
+		t.Errorf("MoveTo with an unchecked source = %v, want the EIO", err)
+	}
+	if st := ops.Stats(); st.Failed != 2 || st.Moved != 0 {
+		t.Errorf("stats = %+v", st)
+	}
 }

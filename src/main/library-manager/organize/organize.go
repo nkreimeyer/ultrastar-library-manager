@@ -517,7 +517,7 @@ type applier struct {
 }
 
 func newApplier(cfg config.OrganizeConfig, ops *fsops.Ops, cands []Candidate, outcomes map[int]moveOutcome) *applier {
-	return &applier{cfg: cfg, ops: ops, cands: cands, j: newJournal(ops, cfg.JournalPath()), outcomes: outcomes, moveTo: ops.MoveTo, freeBuckets: map[string]bool{},
+	return &applier{cfg: cfg, ops: ops, cands: cands, j: newJournal(ops, cfg.JournalPath(), cfg.Library), outcomes: outcomes, moveTo: ops.MoveTo, freeBuckets: map[string]bool{},
 		ctx: context.Background(), progress: func(string, int, int) {}}
 }
 
@@ -735,8 +735,14 @@ func missingDirs(dir string) []string {
 	return out
 }
 
-// journalMove records a completed move and reports whether that worked.
+// journalMove records a completed move and reports whether that worked. Once an append
+// failed nothing more is recorded: after a gap in the journal a later entry could make
+// -undo move a song to the wrong place (a move back of a park whose record is missing
+// would park the song again).
 func (a *applier) journalMove(src, dst string) bool {
+	if a.j.failed {
+		return false
+	}
 	if err := a.j.moved(src, dst); err != nil {
 		log.Errorf("Cannot record the move %s -> %s in the journal %s: %v; no further songs are moved", src, dst, a.cfg.JournalPath(), err)
 		return false
@@ -862,6 +868,14 @@ func Undo(cfg config.OrganizeConfig, ops *fsops.Ops, opts UndoOptions) error {
 		return nil
 	}
 	log.Infof("Undo: reverting run %s (%s), %d move(s)", r.ID, r.Time, r.moves())
+	// The library tells a folder of the library (recreated if gone) from one of a source
+	// (not recreated: it may be on an unplugged drive). Given only the output folder, the
+	// run line names it; a journal of an older version does not, and then every folder is
+	// recreated, as before.
+	library := cfg.Library
+	if library == "" {
+		library = r.Library
+	}
 	reverted, already, gone, failed := 0, 0, 0, 0
 	// parked holds the temporary names a song is at: a cycle of the run is half undone.
 	parked := map[string]bool{}
@@ -884,8 +898,22 @@ func Undo(cfg config.OrganizeConfig, ops *fsops.Ops, opts UndoOptions) error {
 			already++
 			return
 		}
-		if !ops.Exists(e.Dst) {
-			if ops.Exists(e.Src) {
+		dstThere, dstErr := ops.ExistsErr(e.Dst)
+		srcThere, srcErr := ops.ExistsErr(e.Src)
+		if dstErr != nil || (!dstThere && srcErr != nil) {
+			err := dstErr
+			if err == nil {
+				err = srcErr
+			}
+			// Not "gone": a check that cannot tell (a NAS dropping out, missing permissions)
+			// may succeed on a retry, so the run must not be recorded as undone.
+			log.Errorf("Undo: cannot move %s back to %s: %v", e.Dst, e.Src, err)
+			ops.Fail()
+			failed++
+			return
+		}
+		if !dstThere {
+			if srcThere {
 				// Moved back by an earlier undo whose record was lost.
 				log.Debugf("Undo: %s is back at %s already", e.Dst, e.Src)
 				already++
@@ -896,6 +924,14 @@ func Undo(cfg config.OrganizeConfig, ops *fsops.Ops, opts UndoOptions) error {
 			log.Errorf("Undo: cannot move %s back to %s: it is gone", e.Dst, e.Src)
 			ops.Fail()
 			gone++
+			return
+		}
+		if parent, gone := goneOriginFolder(library, cfg.OutDir, ops, e.Src); library != "" && gone {
+			// An unplugged drive or an unmounted share: MoveTo would create a fresh tree
+			// there, on the wrong file system. Retryable once the folder is back.
+			log.Errorf("Undo: cannot move %s back to %s: its old folder %s does not exist any more (an unplugged drive or an unmounted share?); connect it or create the folder and run the undo again", e.Dst, e.Src, parent)
+			ops.Fail()
+			failed++
 			return
 		}
 		if err := ops.MoveTo(e.Dst, e.Src); err != nil {

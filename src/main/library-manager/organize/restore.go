@@ -110,6 +110,9 @@ func origin(cfg config.OrganizeConfig, journal map[string]string, section, rel s
 	}
 	switch section {
 	case SectionExtraFiles, SectionInvalid:
+		if cfg.Library == "" {
+			return "", false // a guess needs the library (else rel would be relative to the CWD)
+		}
 		return filepath.Join(cfg.Library, rel), false
 	}
 	return "", false
@@ -118,17 +121,29 @@ func origin(cfg config.OrganizeConfig, journal map[string]string, section, rel s
 // blocked returns why origin cannot take the item now ("" = it can).
 func blocked(cfg config.OrganizeConfig, ops *fsops.Ops, origin string) string {
 	switch {
-	case origin == "":
+	case origin == "" || !filepath.IsAbs(origin): // a relative one would be below the CWD
 		return blockedUnknown
 	case config.IsWithin(origin, cfg.OutDir):
 		return blockedOutside
 	case ops.Exists(origin):
 		return blockedInTheWay
 	}
-	if parent := filepath.Dir(origin); !config.IsWithin(origin, cfg.Library) && !ops.Exists(parent) {
+	if parent, gone := goneOriginFolder(cfg.Library, cfg.OutDir, ops, origin); gone {
 		return fmt.Sprintf(blockedNoFolder, parent)
 	}
 	return ""
+}
+
+// goneOriginFolder returns the parent of origin, and true if putting something back to
+// origin would create a fresh tree outside library ("" = unknown) and outDir: the parent
+// is gone (an unplugged drive, an unmounted share), and MkdirAll would recreate it on the
+// wrong file system. Restore and Undo refuse such a move.
+func goneOriginFolder(library, outDir string, ops *fsops.Ops, origin string) (string, bool) {
+	parent := filepath.Dir(origin)
+	if (library != "" && config.IsWithin(origin, library)) || config.IsWithin(origin, outDir) || ops.Exists(parent) {
+		return "", false
+	}
+	return parent, true
 }
 
 func validSection(section string) bool {
@@ -249,7 +264,7 @@ func Restore(cfg config.OrganizeConfig, ops *fsops.Ops, refs []RestoreRef, opts 
 	if err != nil {
 		return err
 	}
-	j := newJournal(ops, cfg.JournalPath())
+	j := newJournal(ops, cfg.JournalPath(), cfg.Library)
 	restored := 0
 	for n, ref := range refs {
 		if err := ctx.Err(); err != nil {

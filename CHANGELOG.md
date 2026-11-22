@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - cleanup no longer moves a song's audio (or video) to `extra-files/` when its `#MP3`/`#AUDIO` (`#VIDEO`) tag names a file of the other kind, e.g. `#MP3:clip.mp4` next to the takes fixtxt asks you to choose from, or the `#VOCALS`/`#INSTRUMENTAL` stem.
 - fixtxt corrects an `#MP3`/`#AUDIO` that names the `#VOCALS`/`#INSTRUMENTAL` stem to the song's full mix (or reports it if there are several), instead of keeping it so that the song played only the vocals.
 - The media cache now stores results for files whose path, title or other tags contain words like "Timed Out", "Broken Pipe" or "Permission Denied"; before, they were taken for read errors and probed again on every run.
+- `-undo`: a song in a folder that cannot be read at the moment (missing permissions, a NAS dropping out) is no longer taken as gone; the undo counts a failure, does not record the run as undone, and a retry moves it back.
+- `-undo` no longer puts a song back into a newly created folder when its old source folder outside the library is gone (an unplugged drive, an unmounted share); it reports the folder and can be run again once it is back. Folders of the library itself are still created again, also for an undo given only `-o`.
+- organize: after a journal write failed once, nothing more is recorded (before, a later entry could make `-undo` hide a song under a temporary name again).
+- Moving a song onto a target that cannot be checked (a read error on a share) is refused instead of possibly replacing what is there.
+- UI: without a library, items in `extra-files/` and `invalid/` are shown with an unknown origin instead of being put back into the program's working folder.
 
 ## [0.2.2] - 2026-11-22
 

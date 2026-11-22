@@ -52,6 +52,9 @@ type journalEntry struct {
 	Dst  string `json:"dst,omitempty"`
 	// Entry is the number of the entry a "reverted" line names (1-based).
 	Entry int `json:"entry,omitempty"`
+	// Library is the library of the run ("run" lines; empty in journals of older versions
+	// and for a run without one): an undo given only the output folder knows it from here.
+	Library string `json:"library,omitempty"`
 }
 
 // runCounter makes run ids unique within a process even if the clock does not advance.
@@ -69,14 +72,15 @@ type journal struct {
 	ops     *fsops.Ops
 	path    string
 	run     string
+	library string // recorded in the run line
 	started bool
 	failed  bool // an append failed: further moves must not run
 	// write appends one line (ops.AppendJournal; tests inject failures).
 	write func(path string, line []byte) error
 }
 
-func newJournal(ops *fsops.Ops, path string) *journal {
-	return &journal{ops: ops, path: path, run: newRunID(time.Now()), write: ops.AppendJournal}
+func newJournal(ops *fsops.Ops, path, library string) *journal {
+	return &journal{ops: ops, path: path, library: library, run: newRunID(time.Now()), write: ops.AppendJournal}
 }
 
 // begin writes the run line if it was not written yet. It must succeed before the first
@@ -85,7 +89,7 @@ func (j *journal) begin() error {
 	if j.started {
 		return nil
 	}
-	if err := j.append(journalEntry{Op: opRun, Run: j.run, Time: time.Now().UTC().Format(time.RFC3339)}); err != nil {
+	if err := j.append(journalEntry{Op: opRun, Run: j.run, Time: time.Now().UTC().Format(time.RFC3339), Library: j.library}); err != nil {
 		return err
 	}
 	j.started = true
@@ -125,6 +129,7 @@ func (j *journal) mkdir(dir string) error {
 type journalRun struct {
 	ID      string
 	Time    string
+	Library string // from the run line; "" if unknown
 	Entries []journalEntry
 	Undone  bool
 	// Reverted holds the numbers of the entries an undo moved back (1-based).
@@ -178,7 +183,8 @@ func readJournal(path string) ([]*journalRun, error) {
 		}
 		switch e.Op {
 		case opRun:
-			get(e.Run).Time = e.Time
+			r := get(e.Run)
+			r.Time, r.Library = e.Time, e.Library
 		case opMove:
 			if e.Src == "" || e.Dst == "" {
 				log.Warnf("Journal %s line %d: move without src/dst, skipping it", path, n)
