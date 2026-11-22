@@ -1,6 +1,7 @@
 package organize
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -132,10 +133,99 @@ func TestPlanRemove(t *testing.T) {
 		{Rel: "Q/Queen - Other", Artist: "Queen", Title: "Other", EncodingProblem: true}, // no match: nothing to say
 	}
 	patterns := []Pattern{mustPattern(t, PatternSong, "ABBA - SOS"), mustPattern(t, PatternArtist, "ABBA"), mustPattern(t, PatternArtist, "Cher"), mustPattern(t, PatternArtist, "Nobody")}
-	ds, counts := planRemove(songs, patterns)
+	ds, counts, matched := planRemove(songs, patterns)
 	want := []removeDecision{{Pattern: 0}, {Pattern: 1}, {Pattern: 2, Left: true, Reason: reasonRemoveEncoding}, {Pattern: -1}, {Pattern: -1}, {Pattern: -1}}
-	if !reflect.DeepEqual(ds, want) || !reflect.DeepEqual(counts, []int{1, 1, 1, 0}) {
-		t.Errorf("decisions = %+v, counts %v", ds, counts)
+	// "artist: ABBA" also matches A/ABBA - SOS, which "song: ABBA - SOS" matched first.
+	if !reflect.DeepEqual(ds, want) || !reflect.DeepEqual(counts, []int{1, 1, 1, 0}) || !reflect.DeepEqual(matched, []bool{true, true, true, false}) {
+		t.Errorf("decisions = %+v, counts %v, matched %v", ds, counts, matched)
+	}
+}
+
+// A pattern whose songs all matched an earlier pattern first still matched: it counts no
+// song but is no "pattern without a match".
+func TestPlanRemoveOverlappingPatterns(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		songs    []removeSong
+		patterns []Pattern
+		pattern  []int
+		counts   []int
+		matched  []bool
+	}{
+		{"song after its artist",
+			[]removeSong{{Rel: "E/Sacrifice", Artist: "Elton John", Title: "Sacrifice"}, {Rel: "E/Your Song", Artist: "Elton John", Title: "Your Song"}},
+			[]Pattern{mustPattern(t, PatternArtist, "Elton John"), mustPattern(t, PatternSong, "Elton John - Sacrifice")},
+			[]int{0, 0}, []int{2, 0}, []bool{true, true}},
+		{"same pattern twice",
+			[]removeSong{{Rel: "A/SOS", Artist: "ABBA", Title: "SOS"}},
+			[]Pattern{mustPattern(t, PatternArtist, "ABBA"), mustPattern(t, PatternArtist, "Abba"), mustPattern(t, PatternArtist, "Cher")},
+			[]int{0}, []int{1, 0, 0}, []bool{true, true, false}},
+		{"encoding problem still matches",
+			[]removeSong{{Rel: "A/SOS", Artist: "ABBA", Title: "SOS", EncodingProblem: true}},
+			[]Pattern{mustPattern(t, PatternSong, "ABBA - SOS"), mustPattern(t, PatternArtist, "ABBA")},
+			[]int{0}, []int{1, 0}, []bool{true, true}},
+		{"no tags never matches",
+			[]removeSong{{Rel: "X/none", NoTags: true, Artist: "ABBA", Title: "SOS"}},
+			[]Pattern{mustPattern(t, PatternArtist, "ABBA"), mustPattern(t, PatternSong, "ABBA - SOS")},
+			[]int{-1}, []int{0, 0}, []bool{false, false}},
+	} {
+		ds, counts, matched := planRemove(c.songs, c.patterns)
+		var got []int
+		for _, d := range ds {
+			got = append(got, d.Pattern)
+		}
+		if !reflect.DeepEqual(got, c.pattern) || !reflect.DeepEqual(counts, c.counts) || !reflect.DeepEqual(matched, c.matched) {
+			t.Errorf("%s: patterns %v, counts %v, matched %v; want %v, %v, %v", c.name, got, counts, matched, c.pattern, c.counts, c.matched)
+		}
+	}
+}
+
+// The report lists a pattern under "without a match" only if it matched no song: not when
+// an earlier pattern matched its songs first, and not when the reviewer keeps them.
+func TestRemoveReportOverlappingPatterns(t *testing.T) {
+	noFFprobe(t)
+	base := t.TempDir()
+	lib := filepath.Join(base, "library")
+	testutil.WriteFiles(t, lib, merge(
+		songFiles("E/Elton John - Sacrifice", "Elton John", "Sacrifice"),
+		songFiles("E/Elton John - Your Song", "Elton John", "Your Song"),
+		songFiles("Q/Queen - Song", "Queen", "Song"),
+	))
+	patterns := []Pattern{mustPattern(t, PatternArtist, "Elton John"), mustPattern(t, PatternSong, "Elton John - Sacrifice"),
+		mustPattern(t, PatternSong, "Queen - Song"), mustPattern(t, PatternArtist, "Nobody")}
+	cfg := prepared(t)(config.NewDedupe(lib, filepath.Join(base, "out"), true))
+	if err := RemoveWith(cfg, fsops.New(true), patterns, RemoveOptions{Keep: map[string]bool{"Q/Queen - Song": true}}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(cfg.OutDir, removeReportJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rep removeReport
+	if err := json.Unmarshal(data, &rep); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"artist: Nobody"}; !reflect.DeepEqual(rep.Unmatched, want) {
+		t.Errorf("unmatched = %q, want %q", rep.Unmatched, want)
+	}
+	var songs []int
+	for _, p := range rep.Patterns {
+		songs = append(songs, p.Songs)
+	}
+	if want := []int{2, 0, 1, 0}; !reflect.DeepEqual(songs, want) {
+		t.Errorf("pattern songs = %v, want %v", songs, want)
+	}
+	if rep.Summary.Removed != 2 || rep.Summary.LeftInPlace != 1 {
+		t.Errorf("summary = %+v, want 2 removed, 1 left", rep.Summary)
+	}
+	txt, err := os.ReadFile(filepath.Join(cfg.OutDir, removeReportTxt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"  song: Elton John - Sacrifice  (test; 0 songs matched first)\n", "; 1 patterns without a match;", "== Patterns without a match (1) ==\nartist: Nobody\n"} {
+		if !strings.Contains(string(txt), want) {
+			t.Errorf("report lacks %q:\n%s", want, txt)
+		}
 	}
 }
 
@@ -208,7 +298,7 @@ func TestRunRemove(t *testing.T) {
 	txt := read(cfg.OutDir, removeReportTxt)
 	for _, want := range []string{
 		"remove plan (real run)\n",
-		"  artist: Elton John  (test; 3 songs)\n",
+		"  artist: Elton John  (test; 3 songs matched first)\n",
 		"summary: 13 songs: 8 removed, 1 matching songs left in place; 1 patterns without a match; 8 moved, 0 failed\n",
 		"E/Elton John - Rocket Man  (Elton John - Rocket Man)  [moved]\n    matched: artist: Elton John (tags from the folder name)\n",
 		"M/Muse - Uprising  (Muse - Uprising)  [moved]\n    matched: song: Muse - Uprising (tags from the folder name)\n",

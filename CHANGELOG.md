@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - UI: jobs with very long logs no longer slow down; the log keeps the newest 20000 to 22000 lines instead of exactly 20000.
 - UI: the overview no longer counts unreadable folders as folders without a song text; it lists the folders and song texts it could not read separately.
 - The media scan cache is no longer thrown away when `ffprobe -version` or `ffmpeg -version` fails or times out on a busy machine; the cache is skipped for that run instead.
+- remove: a pattern whose songs all matched an earlier pattern first (e.g. `-song "Elton John - Sacrifice"` after `-artist "Elton John"`) is no longer reported as matching no song; the report's per-pattern count now says it counts the songs a pattern matched first.
 
 ## [0.2.1] - 2026-11-22
 

@@ -176,27 +176,33 @@ type removeDecision struct {
 const reasonRemoveEncoding = "the txt has an encoding problem, so its tags may be read wrongly; fix the txt first (fixtxt) and run remove again"
 
 // planRemove decides for every song whether it is removed. It is pure. counts holds the
-// number of songs every pattern matched (first match only).
-func planRemove(songs []removeSong, patterns []Pattern) (ds []removeDecision, counts []int) {
+// number of songs every pattern matched first (a song counts for its first matching
+// pattern only); matched tells whether a pattern matched any song at all, also one an
+// earlier pattern matched first.
+func planRemove(songs []removeSong, patterns []Pattern) (ds []removeDecision, counts []int, matched []bool) {
 	ds = make([]removeDecision, len(songs))
 	counts = make([]int, len(patterns))
+	matched = make([]bool, len(patterns))
 	for i, s := range songs {
 		ds[i].Pattern = -1
 		if s.NoTags {
 			continue
 		}
 		for k, p := range patterns {
-			if p.matches(s.Artist, s.Title, s.Duet) {
+			if !p.matches(s.Artist, s.Title, s.Duet) {
+				continue
+			}
+			matched[k] = true
+			if ds[i].Pattern < 0 {
 				ds[i].Pattern = k
 				counts[k]++
-				break
 			}
 		}
 		if ds[i].Pattern >= 0 && s.EncodingProblem {
 			ds[i].Left, ds[i].Reason = true, reasonRemoveEncoding
 		}
 	}
-	return ds, counts
+	return ds, counts, matched
 }
 
 // noTagsSong is the folder below lib as a song that is never matched (NoTags).
@@ -305,7 +311,7 @@ func RemoveWith(cfg config.OrganizeConfig, ops *fsops.Ops, patterns []Pattern, o
 		return err
 	}
 	sort.Slice(songs, func(a, b int) bool { return songs[a].Rel < songs[b].Rel })
-	ds, counts := planRemove(songs, patterns)
+	ds, counts, matched := planRemove(songs, patterns)
 	for i, d := range ds {
 		if d.Pattern >= 0 && !d.Left && opts.Keep[songs[i].Rel] {
 			ds[i].Left, ds[i].Reason = true, ReasonKept
@@ -318,7 +324,7 @@ func RemoveWith(cfg config.OrganizeConfig, ops *fsops.Ops, patterns []Pattern, o
 		cands[i] = Candidate{Folder: s.Folder, Rel: s.Rel, Label: "library", InLibrary: true}
 	}
 	outcomes := map[int]moveOutcome{}
-	in := removeInput{cfg: cfg, patterns: patterns, songs: songs, ds: ds, counts: counts, outcomes: outcomes}
+	in := removeInput{cfg: cfg, patterns: patterns, songs: songs, ds: ds, counts: counts, matched: matched, outcomes: outcomes}
 	if !cfg.DryRun {
 		for i, d := range ds {
 			if d.Pattern >= 0 && !d.Left {
@@ -386,7 +392,8 @@ type removeInput struct {
 	patterns []Pattern
 	songs    []removeSong
 	ds       []removeDecision
-	counts   []int
+	counts   []int  // songs every pattern matched first
+	matched  []bool // whether a pattern matched any song
 	outcomes map[int]moveOutcome
 }
 
@@ -399,14 +406,15 @@ type removeReport struct {
 	Summary  removeSummaryReport `json:"summary"`
 	Removed  []removedEntry      `json:"removed"`
 	Left     []leftEntry         `json:"leftInPlace"`
-	// Unmatched are the patterns that matched no song ("<kind>: <text>").
+	// Unmatched are the patterns that matched no song ("<kind>: <text>"); a pattern whose
+	// songs all matched an earlier pattern first is not one of them.
 	Unmatched []string `json:"unmatched"`
 }
 
 type patternReport struct {
 	Pattern string `json:"pattern"` // "<kind>: <text>"
 	Source  string `json:"source"`
-	Songs   int    `json:"songs"` // songs it matched first
+	Songs   int    `json:"songs"` // songs it matched first (each song counts for one pattern)
 }
 
 type removeSummaryReport struct {
@@ -432,7 +440,7 @@ func buildRemoveReport(in removeInput) removeReport {
 		Removed: []removedEntry{}, Left: []leftEntry{}, Unmatched: []string{}}
 	for k, p := range in.patterns {
 		r.Patterns = append(r.Patterns, patternReport{Pattern: p.String(), Source: p.Source, Songs: in.counts[k]})
-		if in.counts[k] == 0 {
+		if !in.matched[k] {
 			r.Unmatched = append(r.Unmatched, p.String())
 		}
 	}
@@ -478,7 +486,7 @@ func (r removeReport) text() []byte {
 	}
 	fmt.Fprintf(&b, "remove plan (%s)\nlibrary: %s\npatterns:\n", run, r.Library)
 	for _, p := range r.Patterns {
-		fmt.Fprintf(&b, "  %s  (%s; %d songs)\n", p.Pattern, p.Source, p.Songs)
+		fmt.Fprintf(&b, "  %s  (%s; %d songs matched first)\n", p.Pattern, p.Source, p.Songs)
 	}
 	moved := "moved"
 	if r.DryRun {
