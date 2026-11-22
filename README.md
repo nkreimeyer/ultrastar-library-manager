@@ -4,36 +4,37 @@ Tools for sanitizing an [UltraStar](https://usdx.eu/) karaoke song library: each
 folder containing one `.txt` (lyrics/notes + `#TAG:value` header), an audio file and
 optionally a video, cover and background image.
 
-The main tool is `library-manager`, a Go CLI in `src/main/library-manager/`. The `old/`
+The main tool is `library-manager`, a Go CLI in `src/main/library-manager/` that runs on
+**Linux, Windows and macOS** (one static binary per platform, no cgo). The `old/`
 directory contains the previous Python/shell scripts (including folder-name based duplicate
 detection) and is kept for reference only.
 
+Prebuilt binaries for all three platforms are on the
+[GitHub releases page](https://github.com/nkreimeyer/ultrastar-library-manager/releases); to build from source see "Development" at the end.
+
+## Supported platforms
+
+| | Linux | Windows | macOS |
+|---|---|---|---|
+| Release binary | `library-manager-linux-amd64` | `library-manager-windows-amd64.exe` | `library-manager-darwin-amd64` |
+| Start the UI | run it or double-click (opens a terminal) | double-click the `.exe` | double-click (opens Terminal) |
+| Install ffmpeg | `sudo apt install ffmpeg` / `sudo pacman -S ffmpeg` | `winget install ffmpeg` | `brew install ffmpeg` |
+| `-s` with several folders | separated by `:` | separated by `;` | separated by `:` |
+
+The release binaries are built for amd64 only. On Apple Silicon the macOS binary runs under
+Rosetta 2; on other CPUs (e.g. ARM Linux or Windows on ARM) build it yourself, see "Build".
+Path handling follows each file system: case-insensitive comparison on Windows and macOS, Unicode
+normalization (NFC/NFD) on macOS, and folder names that are safe on all three systems. A library
+can be moved between the platforms. The CI runs the tests on Linux only.
+
 ## Requirements
 
-- Go 1.24+ to build
+The release binaries need nothing but ffmpeg (optional for some features):
+
 - `ffmpeg` and `ffprobe` 5.1 or newer on `PATH` (only for the video `-m` and audio `-a`
   modules and the media checks of `-k` and `organize`; `-m` and `-a` refuse to run with a
   missing or older version; without ffprobe, `-k` checks only the txt files and `organize`
   cannot compare video and audio quality, and with an older version they warn)
-
-## Build
-
-```bash
-cd src/main/library-manager
-go build -o library-manager .
-```
-
-Fully statically linked Linux binary:
-
-```bash
-cd src/main/library-manager
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -tags netgo -ldflags '-w -extldflags "-static"' -o library-manager .
-```
-
-Prebuilt binaries: the CI (`.github/workflows/build.yml` and `.gitlab-ci.yml`) runs gofmt,
-`go vet` and the tests on every push (GitHub: pushes to `main` and pull requests). Only a tag
-`v*` also builds `library-manager-{linux,windows,darwin}-amd64` and creates a release with the
-three binaries attached (on GitHub with a `SHA256SUMS` file).
 
 ## Usage
 
@@ -222,7 +223,9 @@ Start `library-manager` without arguments (on Windows: double-click the `.exe`),
 without arguments from a file manager (no terminal, but a desktop), the program opens a terminal
 window for itself (Linux: the first of x-terminal-emulator, gnome-terminal, konsole, xfce4-terminal,
 mate-terminal, kitty, alacritty, wezterm, xterm that is installed; macOS: Terminal; Windows
-gives a double-clicked program its console window anyway). Keep
+gives a double-clicked program its console window anyway; on macOS a downloaded binary may first
+need `chmod +x` and, because it is unsigned, a right-click → Open or `xattr -d com.apple.quarantine
+library-manager-darwin-amd64`). Keep
 the terminal window open while you use it. The UI stops by itself about 15 seconds after the
 last browser tab is closed (a reload or a short network gap does not count) unless a job is
 still running; `-keep-running` turns that off. Closing the window (or Ctrl-C) stops the UI and any
@@ -561,6 +564,37 @@ the most recent of these runs.
 ## Development
 
 See [CLAUDE.md](CLAUDE.md) for architecture notes, known issues and the roadmap.
+
+### Build
+
+Requires Go 1.24+.
+
+```bash
+cd src/main/library-manager
+go build -o library-manager .
+```
+
+Cross-compile for another platform (set `GOARCH=arm64` for ARM; `CGO_ENABLED=0` keeps it
+free of C dependencies):
+
+```bash
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o library-manager.exe .
+CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -o library-manager-darwin-arm64 .
+```
+
+Fully statically linked Linux binary:
+
+```bash
+cd src/main/library-manager
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -tags netgo -ldflags '-w -extldflags "-static"' -o library-manager .
+```
+
+Prebuilt binaries: the CI (`.github/workflows/build.yml`) runs gofmt,
+`go vet` and the tests on every push (pushes to `main` and pull requests). Only a tag
+`v*` also builds `library-manager-{linux,windows,darwin}-amd64` and creates a release with the
+three binaries attached (with a `SHA256SUMS` file).
+
+### Tests
 
 ```bash
 cd src/main/library-manager
