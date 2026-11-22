@@ -412,7 +412,8 @@ Same exit codes and leftover-argument rule.
   rule; FAT has 2 s); tests age media with `os.Chtimes`. The header holds the ffprobe and
   ffmpeg version strings; other versions drop every entry (and a run that then stores
   nothing does not overwrite the file, so a run without ffprobe on PATH keeps it; a done ctx
-  at Open disables the cache for the same reason). Kinds carry a version (`probe/1`,
+  at Open disables the cache for the same reason, and so does a tool that is found but whose
+  `-version` run fails, with a warning; a missing tool still counts as version ""). Kinds carry a version (`probe/1`,
   `check.media/1` (probe result incl. measured duration, or the error message),
   `check.decode/1` (`-deep`), `fixaudio.peak/1`, `fixvideos.packets/1`): a change in how a
   result is computed bumps the kind. `mediacache.Probe` caches successes (with `Log`) and

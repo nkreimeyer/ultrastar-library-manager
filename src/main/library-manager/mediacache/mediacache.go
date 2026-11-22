@@ -137,20 +137,34 @@ func (e *fileEntry) matches(s Stamp) bool {
 // stored with other versions are dropped. If root itself is a song folder, caching is
 // disabled (nil): cleanup would move a hidden file out of a song folder. So it is if ctx
 // is done (before or while the versions are looked up): a stopped "-version" run would
-// look like a tool change and drop every result.
+// look like a tool change and drop every result. For the same reason it is disabled, with a
+// warning, if a tool is found but its "-version" run fails (a timeout on a busy machine or a
+// cold network drive): its version would be "" and the next Save would replace the file. A
+// tool that is not found counts as version "": that run stores nothing it could not also
+// store next time, and a run that stores nothing keeps the file.
 func Open(ctx context.Context, root string) *Cache {
 	if root == "" || ctx.Err() != nil {
 		return nil
 	}
 	tools := map[string]string{}
 	for _, name := range []string{"ffprobe", "ffmpeg"} {
-		tools[name] = mediatools.Lookup(ctx, name).Version
-	}
-	if ctx.Err() != nil {
-		return nil
+		t := mediatools.Lookup(ctx, name)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if versionUnreadable(t) {
+			log.Warnf("Media cache disabled for this run: the version of %s could not be read (%s)", t.Path, t.Problem)
+			return nil
+		}
+		tools[name] = t.Version
 	}
 	return open(root, tools, time.Now)
 }
+
+// versionUnreadable reports whether the tool is on PATH but its "-version" run failed, so
+// its version is unknown for this run only. A version line Lookup cannot parse is not
+// such a case: it reads the same every run.
+func versionUnreadable(t mediatools.Tool) bool { return t.Found && !t.OK && !t.Known }
 
 // open is Open with the tool versions and the clock given.
 func open(root string, tools map[string]string, now func() time.Time) *Cache {

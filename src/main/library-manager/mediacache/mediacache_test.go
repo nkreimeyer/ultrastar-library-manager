@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/nkreimeyer/library-manager/fsops"
+	"github.com/nkreimeyer/library-manager/internal/testutil"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
@@ -642,6 +643,41 @@ func TestToolChangeKeepsFileUntilStored(t *testing.T) {
 	}
 	if got, ok := lookup(open(root, noTools, clk.now), f); !ok || got.N != 2 {
 		t.Errorf("new result = %+v, %v", got, ok)
+	}
+}
+
+// A tool that is found but whose "-version" run fails (a timeout on a busy machine) must not
+// look like a tool change: Open disables the cache for the run, so the file of the usual
+// versions is neither dropped nor replaced. A missing tool keeps today's behaviour (a cache
+// of version "").
+func TestOpenVersionUnreadableDisablesCache(t *testing.T) {
+	root, clk := t.TempDir(), newClock()
+	f := filepath.Join(root, "s", "song.mp3")
+	writeOld(t, clk, f, "audio")
+	testutil.FakeVersions(t, "7.1", "7.1")
+	c := Open(context.Background(), root)
+	if c == nil {
+		t.Fatal("Open with working tools returned nil")
+	}
+	storeResult(t, c, f, result{N: 1})
+	save(t, c)
+	before := testutil.ReadFile(t, c.Path())
+
+	okScript := "#!/bin/sh\nif [ \"$1\" = -version ]; then echo 'ffmpeg version 7.1 Copyright'; exit 0; fi\nexit 1\n"
+	testutil.FakeTools(t, map[string]string{
+		"ffprobe": "#!/bin/sh\nexit 1\n",
+		"ffmpeg":  okScript,
+	})
+	if c2 := Open(context.Background(), root); c2 != nil {
+		t.Fatal("Open returned a cache although ffprobe -version failed")
+	}
+	if got := testutil.ReadFile(t, c.Path()); got != before {
+		t.Error("the cache file changed")
+	}
+
+	testutil.FakeTools(t, map[string]string{"ffmpeg": okScript})
+	if c3 := Open(context.Background(), root); c3 == nil {
+		t.Error("Open with ffprobe missing returned nil")
 	}
 }
 

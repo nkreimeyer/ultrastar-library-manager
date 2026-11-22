@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On macOS and Windows, a library given in another case than its source (`-s ~/songs -l ~/Songs`) is treated as the same folder instead of failing with "library dir must not be inside the source dir"; a source given twice in different case is reported as given twice.
 - UI: jobs with very long logs no longer slow down; the log keeps the newest 20000 to 22000 lines instead of exactly 20000.
 - UI: the overview no longer counts unreadable folders as folders without a song text; it lists the folders and song texts it could not read separately.
+- The media scan cache is no longer thrown away when `ffprobe -version` or `ffmpeg -version` fails or times out on a busy machine; the cache is skipped for that run instead.
 
 ## [0.2.1] - 2026-11-22
 
