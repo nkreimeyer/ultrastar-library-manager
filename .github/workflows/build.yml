@@ -69,6 +69,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # The sparse checkout below has no src/main/library-manager: run from the workspace root,
+    # not from the workflow's default folder (bash cannot start in a missing folder).
+    defaults:
+      run:
+        working-directory: .
     steps:
       - uses: actions/checkout@v4
         with:
