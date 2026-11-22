@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -142,10 +143,13 @@ func TestFileLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	var d map[string]any
-	if err := json.NewDecoder(zr).Decode(&d); err != nil {
+	// Numbers stay json.Number: a float64 cannot hold a nanosecond mtime exactly.
+	dec := json.NewDecoder(zr)
+	dec.UseNumber()
+	if err := dec.Decode(&d); err != nil {
 		t.Fatal(err)
 	}
-	if d["format"] != float64(1) {
+	if d["format"] != json.Number("1") {
 		t.Errorf("format %v", d["format"])
 	}
 	if _, err := time.Parse(time.RFC3339, d["updated"].(string)); err != nil {
@@ -153,11 +157,11 @@ func TestFileLayout(t *testing.T) {
 	}
 	fo := d["folders"].(map[string]any)["A/Song"].(map[string]any)
 	entry := fo["files"].(map[string]any)["song.mp3"].(map[string]any)
-	if entry["size"] != float64(5) {
+	if entry["size"] != json.Number("5") {
 		t.Errorf("size %v", entry["size"])
 	}
 	st, _ := os.Stat(f)
-	if int64(entry["mtimeNs"].(float64)/1e3) != st.ModTime().UnixNano()/1e3 {
+	if entry["mtimeNs"] != json.Number(strconv.FormatInt(st.ModTime().UnixNano(), 10)) {
 		t.Errorf("mtimeNs %v", entry["mtimeNs"])
 	}
 	if got := fmt.Sprint(entry["results"]); got != "map[test/1:map[n:1 s:]]" {
