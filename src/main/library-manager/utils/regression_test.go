@@ -236,6 +236,54 @@ func TestDecodeTxtBOMlessUTF16IsProblem(t *testing.T) {
 	}
 }
 
+// utf32Txt encodes ASCII s as UTF-32 with a BOM, big-endian if be, else little-endian.
+func utf32Txt(s string, be bool) string {
+	b := []byte{0xff, 0xfe, 0, 0}
+	if be {
+		b = []byte{0, 0, 0xfe, 0xff}
+	}
+	for i := range len(s) {
+		if be {
+			b = append(b, 0, 0, 0, s[i])
+		} else {
+			b = append(b, s[i], 0, 0, 0)
+		}
+	}
+	return string(b)
+}
+
+// Regression: the UTF-32LE BOM (FF FE 00 00) starts with the UTF-16LE one, so a UTF-32LE
+// txt was decoded as UTF-16 with a U+0000 after every character and no Problem, and fixtxt
+// could rewrite it as NUL-interleaved UTF-8. UTF-32 (either BOM) and UTF-16 holding a
+// U+0000 are Problems; UTF-32 is still decoded, so the header stays readable.
+func TestDecodeTxtUTF32AndUTF16NULAreProblems(t *testing.T) {
+	const song = "#TITLE:x\n#ARTIST:a\n"
+	tests := []struct {
+		name, raw, text, enc string
+	}{
+		{"utf-32 LE", utf32Txt(song, false), song, EncUTF32LE},
+		{"utf-32 BE", utf32Txt(song, true), song, EncUTF32BE},
+		{"utf-16 LE with U+0000", "\xff\xfe#\x00T\x00:\x00x\x00\x00\x00y\x00\n\x00", "#T:x\x00y\n", EncUTF16LE},
+		{"utf-16 BE with U+0000", "\xfe\xff\x00#\x00T\x00:\x00x\x00\x00\x00\n", "#T:x\x00\n", EncUTF16BE},
+	}
+	for _, tc := range tests {
+		d := DecodeTxt([]byte(tc.raw))
+		if d.Problem == "" || d.Text != tc.text || d.Encoding != tc.enc {
+			t.Errorf("%s: DecodeTxt = %q, %s, problem=%q; want %q, %s with a Problem", tc.name, d.Text, d.Encoding, d.Problem, tc.text, tc.enc)
+		}
+	}
+	// Clean UTF-16 stays Problem-free.
+	if d := DecodeTxt([]byte("\xff\xfe#\x00T\x00:\x00x\x00\n\x00")); d.Problem != "" || d.Text != "#T:x\n" {
+		t.Errorf("clean UTF-16LE: DecodeTxt = %q, problem=%q; want %q without a Problem", d.Text, d.Problem, "#T:x\n")
+	}
+	// A UTF-32 song txt is still a song txt (reported, never rewritten), not a broken folder.
+	path := filepath.Join(t.TempDir(), "song.txt")
+	testutil.WriteFile(t, path, tests[0].raw)
+	if !IsSongTxt(nil, path) {
+		t.Error("a UTF-32 song txt is not recognised as a song txt")
+	}
+}
+
 // arithJPEGHex is a 300x300 red JPEG converted with `jpegtran -arithmetic` (SOF9). It is a
 // valid image (ImageMagick/libjpeg-turbo read it) that image/jpeg cannot decode.
 const arithJPEGHex = "ffd8ffe000104a46494600010100000100010000ffdb004300030202020202030202020303030304060404040404080606050609080a0a090809090a0c0f0c0a0b0e0b09090d110d0e0f101011100a0c12131210130f101010ffdb00430103030304030408040408100b090b1010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010ffc9001108012c012c03011100021101031101ffcc000a0010100501101105ffda000c03010002110311003f00ff00d9491c5412a27feac5d84fffd9"

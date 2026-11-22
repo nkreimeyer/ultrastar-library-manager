@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - UI: a check or tidy-up that was stopped (or failed) before it changed anything is no longer shown as carried out; Go ahead can be used again.
 - UI: leaving a song alone or joining two songs while a plan is being applied (or just after) no longer changes the plan shown for the run that was already applied; the page is told to wait or check again.
 - UI: a request that arrives while the program is shutting down no longer starts a job that would be cut off midway; it is refused with an error.
+- A song txt in UTF-32, or in UTF-16 with NUL characters, is reported as an encoding problem and never rewritten; before, it could be rewritten as garbage (and a UTF-32 txt was not recognized as a song txt).
 
 ## [0.2.1] - 2026-11-22
 

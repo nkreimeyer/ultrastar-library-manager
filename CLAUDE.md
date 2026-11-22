@@ -241,8 +241,9 @@ Same exit codes and leftover-argument rule.
   the first non-blank line to be a tag (a `License.txt` with `#TITLE:` further down is no
   song). A repeated tag resolves to its last header occurrence, as in UltraStar (also
   `songtxt.Song.Tag` and its accessors). A lone `\r` is a line break.
-- `utils.DecodeTxt`: any NUL byte is a Problem (BOM-less UTF-16 is still decoded, so the
-  header stays readable). With an `#ENCODING` tag, only "clean" UTF-8 sequences count as
+- `utils.DecodeTxt`: any NUL byte is a Problem, in UTF-16 a decoded U+0000 (BOM-less UTF-16 is
+  still decoded, so the header stays readable). A UTF-32 BOM (checked before UTF-16's, which it
+  starts with) is always a Problem; the text is decoded so the header stays readable. With an `#ENCODING` tag, only "clean" UTF-8 sequences count as
   mixed-encoding evidence, and in non-Latin codepages an isolated 2-byte sequence never does.
   A non-UTF-8 txt without `#ENCODING` is read as CP1250 when `utils.LanguageCodes` of its
   `#LANGUAGE` names pl, cs, sk, hu, hr, sl, ro or bs (`cp1250Languages`); the value is tried

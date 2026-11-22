@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/text/encoding/charmap"
 	xunicode "golang.org/x/text/encoding/unicode"
+	"golang.org/x/text/encoding/unicode/utf32"
 
 	"github.com/nkreimeyer/library-manager/songtxt"
 )
@@ -19,6 +20,8 @@ const (
 	EncUTF8    = "UTF-8"
 	EncUTF16LE = "UTF-16LE"
 	EncUTF16BE = "UTF-16BE"
+	EncUTF32LE = "UTF-32LE"
+	EncUTF32BE = "UTF-32BE"
 	EncCP1250  = "CP1250"
 	EncCP1252  = "CP1252"
 	EncLatin1  = "ISO-8859-1"
@@ -28,6 +31,9 @@ var (
 	utf8BOM    = []byte{0xEF, 0xBB, 0xBF}
 	utf16LEBOM = []byte{0xFF, 0xFE}
 	utf16BEBOM = []byte{0xFE, 0xFF}
+	// The UTF-32LE BOM starts with the UTF-16LE one, so it is checked first.
+	utf32LEBOM = []byte{0xFF, 0xFE, 0x00, 0x00}
+	utf32BEBOM = []byte{0x00, 0x00, 0xFE, 0xFF}
 )
 
 // DecodedTxt is the result of DecodeTxt.
@@ -47,7 +53,8 @@ type DecodedTxt struct {
 // DecodeTxt decodes the raw content of a song txt without losing data. The guiding rule is
 // "when in doubt, set Problem": a file with a Problem is left untouched and reported.
 //
-//  1. A UTF-16 BOM selects UTF-16.
+//  1. A UTF-32 BOM selects UTF-32, which is always a Problem (UltraStar does not read it; the
+//     text is decoded only so that the header stays readable). A UTF-16 BOM selects UTF-16.
 //  2. Valid UTF-8 is UTF-8, except:
 //     - with an #ENCODING tag naming a single-byte codec, every non-ASCII character must be
 //     one that codec can produce (a converted file with a stale tag; U+FFFD, a character
@@ -59,10 +66,11 @@ type DecodedTxt struct {
 //     names a Central European language, else CP1252. It fails (Problem) on bytes the codec
 //     leaves undefined, on real UTF-8 sequences in the file (mixed encodings, mojibake such
 //     as "Ã¤"), and when CP1252 text looks like CP1250 ("Za¿ó³æ").
-//  4. An unknown #ENCODING codec is always a Problem, and so is a file with NUL bytes.
-//     BOM-less UTF-16 is decoded as such, so that its header can still be read; any other
-//     file with NUL bytes is decoded by steps 2 and 3 (a valid UTF-8 file padded with zeros
-//     keeps "Beyoncé" readable for callers that match tag values despite the Problem).
+//  4. An unknown #ENCODING codec is always a Problem, and so is a file with NUL bytes (in
+//     UTF-16: a decoded U+0000). BOM-less UTF-16 is decoded as such, so that its header can
+//     still be read; any other file with NUL bytes is decoded by steps 2 and 3 (a valid
+//     UTF-8 file padded with zeros keeps "Beyoncé" readable for callers that match tag
+//     values despite the Problem).
 func DecodeTxt(raw []byte) DecodedTxt {
 	var d DecodedTxt
 	hint := encodingHint(raw)
@@ -74,6 +82,13 @@ func DecodeTxt(raw []byte) DecodedTxt {
 		utf16Order, utf16Enc, bomless = bomlessUTF16(raw)
 	}
 	switch {
+	case bytes.HasPrefix(raw, utf32LEBOM), bytes.HasPrefix(raw, utf32BEBOM):
+		order, enc := utf32.LittleEndian, EncUTF32LE
+		if bytes.HasPrefix(raw, utf32BEBOM) {
+			order, enc = utf32.BigEndian, EncUTF32BE
+		}
+		out, _ := utf32.UTF32(order, utf32.IgnoreBOM).NewDecoder().Bytes(raw[4:])
+		d = DecodedTxt{Text: string(out), Encoding: enc, Problem: "is UTF-32, which UltraStar cannot read; convert it to UTF-8"}
 	case bytes.HasPrefix(raw, utf16LEBOM), bytes.HasPrefix(raw, utf16BEBOM):
 		order, enc := xunicode.LittleEndian, EncUTF16LE
 		if bytes.HasPrefix(raw, utf16BEBOM) {
@@ -132,7 +147,8 @@ func DecodeTxt(raw []byte) DecodedTxt {
 			d.Problem = "looks like CP1250 (Central European) text read as CP1252; add #ENCODING:CP1250 or #LANGUAGE"
 		}
 	}
-	if hasNUL && d.Problem == "" && d.Encoding != EncUTF16LE && d.Encoding != EncUTF16BE {
+	// Every decoding keeps a NUL byte (in UTF-16 a 0x0000 unit) as U+0000.
+	if d.Problem == "" && strings.IndexByte(d.Text, 0) >= 0 {
 		d.Problem = "contains NUL bytes"
 	}
 

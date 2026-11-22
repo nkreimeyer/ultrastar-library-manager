@@ -344,9 +344,10 @@ func (i *Inspector) deepDecode(path string) (decodeErr, decodeWarn string, fileR
 
 // rawHeaderValues returns the undecoded values of the tag lines of a txt in a
 // single-byte codepage, keyed by their 1-based line (the lines songtxt.Parse reports,
-// songtxt.LineSpans). It is nil for UTF-8 and UTF-16 txts.
+// songtxt.LineSpans). It is nil for UTF-8, UTF-16 and UTF-32 txts.
 func rawHeaderValues(raw []byte, encoding string) map[int]string {
-	if encoding == utils.EncUTF8 || encoding == utils.EncUTF16LE || encoding == utils.EncUTF16BE {
+	if encoding == utils.EncUTF8 || encoding == utils.EncUTF16LE || encoding == utils.EncUTF16BE ||
+		encoding == utils.EncUTF32LE || encoding == utils.EncUTF32BE {
 		return nil
 	}
 	values := map[int]string{}

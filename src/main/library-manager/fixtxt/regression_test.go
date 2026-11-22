@@ -41,6 +41,34 @@ func tagValues(t *testing.T, txt string, keys ...string) []string {
 	return got
 }
 
+// Regression: a UTF-32LE txt was read as UTF-16LE without a Problem (its BOM starts with
+// the UTF-16LE one), so fixtxt rewrote it as UTF-8 with a NUL after every character. Such
+// txts, and UTF-16 with a U+0000, are listed in encoding_issues.txt and left as they are.
+func TestRunLeavesUTF32AndUTF16WithNULUnchanged(t *testing.T) {
+	cfg := newLibrary(t, false)
+	utf32 := []byte{0xff, 0xfe, 0, 0}
+	for _, c := range []byte("#TITLE:T\n#ARTIST:A\n#MP3:old.mp3\n: 0 1 0 x\nE\n") {
+		utf32 = append(utf32, c, 0, 0, 0)
+	}
+	files := map[string]string{
+		"Utf32/song.txt": string(utf32),
+		"Utf32/song.mp3": "audio",
+		"Utf16/song.txt": utf16LE("#TITLE:T\x00\n#ARTIST:A\n#MP3:song.mp3\n: 0 1 0 x\nE\n"),
+		"Utf16/song.mp3": "audio",
+	}
+	testutil.WriteFiles(t, cfg.SongDir, files)
+	run(t, cfg)
+	report := readReport(t, cfg, encodingIssuesReport)
+	for _, rel := range []string{"Utf32/song.txt", "Utf16/song.txt"} {
+		if got := testutil.ReadFile(t, filepath.Join(cfg.SongDir, rel)); got != files[rel] {
+			t.Errorf("%s = %q, want it unchanged", rel, got)
+		}
+		if !strings.Contains(report, filepath.Join(cfg.SongDir, rel)+": ") {
+			t.Errorf("encoding_issues.txt = %q, want a line for %s", report, rel)
+		}
+	}
+}
+
 // Regression: a "#" line after the notes counted as the last occurrence of a header tag, so
 // the header #BPM was dropped and the ignored body copy kept.
 func TestRemoveDuplicateTagsIgnoresBody(t *testing.T) {
