@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `-m`: a re-encode during which ffmpeg reported a read error, or whose original could not be read again for the duration check, no longer replaces (or converts and deletes) the original; it counts as a failure and the next run tries again.
 - `-m`: a cover picture stored before the video in a file is no longer taken for the video (which could replace the video with a picture-only file, or measure the cover's bitrate and skip a video that needs a re-encode); a result without a video stream never replaces a video.
 - `-a`: an encode during which ffmpeg reported a read error, or that came out shorter than the original decodes, no longer replaces the original and marks it as normalized; a peak measured during a read error is no longer used for the gain.
+- cleanup no longer moves a song's audio (or video) to `extra-files/` when its `#MP3`/`#AUDIO` (`#VIDEO`) tag names a file of the other kind, e.g. `#MP3:clip.mp4` next to the takes fixtxt asks you to choose from, or the `#VOCALS`/`#INSTRUMENTAL` stem.
+- fixtxt corrects an `#MP3`/`#AUDIO` that names the `#VOCALS`/`#INSTRUMENTAL` stem to the song's full mix (or reports it if there are several), instead of keeping it so that the song played only the vocals.
 - The media cache now stores results for files whose path, title or other tags contain words like "Timed Out", "Broken Pipe" or "Permission Denied"; before, they were taken for read errors and probed again on every run.
 
 ## [0.2.2] - 2026-11-22

@@ -229,27 +229,47 @@ func reportUnreadable(ops *fsops.Ops, path string, err error) {
 // #COVER (#BACKGROUND) tag. fixtxt inserts or fixes that tag, unless it cannot choose
 // between several files or does not run (-t=false); either way the file is the song's
 // media, not clutter. A tag naming a missing file (a typo, an old name) counts as absent:
-// it references none of the files, so treating it as set would move all of them away.
+// it references none of the files, so treating it as set would move all of them away. So
+// does a tag naming a file of the wrong kind (#MP3 naming the video, #VIDEO an mp3), and an
+// #MP3/#AUDIO naming the #VOCALS/#INSTRUMENTAL stem: fixtxt replaces such a value when it
+// can choose (see fixtxt's resolveFileTag) and leaves it when it cannot, and then the files
+// it would choose from are the ones that must stay.
 // The txt is read through ops, so in a dry run the tags fixtxt would write count.
 func isUntaggedMedia(ops *fsops.Ops, songFolder, name string) bool {
 	isAudio, isVideo, isImage := utils.IsAudioFile(name), utils.IsVideoFile(name), utils.IsImageFile(name)
-	if !isAudio && !isVideo && !isImage {
+	if (!isAudio && !isVideo && !isImage) || utils.IsHidden(name) {
+		// Hidden files (macOS "._x.mp3", leftovers of interrupted runs) are never media:
+		// fixtxt never chooses them.
 		return false
 	}
 	tags, err := utils.ReadSongTags(ops, songFolder)
 	if err != nil {
 		return true // no readable song txt: never move media
 	}
-	untagged := func(tag string) bool {
-		_, _, found := utils.ResolveFileName(songFolder, tags[tag])
-		return !found
+	resolve := func(tag string) (string, bool) {
+		onDisk, _, found := utils.ResolveFileName(songFolder, tags[tag])
+		return onDisk, found
+	}
+	stems := map[string]bool{}
+	for _, tag := range []string{"VOCALS", "INSTRUMENTAL"} {
+		if onDisk, found := resolve(tag); found {
+			stems[onDisk] = true
+		}
+	}
+	// untagged reports whether tag names no existing file of the kind isKind (nil = any).
+	untagged := func(tag string, isKind func(string) bool) bool {
+		onDisk, found := resolve(tag)
+		return !found || (isKind != nil && !isKind(onDisk))
 	}
 	if isImage {
-		return (untagged("COVER") && utils.FindCoverImage(ops, songFolder) == name) ||
-			(untagged("BACKGROUND") && utils.FindBackgroundImage(ops, songFolder) == name)
+		return (untagged("COVER", nil) && utils.FindCoverImage(ops, songFolder) == name) ||
+			(untagged("BACKGROUND", nil) && utils.FindBackgroundImage(ops, songFolder) == name)
 	}
-	if isAudio && untagged("MP3") && untagged("AUDIO") {
+	// name itself is a visible audio (video) file, so a file of the right kind exists. (A
+	// stem is never moved anyway: its own tag references it.)
+	mainAudio := func(n string) bool { return utils.IsAudioFile(n) && !stems[n] }
+	if isAudio && untagged("MP3", mainAudio) && untagged("AUDIO", mainAudio) {
 		return true
 	}
-	return isVideo && untagged("VIDEO")
+	return isVideo && untagged("VIDEO", utils.IsVideoFile)
 }

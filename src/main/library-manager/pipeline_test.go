@@ -416,3 +416,33 @@ func TestPipelineLeavesCacheFile(t *testing.T) {
 		})
 	}
 }
+
+// fixtxt cannot choose between two takes for an #MP3 naming the video, so it reports them
+// in missing_files.txt and leaves the tag; cleanup must keep both takes for the user to
+// choose from. A stale #MP3 naming the vocals stem is corrected to the full mix, which
+// cleanup then keeps.
+func TestPipelineKeepsAudioOfWrongKindTags(t *testing.T) {
+	lib := t.TempDir()
+	testutil.WriteFiles(t, lib, map[string]string{
+		"A - S/song.txt":   "#TITLE:S\n#ARTIST:A\n#MP3:clip.mp4\n#VIDEO:clip.mp4\n#BPM:300\n: 0 4 0 la\nE\n",
+		"A - S/clip.mp4":   "v",
+		"A - S/take1.mp3":  "a",
+		"A - S/take2.mp3":  "b",
+		"B - V/song.txt":   "#TITLE:V\n#ARTIST:B\n#MP3:vocals.mp3\n#VOCALS:vocals.mp3\n#BPM:300\n: 0 4 0 la\nE\n",
+		"B - V/full.mp3":   "a",
+		"B - V/vocals.mp3": "v",
+	})
+	cfg := mustConfig(t, lib, false)
+	runPipeline(t, cfg)
+	for _, p := range []string{"A - S/clip.mp4", "A - S/take1.mp3", "A - S/take2.mp3", "B - V/full.mp3", "B - V/vocals.mp3"} {
+		if _, err := os.Stat(filepath.Join(lib, p)); err != nil {
+			t.Errorf("%s was moved away: %v", p, err)
+		}
+	}
+	if report := testutil.ReadFile(t, cfg.ReportPath("missing_files.txt")); !strings.Contains(report, "take1.mp3, take2.mp3") {
+		t.Errorf("missing_files.txt does not list the takes:\n%s", report)
+	}
+	if txt := testutil.ReadFile(t, filepath.Join(lib, "B - V", "song.txt")); !strings.Contains(txt, "#MP3:full.mp3\n") {
+		t.Errorf("B - V/song.txt = %q, want #MP3:full.mp3", txt)
+	}
+}

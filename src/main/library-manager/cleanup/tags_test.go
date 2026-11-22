@@ -49,6 +49,69 @@ func TestMediaTagsMustNameAnExistingFile(t *testing.T) {
 			wantLib: []string{"S/song.txt", "S/take1.mp3", "S/take2.mp3"},
 		},
 		{
+			// fixtxt leaves the tag when it cannot choose; the candidates stay.
+			name: "#MP3 names the video, two audio candidates",
+			library: map[string]string{
+				"S/song.txt":  "#ARTIST:A\n#TITLE:S\n#MP3:clip.mp4\n#VIDEO:clip.mp4\n" + notes,
+				"S/clip.mp4":  "v",
+				"S/take1.mp3": "a",
+				"S/take2.mp3": "b",
+			},
+			wantLib: []string{"S/clip.mp4", "S/song.txt", "S/take1.mp3", "S/take2.mp3"},
+		},
+		{
+			name: "#AUDIO names the video, two audio candidates",
+			library: map[string]string{
+				"S/song.txt":  "#ARTIST:A\n#TITLE:S\n#AUDIO:clip.mp4\n#VIDEO:clip.mp4\n" + notes,
+				"S/clip.mp4":  "v",
+				"S/take1.mp3": "a",
+				"S/take2.mp3": "b",
+			},
+			wantLib: []string{"S/clip.mp4", "S/song.txt", "S/take1.mp3", "S/take2.mp3"},
+		},
+		{
+			// Hidden files are never media, whatever the tags name.
+			name: "hidden audio next to a stem-only and a video-only song",
+			library: map[string]string{
+				"S/song.txt":   "#ARTIST:A\n#TITLE:S\n#MP3:inst.mp3\n#INSTRUMENTAL:inst.mp3\n#VOCALS:voc.mp3\n" + notes,
+				"S/inst.mp3":   "i",
+				"S/voc.mp3":    "v",
+				"S/._inst.mp3": "x",
+				"V/song.txt":   "#ARTIST:A\n#TITLE:V\n#MP3:clip.mp4\n#VIDEO:clip.mp4\n" + notes,
+				"V/clip.mp4":   "v",
+				"V/._x.mp3":    "x",
+			},
+			wantLib:   []string{"S/inst.mp3", "S/song.txt", "S/voc.mp3", "V/clip.mp4", "V/song.txt"},
+			wantExtra: []string{"S/._inst.mp3", "V/._x.mp3"},
+		},
+		{
+			name: "#MP3 names the video, one audio file (-t=false)",
+			library: map[string]string{
+				"S/song.txt": "#ARTIST:A\n#TITLE:S\n#MP3:clip.mp4\n#VIDEO:clip.mp4\n" + notes,
+				"S/clip.mp4": "v",
+				"S/song.mp3": "a",
+			},
+			wantLib: []string{"S/clip.mp4", "S/song.mp3", "S/song.txt"},
+		},
+		{
+			name: "#VIDEO names the audio file (-t=false)",
+			library: map[string]string{
+				"S/song.txt": "#ARTIST:A\n#TITLE:S\n#MP3:song.mp3\n#VIDEO:song.mp3\n" + notes,
+				"S/clip.mp4": "v",
+				"S/song.mp3": "a",
+			},
+			wantLib: []string{"S/clip.mp4", "S/song.mp3", "S/song.txt"},
+		},
+		{
+			name: "#MP3 names the vocals stem (-t=false)",
+			library: map[string]string{
+				"S/song.txt":   "#ARTIST:A\n#TITLE:S\n#MP3:vocals.mp3\n#VOCALS:vocals.mp3\n" + notes,
+				"S/song.mp3":   "a",
+				"S/vocals.mp3": "v",
+			},
+			wantLib: []string{"S/song.mp3", "S/song.txt", "S/vocals.mp3"},
+		},
+		{
 			name: "misspelled #MP3, the only audio file (-t=false)",
 			library: map[string]string{
 				"S/song.txt": "#ARTIST:A\n#TITLE:S\n#MP3:Sogn.mp3\n" + notes,

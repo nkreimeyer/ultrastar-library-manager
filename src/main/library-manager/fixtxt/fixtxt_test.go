@@ -575,6 +575,18 @@ func TestRunChoosesAudioFile(t *testing.T) {
 			want:   "#MP3:c-full.mp3",
 		},
 		{
+			name:   "#MP3 naming the vocals stem is set to the full mix",
+			files:  stems,
+			header: []string{"#VOCALS:a-vocals.mp3", "#INSTRUMENTAL:b-inst.mp3", "#MP3:a-vocals.mp3"},
+			want:   "#MP3:c-full.mp3",
+		},
+		{
+			name:   "#MP3 naming a stem stays if there is no other audio file",
+			files:  map[string]string{"a-vocals.mp3": "v", "b-inst.mp3": "i"},
+			header: []string{"#VOCALS:a-vocals.mp3", "#INSTRUMENTAL:b-inst.mp3", "#MP3:a-vocals.mp3"},
+			want:   "#MP3:a-vocals.mp3",
+		},
+		{
 			name:   "vocals and instrumental are no candidates for an inserted #MP3",
 			files:  stems,
 			header: []string{"#VOCALS:a-vocals.mp3", "#INSTRUMENTAL:b-inst.mp3"},

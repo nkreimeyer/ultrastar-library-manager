@@ -320,3 +320,18 @@ func TestRunWithProgress(t *testing.T) {
 		t.Errorf("Progress calls = %v, want %v", calls, want)
 	}
 }
+
+// preferTaggedAudio keeps the stems: an #MP3 naming the vocals stem next to an #AUDIO
+// naming one of two takes is still of the wrong kind.
+func TestPreferTaggedAudioKeepsStems(t *testing.T) {
+	dir := t.TempDir()
+	testutil.WriteFiles(t, dir, map[string]string{"take1.mp3": "a", "take2.mp3": "b", "vocals.mp3": "v"})
+	in := fileChoice{candidates: 2, ambiguous: []string{"take1.mp3", "take2.mp3"}, stems: map[string]bool{"vocals.mp3": true}}
+	got := preferTaggedAudio(dir, []string{"#AUDIO:take1.mp3\n", "#MP3:vocals.mp3\n"}, in)
+	if got.name != "take1.mp3" || got.isMainAudio("vocals.mp3") || !got.isMainAudio("take2.mp3") {
+		t.Errorf("preferTaggedAudio = %+v; want take1.mp3 with vocals.mp3 still a stem", got)
+	}
+	if v, ok, _ := resolveFileTag(dir, "vocals.mp3", got, got.isMainAudio); !ok || v != "take1.mp3" {
+		t.Errorf("resolveFileTag(#MP3:vocals.mp3) = %q, %v; want take1.mp3", v, ok)
+	}
+}

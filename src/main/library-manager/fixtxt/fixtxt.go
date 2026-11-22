@@ -618,6 +618,17 @@ type fileChoice struct {
 	name       string   // replacement value, "" if there is none
 	candidates int      // number of files of the tag's own kind
 	ambiguous  []string // the candidates, if there are several and none is preferred
+	// stems are the on-disk names of the #VOCALS/#INSTRUMENTAL files (audio choices only):
+	// they are no candidates, and an #MP3/#AUDIO naming one is of the wrong kind (see
+	// isMainAudio).
+	stems map[string]bool
+}
+
+// isMainAudio reports whether name is an audio file and not one of choice's stems: the
+// kind an #MP3/#AUDIO tag must name. An audio tag naming the vocals stem while the full
+// mix is there would make the song play only the vocals (and cleanup move the mix away).
+func (choice fileChoice) isMainAudio(name string) bool {
+	return utils.IsAudioFile(name) && !choice.stems[name]
 }
 
 // chooseAudio picks the file for a missing or wrong #MP3/#AUDIO tag. Audio files used by
@@ -640,7 +651,7 @@ func chooseAudio(rootDir string, lines []string, files songFiles, info SongInfo,
 		}
 	}
 
-	choice := fileChoice{candidates: len(candidates)}
+	choice := fileChoice{candidates: len(candidates), stems: stems}
 	switch len(candidates) {
 	case 0:
 		choice.name = video.name
@@ -713,7 +724,7 @@ func preferTaggedAudio(rootDir string, header []string, audio fileChoice) fileCh
 			continue
 		}
 		if onDisk, _, found := utils.ResolveFileName(rootDir, tagValue(line)); found && slices.Contains(audio.ambiguous, onDisk) {
-			return fileChoice{name: onDisk, candidates: audio.candidates}
+			return fileChoice{name: onDisk, candidates: audio.candidates, stems: audio.stems}
 		}
 	}
 	return audio
@@ -778,7 +789,7 @@ func updateTagsInLines(rootDir string, lines, updatedLines []string, files songF
 		case hasTag(line, "#MP3"), hasTag(line, "#AUDIO"):
 			found = setFlag(found, flagAudio)
 			tag, value := splitTag(line)
-			v, ok, unresolved := resolveFileTag(rootDir, value, audio, utils.IsAudioFile)
+			v, ok, unresolved := resolveFileTag(rootDir, value, audio, audio.isMainAudio)
 			if ok {
 				rewrite(i, tag, v)
 			}

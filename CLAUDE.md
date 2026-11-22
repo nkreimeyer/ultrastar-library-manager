@@ -355,7 +355,11 @@ Same exit codes and leftover-argument rule.
   exit code. Repeated tags resolve like UltraStar does (the last header occurrence wins;
   fixtxt's `removeDuplicateTags` also keeps the last and only looks at the header). For the
   seven file tags check (and so organize's `MediaSummary`) uses the last occurrence whose file
-  exists, else the last (`fileRefs`); cleanup and fixtxt use the plain last occurrence. Songs
+  exists, else the last (`fileRefs`); cleanup and fixtxt use the plain last occurrence. An
+  `#MP3`/`#AUDIO` counts as set only if it names main audio (not a `#VOCALS`/`#INSTRUMENTAL`
+  stem), `#VIDEO` only if it names a video (fixtxt's `resolveFileTag` with
+  `fileChoice.isMainAudio`, cleanup's `isUntaggedMedia`); fixtxt replaces a value of the
+  wrong kind when it can choose, and cleanup keeps the files it would choose from. Songs
   whose txt has a decode Problem are reported but never moved by `-move-broken`.
   `mediaInfo.HasVideo` means a moving video stream (attached cover art does not count).
   `VideoBitrate` comes from `mediatools.VideoBitrate`, the rule check and fixvideos share
