@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - UI: Stop now works for removing songs: during the check nothing is moved, and during the removal the current move finishes, the remaining songs are listed as skipped and undo puts back what was moved.
 - Starting a run no longer deletes every hidden `.*.tmp` file in the output folder: only the tool's own leftover report and journal temp files older than an hour are removed, and each removal is logged.
 - UI: a check or tidy-up that was stopped (or failed) before it changed anything is no longer shown as carried out; Go ahead can be used again.
+- UI: leaving a song alone or joining two songs while a plan is being applied (or just after) no longer changes the plan shown for the run that was already applied; the page is told to wait or check again.
 
 ## [0.2.1] - 2026-11-22
 

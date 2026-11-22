@@ -373,7 +373,10 @@ Same exit codes and leftover-argument rule.
   `PlanOptions.Exclude` (`MakePlan` is pure; `Replan` reads the buckets it has not seen yet
   from the library, read-only). Apply runs `organize.Run` for real with a `Review` hook that
   compares the new plan with the reviewed one (`organize.PlanDiff`: action, target, keeper per
-  `Ref`) and stops before the first move if they differ (the analysis then holds the new plan).
+  `Ref`) and stops before the first move if they differ (the analysis then holds the new plan). An apply sets the analysis'
+  `applying` flag before its job starts and the job clears it when it ends (also when it never
+  starts); exclusions and joins answer 409 while `applying` or `applied` is set, checked before
+  and after their `ReplanWith`.
   `organize.Options` has `Ctx` (checked before each inspection and move; a run stopped during the moves is journaled, a parked song is moved
   out of its temporary name) and `Progress`; so has `organize.RemoveOptions` (a stop while the tags
   are read moves nothing, moves not tried are `skipped` with "the run was stopped"). `fsops.Stats` has JSON names (the UI reads

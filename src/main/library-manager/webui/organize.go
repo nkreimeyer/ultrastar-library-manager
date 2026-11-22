@@ -121,6 +121,10 @@ type organizeAnalysis struct {
 	join    [][2]string   // pairs of refs the reviewer treats as one song
 	plan    organize.Plan // review.Plan with exclude applied; review is nil if no song step ran
 	applied bool
+	// applying: an apply job of this analysis runs (set by handleOrganizeApply before the job
+	// starts, cleared when it ends). Exclusions and joins are refused meanwhile: the run plans
+	// with the ones it read at its start.
+	applying bool
 	// tidy is what a tidy-up's text and cleanup steps would change (nil for other runs);
 	// tidyDone: an apply ran them already (it then stopped at a changed song plan).
 	tidy     *tidyPlan
@@ -202,6 +206,33 @@ func (s *Server) handleOrganizeAnalysis(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, v)
 }
 
+// replanHook, if set, runs between an exclusion's or join's new plan and storing it (tests).
+var replanHook func()
+
+// editable says whether exclusions and joins may still change the plan; the caller holds s.mu.
+func (a *organizeAnalysis) editable() error {
+	switch {
+	case a.applied:
+		return fmt.Errorf("this plan was applied already")
+	case a.applying:
+		return fmt.Errorf("this plan is being applied; wait until the run has ended")
+	}
+	return nil
+}
+
+// stillEditable checks again, before a new plan made from rv is stored, that nothing
+// happened while it was made: an apply that started or accepted the plan meanwhile keeps
+// the plan it applies, and a changed plan needs another review. The caller holds s.mu.
+func (a *organizeAnalysis) stillEditable(rv *organize.Review) error {
+	if err := a.editable(); err != nil {
+		return err
+	}
+	if a.review != rv {
+		return fmt.Errorf("the plan changed meanwhile; review it again")
+	}
+	return nil
+}
+
 // handleOrganizeExclude sets the excluded songs of an analysis and plans again.
 func (s *Server) handleOrganizeExclude(w http.ResponseWriter, r *http.Request) {
 	var q struct {
@@ -221,10 +252,11 @@ func (s *Server) handleOrganizeExclude(w http.ResponseWriter, r *http.Request) {
 		ex[ref] = true
 	}
 	s.mu.Lock()
-	rv, applied, join := a.review, a.applied, a.join
+	rv, join := a.review, a.join
+	err = a.editable()
 	s.mu.Unlock()
-	if applied {
-		writeError(w, http.StatusConflict, fmt.Errorf("this plan was applied already"))
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
 		return
 	}
 	if rv == nil {
@@ -232,10 +264,13 @@ func (s *Server) handleOrganizeExclude(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	plan := rv.ReplanWith(ex, join) // in memory (only buckets no plan needed yet are read), may take a moment for a big library
+	if replanHook != nil {
+		replanHook()
+	}
 	s.mu.Lock()
-	if a.review != rv {
+	if err := a.stillEditable(rv); err != nil {
 		s.mu.Unlock()
-		writeError(w, http.StatusConflict, fmt.Errorf("the plan changed meanwhile; review it again"))
+		writeError(w, http.StatusConflict, err)
 		return
 	}
 	a.exclude, a.plan = ex, plan
@@ -260,10 +295,11 @@ func (s *Server) handleOrganizeJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	rv, applied, ex := a.review, a.applied, a.exclude
+	rv, ex := a.review, a.exclude
+	err = a.editable()
 	s.mu.Unlock()
-	if applied {
-		writeError(w, http.StatusConflict, fmt.Errorf("this plan was applied already"))
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
 		return
 	}
 	if rv == nil {
@@ -281,10 +317,13 @@ func (s *Server) handleOrganizeJoin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	plan := rv.ReplanWith(ex, q.Join)
+	if replanHook != nil {
+		replanHook()
+	}
 	s.mu.Lock()
-	if a.review != rv {
+	if err := a.stillEditable(rv); err != nil {
 		s.mu.Unlock()
-		writeError(w, http.StatusConflict, fmt.Errorf("the plan changed meanwhile; review it again"))
+		writeError(w, http.StatusConflict, err)
 		return
 	}
 	a.join, a.plan = q.Join, plan
@@ -314,20 +353,37 @@ func (s *Server) handleOrganizeApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	applied, exclude, join := a.applied, a.exclude, a.join
+	applied, applying, exclude, join := a.applied, a.applying, a.exclude, a.join
+	if !applied && !applying {
+		a.applying = true // from here on, exclusions and joins wait for the run's end
+	}
 	s.mu.Unlock()
-	if applied {
+	switch {
+	case applied:
 		writeError(w, http.StatusConflict, errPlanApplied)
 		return
+	case applying:
+		writeError(w, http.StatusConflict, fmt.Errorf("this plan is being applied already"))
+		return
+	}
+	doneApplying := func() {
+		s.mu.Lock()
+		a.applying = false
+		s.mu.Unlock()
 	}
 	m, _ := a.req.mode()
 	cfg, err := a.req.config(false)
 	if err != nil {
+		doneApplying()
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	ops := fsops.New(false)
-	s.startJob(w, s.newID("a"), a.req.jobKind("apply"), ops, func(ctx context.Context, c jobControl) (any, error) {
+	started := s.startJob(w, s.newID("a"), a.req.jobKind("apply"), ops, func(ctx context.Context, c jobControl) (any, error) {
+		defer doneApplying()
+		if applyJobHook != nil {
+			applyJobHook()
+		}
 		if err := cfg.PrepareOutDir(); err != nil {
 			return nil, err
 		}
@@ -394,7 +450,13 @@ func (s *Server) handleOrganizeApply(w http.ResponseWriter, r *http.Request) {
 		}
 		return res, runErr
 	})
+	if !started {
+		doneApplying() // another job runs: this apply never started
+	}
 }
+
+// applyJobHook, if set, runs at the start of an organize apply job (tests).
+var applyJobHook func()
 
 type folderRequest struct {
 	Library string `json:"library"`
