@@ -81,7 +81,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               jobs.go (one job at a time, logrus hook, SSE /api/job/events), system.go (tools, folder lister),
                               organize.go (validate/analyse/exclude/apply/history/undo),
                               check.go (the Check task: a dry-run check.Run shown as a report; "set aside broken songs" re-runs it
-                              with MoveBroken, not journaled so not covered by undo),
+                              with MoveBroken, not journaled so not covered by undo; the analysis counts as applied
+                              only once the apply job changed something or finished: a stop before any change can be retried),
                               overview.go (the overview job: songs, size, video/picture counts, songs per top folder, what is set aside; names and sizes, and whether a song txt is there),
                               originals.go (size of <out>/originals/ and its deletion: the one place the UI deletes files that
                               are not a conversion's own original; confirmed in the page, whole folder only, only in a folder with the output marker

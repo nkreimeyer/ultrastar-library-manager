@@ -131,6 +131,39 @@ func (s *Server) handleCheckAnalysis(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v)
 }
 
+var errCheckApplied = errors.New("the broken songs were moved already; check again")
+
+// applyStartHook, if set (tests), is called when a check apply or a tidy-up without a song
+// step starts its work.
+var applyStartHook func()
+
+// claimApply starts the work of an apply job: an analysis that an earlier job applied is
+// not applied again. (The handler checked before starting the job, but that job may have
+// been waiting behind another apply of the same analysis; jobs run one at a time, so none
+// runs now.)
+func (s *Server) claimApply(applied *bool, errApplied error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if *applied {
+		return errApplied
+	}
+	return nil
+}
+
+// markApplied marks an analysis applied after its apply job ran: once the job changed
+// something (applying the same review again would be wrong), or when it finished without
+// a stop or a failure. A job stopped or failed before it changed anything can be retried.
+// Reports and the media cache are not changes (they are not in Stats).
+func (s *Server) markApplied(applied *bool, ops *fsops.Ops, ctx context.Context, runErr error) {
+	st := ops.Stats()
+	changed := st.Written+st.Moved+st.Removed+st.Replaced > 0
+	if changed || (runErr == nil && ctx.Err() == nil && st.Failed == 0) {
+		s.mu.Lock()
+		*applied = true
+		s.mu.Unlock()
+	}
+}
+
 // handleCheckApply checks the library again and moves the songs with errors to invalid/
 // (check's MoveBroken; songs with an encoding problem stay). These moves are not
 // journaled, so the organize undo does not cover them: the folders are in
@@ -151,7 +184,7 @@ func (s *Server) handleCheckApply(w http.ResponseWriter, r *http.Request) {
 	applied := a.applied
 	s.mu.Unlock()
 	if applied {
-		writeError(w, http.StatusConflict, errors.New("the broken songs were moved already; check again"))
+		writeError(w, http.StatusConflict, errCheckApplied)
 		return
 	}
 	cfg, cv, err := a.req.config(false)
@@ -164,14 +197,18 @@ func (s *Server) handleCheckApply(w http.ResponseWriter, r *http.Request) {
 		if err := cfg.PrepareOutDir(); err != nil {
 			return nil, err
 		}
+		if err := s.claimApply(&a.applied, errCheckApplied); err != nil {
+			return nil, err
+		}
 		log.Infof("Moving broken songs to invalid/: library %s, output %s", cfg.SongDir, cfg.OutDir)
-		s.mu.Lock()
-		a.applied = true
-		s.mu.Unlock()
+		if applyStartHook != nil {
+			applyStartHook()
+		}
 		cache := mediacache.Open(ctx, cfg.SongDir) // see handleCheckAnalyse
 		defer func() { _ = cache.Save(ops) }()
 		runErr := check.Run(cfg, ops, check.Options{Deep: a.req.Deep, MoveBroken: true, Ctx: ctx, Cache: cache,
 			Progress: func(done, total int) { c.Progress("inspect", done, total) }})
+		s.markApplied(&a.applied, ops, ctx, runErr)
 		res := map[string]any{"analysis": a.id, "outDir": cv.OutDir, "library": cv.Library}
 		if data, err := os.ReadFile(cfg.ReportPath(checkReportFile)); err == nil && runErr == nil {
 			res["report"] = json.RawMessage(data)

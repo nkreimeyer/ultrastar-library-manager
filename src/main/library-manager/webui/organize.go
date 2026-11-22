@@ -296,6 +296,8 @@ func (s *Server) handleOrganizeJoin(w http.ResponseWriter, r *http.Request) {
 // maxDiffLines limits the plan differences shown.
 var maxDiffLines = 200
 
+var errPlanApplied = errors.New("this plan was applied already; check again for a new plan")
+
 // handleOrganizeApply runs the reviewed analysis for real. The run plans again; if its
 // plan moves anything differently from the reviewed one (a folder changed since), it
 // stops before the first move, and the analysis shows the new plan for another review.
@@ -315,7 +317,7 @@ func (s *Server) handleOrganizeApply(w http.ResponseWriter, r *http.Request) {
 	applied, exclude, join := a.applied, a.exclude, a.join
 	s.mu.Unlock()
 	if applied {
-		writeError(w, http.StatusConflict, fmt.Errorf("this plan was applied already; check again for a new plan"))
+		writeError(w, http.StatusConflict, errPlanApplied)
 		return
 	}
 	m, _ := a.req.mode()
@@ -359,13 +361,20 @@ func (s *Server) handleOrganizeApply(w http.ResponseWriter, r *http.Request) {
 				details: diff, result: changed,
 			}
 		}
-		if !slices.Contains(a.req.Tidy.steps(false), stepSongs) {
-			s.mu.Lock()
-			a.applied = true // no song plan to compare: the check's lists are all there is
-			s.mu.Unlock()
+		if err := s.claimApply(&a.applied, errPlanApplied); err != nil {
+			return nil, err
 		}
+		// Without a song step there is no song plan to compare: the check's lists are all
+		// there is, and the analysis is applied once the steps changed something or finished.
+		noSongs := !slices.Contains(a.req.Tidy.steps(false), stepSongs)
 		log.Infof("Applying %s: library %s, output %s", m, cfg.Library, cfg.OutDir)
+		if noSongs && applyStartHook != nil {
+			applyStartHook()
+		}
 		steps, runErr := run.run()
+		if noSongs {
+			s.markApplied(&a.applied, ops, ctx, runErr)
+		}
 		res := map[string]any{"analysis": a.id, "outDir": cfg.OutDir, "library": cfg.Library, "steps": steps}
 		if a.req.Tidy != nil {
 			res["tidy"] = true // the page shows the steps (also after a reload)
