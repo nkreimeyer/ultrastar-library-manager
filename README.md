@@ -30,9 +30,10 @@ cd src/main/library-manager
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -tags netgo -ldflags '-w -extldflags "-static"' -o library-manager .
 ```
 
-Prebuilt binaries: the CI (`.github/workflows/build.yml` and `.gitlab-ci.yml`) tests and
-builds `library-manager-{linux,windows,darwin}-amd64` on every push. A tag `v*` creates a
-release with the three binaries attached.
+Prebuilt binaries: the CI (`.github/workflows/build.yml` and `.gitlab-ci.yml`) runs gofmt,
+`go vet` and the tests on every push (GitHub: pushes to `main` and pull requests). Only a tag
+`v*` also builds `library-manager-{linux,windows,darwin}-amd64` and creates a release with the
+three binaries attached (on GitHub with a `SHA256SUMS` file).
 
 ## Usage
 
@@ -43,7 +44,7 @@ library-manager -s <song-dir> [flags]
 library-manager organize -s <dir> [-s ...] -l <library> [flags]   # see "Organizing the library"
 library-manager dedupe -l <library> [flags]                       # see "Removing duplicates in place"
 library-manager add -s <dir> [-s ...] -l <library> [flags]        # see "Adding songs to a library"
-library-manager remove -l <library> -artist <name> | -song "Artist - Title" | -from <file>   # see "Removing songs or artists"
+library-manager remove -l <library> -artist <name> | -song "Artist - Title" | -from <file> [flags]   # see "Removing songs or artists"
 ```
 
 | Flag | Default | Description |
@@ -233,7 +234,26 @@ can run at once, each on its own port. Started with `nohup`, the UI keeps runnin
 log out. A port given with `-addr` that is in use ends the
 program with exit code 1.
 
-The UI covers `dedupe`, `add` and `organize`:
+The start page lists these tasks:
+
+- **Tidy up my library**: `dedupe` together with the sanitizer's text, cleanup, audio and video
+  steps; you choose the steps. Undo covers only the duplicates and broken songs set aside:
+  leftover files and folders without a song stay in `extra-files/` and `invalid/` of the output
+  folder, and fixed song texts, evened-out audio and converted videos stay as they are.
+- **Add new songs to my library** (`add`) and **Build a new library from folders** (`organize`).
+- **Check my songs for problems**: the check module as a dry run, shown as a report; it can then
+  set the broken songs aside (not covered by undo).
+- **Remove songs from my library** (`remove`, patterns typed in the page): check first, untick
+  the songs to keep, then remove; undo puts them back.
+- **Put back set-aside songs**: browse the duplicates, broken, removed songs and leftover files in
+  the output folder and move chosen ones back (undo covers that too).
+- **See what is in my library**: songs, size, video and picture counts, songs per folder, what is
+  set aside.
+- **Read the reports of earlier runs**: the `.txt`/`.json` reports of the output folder, read-only.
+- **Free up space from audio backups**: the size of `originals/`, and deleting it after you
+  confirm (the only thing the UI deletes; the library is never touched).
+
+Tidy up, add and build work like this:
 
 1. Choose what to do and pick the folders (a folder picker or a pasted path).
 2. **Check first**: a dry run. Nothing in the library changes except the hidden media cache
@@ -531,8 +551,9 @@ A missing `#ARTIST` or `#TITLE` is taken from an obvious `Artist - Title` folder
 same rule the sanitizer uses to fill it; the report marks such matches), so a library that was
 not sanitized yet can be cleaned too. Songs without a readable song txt are never matched, and a matching song whose txt has an
 encoding problem stays in place (its tags may be read wrongly; fix it with the sanitizer
-first). Run with `-n` first: `remove_plan.txt` lists every song that would go, the pattern
-that matched it, and the patterns that matched nothing (usually a typo).
+first). Run with `-n` first: `remove_plan.txt` (and `remove_plan.json`) in the output folder
+list every song that would go, the pattern that matched it, and the patterns that matched
+nothing (usually a typo); a real run writes them for what it removed.
 
 `remove` shares the journal with organize, dedupe and add, so `-undo` of any of them reverts
 the most recent of these runs.

@@ -7,7 +7,8 @@
 // Every video written gets the metadata tag SANITIZER_VIDEO=processed, and tagged videos are
 // skipped on later runs. A video whose re-encode would be larger than the original is
 // tagged by a lossless remux, so it is not re-encoded on every run. Containers that cannot
-// carry the tag (AVI, MPEG) are remembered in the media journal instead.
+// carry the tag (AVI, MPEG), and videos whose tagging remux failed, are remembered in the
+// media journal instead.
 package fixvideos
 
 import (

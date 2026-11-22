@@ -1,6 +1,7 @@
 // Package journal remembers media files that were already processed (or found not worth
 // processing). It is needed for file formats that cannot carry a marker tag, such as raw
-// AAC or AVI; fixvideos records only those, fixaudio every file it normalizes.
+// AAC or AVI; fixvideos records those and taggable files whose lossless tagging remux
+// failed, fixaudio every file it normalizes.
 //
 // Files are identified by a content fingerprint instead of their path, so entries stay
 // valid when songs are renamed or moved (e.g. when the library is reorganized).

@@ -38,10 +38,10 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               cache: atomic, also in a dry run, not in Stats, sweeps stale own temps), FailUnreadable (the
                               "unreadable:<path>" FailOnce key), SkipUnreadable ("Skipping <folder>: <err>")
   utils/decode.go             txt decoding (DecodeTxt): UTF-16/UTF-8/#ENCODING/CP1250/CP1252, "when in doubt, Problem"
-  utils/txt.go                header tags, song-txt lookup, file references
-  utils/folders.go            song folder discovery (GetAllSongFolders)
-  utils/utils.go              media type checks, non-UTF-8 media names, FileTags/IsFileTag (the seven tags naming files),
-                              IsNoiseEntry (hidden, @eaDir, planned dry-run move: no song content)
+  utils/txt.go                header tags, song-txt lookup, file references, FileTags/IsFileTag (the seven tags naming files)
+  utils/folders.go            song folder discovery (GetAllSongFolders), IsNoiseEntry (hidden, @eaDir, planned dry-run
+                              move: no song content)
+  utils/utils.go              media type checks, non-UTF-8 media names
   utils/language.go           #LANGUAGE names -> codes: LanguageCodes (prefix table languagePrefixes, first match
                               wins, empty code = stop; whole words notLanguageNames); used by DecodeTxt's
                               CP1250 choice
@@ -54,7 +54,7 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   utils/image.go              image headers (JPEG/PNG/GIF via stdlib, own BMP/WebP readers), cover/background choice
   songtxt/                    UltraStar txt parser (tags, notes, breaks, duets, RELATIVE, B lines, BeatToMs); pure;
                               the shared rules: IsBodyLine (end of header), LineSpans (line numbering), IsDuet
-  fixtxt/                     dedupe song txts, decode → UTF-8, fix #MP3/#AUDIO/#VIDEO/#COVER/#BACKGROUND, fill #ARTIST/#TITLE from the folder name;
+  fixtxt/                     dedupe song txts, decode → UTF-8, fix the seven file tags (utils.FileTags), fill #ARTIST/#TITLE from the folder name;
                               RunWith(Options{Encoding, FileTags, FillTags, DuplicateTxts, MoveBroken, Ctx, Progress}) (Run = all on);
                               with Encoding off a txt that is not UTF-8 is never written (every write is UTF-8)
   cleanup/                    move unreferenced files to extra-files/, near-empty folders to invalid/;
@@ -100,16 +100,22 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               setup.go (NewConfig per Mode, NewUndoConfig, NewOptions: shared by the CLI and the UI;
                               dedupe drops -priority/-ignore-the), quality.go (keeper order), plan.go (MakePlan, orderMoves; pure), organize.go (Run, Undo),
                               journal.go (organize-journal.jsonl), report.go (organize_plan.json/.txt;
-                              writeReportFiles also writes remove_plan.*)
+                              writeReportFiles also writes remove_plan.*), compare.go (PlanDiff, ErrPlanChanged: the
+                              Review hook's plan comparison), restore.go (ListSetAside, Restore, RestoreRef, SetAsideItem:
+                              the set-aside listing and restore, journaled)
+  internal/testutil/          test helpers shared by the packages' _test.go files only (fixtures, snapshots, ffmpeg
+                              checks and media generators, fake tools, log capture, NotesTxt); TestNoNonTestImports enforces it
 old/                          legacy Python/shell (duplicate detection by folder name, fuzzy txt compare);
                               old/repair/: the archived U+FFFD repair (repairtxt, CLI, UI), not built (see its README)
 test-assets/                  local fixture library (gitignored, not in the repo)
 ```
 
 Dependencies: `logrus` and `golang.org/x/text` (charmaps, UTF-16, Unicode normalization).
-CI: `.github/workflows/build.yml` and `.gitlab-ci.yml` run gofmt, vet and `go test -race` (with ffmpeg),
-on every push; only tags `v*` also cross-build linux/windows/darwin amd64 with `CGO_ENABLED=0` and make a
-release (untagged runs do not build). The GitLab
+CI: `.github/workflows/build.yml` (pushes to main, tags `v*`, pull requests, manual runs) and
+`.gitlab-ci.yml` (branch pushes, or the merge request pipeline while one is open; tags) run gofmt, vet
+and `go test -race` (with ffmpeg); only tags `v*` also cross-build linux/windows/darwin amd64 with `CGO_ENABLED=0` and make a
+release (GitHub with `SHA256SUMS`, GitLab with the tag's `CHANGELOG.md` section as notes; untagged runs do
+not build). The GitLab
 jobs carry the runner tag `docker` (they need the Docker executor: `image:` is ignored by a shell runner). Keep the
 module free of cgo so this keeps working.
 Runtime needs `ffmpeg` ≥ 5.1 and `ffprobe` on PATH for `-m` and `-a` (enforced: `mediatools.Require`
@@ -152,9 +158,11 @@ Same exit codes and leftover-argument rule.
   refactors, tests, CI and docs-only commits need no entry. A release moves `[Unreleased]` to a
   dated version heading.
 - **All library modifications go through `fsops.Ops`** (`WriteFileAtomic`, `MoveInto`,
-  `MoveTo`, `Rename`, `Replace`, `Remove`, `RemoveEmptyDir`, `PlanReplace`). Never call `os.Rename/Remove/WriteFile/Create`
-  on library paths. The only exception is removing your own `fsops.TempFileNear` file after
-  a failure. This is what makes dry-run, atomic writes and the summary/exit code work.
+  `MoveTo`, `CopyInto`, `Rename`, `Replace`, `Remove`, `RemoveEmptyDir`, `RemoveEmptyDirWithCache`,
+  `PlanReplace`, `WriteCacheFile`; in the output folder `WriteReport`, `WriteJSONReport`, `AppendJournal`).
+  Never call `os.Rename/Remove/WriteFile/Create` on library paths. The only exception is removing
+  your own `fsops.TempFileNear` file after a failure. The rule is about the library:
+  `config.PrepareOutDir` creates the output folder and its marker file itself. This is what makes dry-run, atomic writes and the summary/exit code work.
 - **Never delete.** Removed files go to `cfg.ExtraFilesDir()`, and broken folders to
   `cfg.InvalidDir()`, using `ops.MoveInto(src, dir, cfg.RelPath(...))` so the library structure
   is mirrored. Reports go to `ops.WriteReport(cfg.ReportPath(name), …)` with sorted content;
@@ -256,7 +264,9 @@ Same exit codes and leftover-argument rule.
 - Concurrency: every module pool is `utils.ForEachParallel(ctx, items, utils.Parallel{Workers,
   Progress, OnPanic}, fn)`. Workers: fixtxt and cleanup 100 over folders (the size of the old
   batches, now a pool), fixaudio, check and organize (inspection, remove's tag reading)
-  min(16, NumCPU) over folders, fixvideos 4 over video files. It never starts more goroutines than items; once ctx is
+  min(16, NumCPU) over folders, fixvideos 4 over video files. The same pool also runs the
+  set-aside listing (`organize/restore.go`, organize's worker count, no ctx), the UI overview
+  job (`webui/overview.go`, its own min(16, NumCPU)) and the cache prune (16). It never starts more goroutines than items; once ctx is
   done no item starts and it returns ctx.Err() (nil = every item ran); Progress calls are
   serialized. A panic in fn is recovered and logged with the item and stack, then OnPanic
   runs: modules log the song and call `ops.Fail()`, and the other songs still run, so fn must
@@ -328,7 +338,9 @@ Same exit codes and leftover-argument rule.
 - check: `analyze` is a pure function over the parsed song and probed file info, so every
   rule is table-tested without ffmpeg. Findings are not `ops.Fail`s and don't change the
   exit code. Repeated tags resolve like UltraStar does (the last header occurrence wins;
-  fixtxt's `removeDuplicateTags` also keeps the last and only looks at the header). Songs
+  fixtxt's `removeDuplicateTags` also keeps the last and only looks at the header). For the
+  seven file tags check (and so organize's `MediaSummary`) uses the last occurrence whose file
+  exists, else the last (`fileRefs`); cleanup and fixtxt use the plain last occurrence. Songs
   whose txt has a decode Problem are reported but never moved by `-move-broken`.
   `mediaInfo.HasVideo` means a moving video stream (attached cover art does not count).
   `VideoBitrate` comes from `mediatools.VideoBitrate`, the rule check and fixvideos share
@@ -474,7 +486,8 @@ stripped from the only audio source, and the README.
   (`ops.CopyInto`, before `ops.Replace`). Each file is processed only once, thanks to the
   marker tag or journal, so it is backed up only once.
 - Re-encoding must be idempotent. Mark processed or checked media with a tag
-  (`SANITIZER_NORMALIZED`, `SANITIZER_VIDEO`). Formats that cannot hold one go into the
+  (`SANITIZER_NORMALIZED`, `SANITIZER_VIDEO`). Formats that cannot hold one, and files
+  whose lossless tagging remux failed (fixvideos' `markChecked`), go into the
   content-fingerprint journal (`journal`, `<out>/media-journal.txt`), which survives renames
   and moves (e.g. the A–Z reorganization). `.m4a` files are journaled, not tagged: writing
   the tag needs `-movflags +use_metadata_tags`, which drops the cover and the iTunes tags.
@@ -497,9 +510,14 @@ stripped from the only audio source, and the README.
 
 Still open (roadmap items):
 
-- **No signal handling.** Ctrl-C during `-m`/`-a` leaves a hidden `.*.sanitizer-*` temp file.
-  It is ignored as media and moved to `extra-files/` by the next cleanup run, and the
-  original is untouched.
+- **No signal handling in the CLI.** Only `ui` stops cleanly (`signal.NotifyContext` over
+  `stopSignals`; the job's ctx reaches the modules' `Options.Ctx`). The module flags and
+  organize/dedupe/add/remove pass no ctx, so Ctrl-C kills the process: during `-m`/`-a` it
+  leaves a hidden `.*.sanitizer-*` temp file (ignored as media, moved to `extra-files/` by the
+  next cleanup run, the original untouched); during organize a song may stay parked under
+  `.organize-tmp-*` until `-undo`. Even with a ctx, encodes, tagging remuxes and packet
+  measurements use `exec.Command` and run to the end (only probes and check's decodes use
+  `exec.CommandContext`).
 - **Dry-run simulates txts and moves, not media.** Later modules see planned txt writes
   (`ops.ReadFile`) and planned moves away (`ops.WouldBeMoved`, planned merge targets), so
   the fixtxt → cleanup → check plan matches a real run (`TestPipelineDryRunMatchesRealRun`).
@@ -578,26 +596,11 @@ similarity check 195, plus the key fixes 259 (no false merge found in review). *
 re-timed charts (another tempo) are only listed, never joined; artist aliases (`30`/`Thirty Seconds
 to Mars`, `CCR`), placeholder artists, U+FFFD as a wildcard, German `ae`/`ä` spellings; audio fingerprints, and choosing between several song txts *inside one folder* by content.
 
-Before organize: Go only "dedupes" multiple song `.txt` files *inside one folder*: it keeps the
-newest and moves the others to `extra-files/` (by mtime only, no content comparison).
-Cross-folder detection only exists in `old/` and is folder-name based. Its `(?!DUET)` check is
-case-sensitive, it scans the top level only, picks a winner by listing order, and crashes if
-`songs.dup/<name>` already exists.
-
-- Port it to a Go `dedupe` module that is **report-only by default**. It writes
-  `duplicates.txt` (or JSON) with groups and a suggested keeper. Moving files to `songs.dup/`
-  happens only behind an explicit flag.
-- Identity key from the parsed `#ARTIST`/`#TITLE`, not folder names. Normalize Unicode with
-  NFC, casefold, and strip punctuation, `feat./ft.` and bracket/paren qualifiers. Keep the
-  qualifiers that change the song (`[DUET]`, `Live`, `Acoustic`, `Remix`, language).
-- Fuzzy matching: title similarity within the same artist, plus content similarity of the
-  note lines (same BPM and note count → near-certain duplicate). Optionally add an audio
-  fingerprint (chromaprint `fpcalc`) for same-audio checks.
-- Choose the keeper on quality: txt completeness (has notes, `E`, valid BPM), video
-  present/resolution, audio bitrate, cover present, `#VERSION`, no repair warnings.
-- Within a folder: keep only the txt that parses as UltraStar, i.e. ignore `License.txt`
-  and other non-song txts. Treat duet/alternate txts as variants, not duplicates. Never
-  delete if no candidate qualifies.
+Inside one folder, fixtxt still keeps only the newest song txt (`DuplicateTxts`, by mtime, no
+content comparison) and moves the others to `extra-files/`; a content-based choice there should
+keep only a txt that parses as UltraStar, treat duet/alternate txts as variants and never move
+anything if no candidate qualifies. (The original plan, a Go port of `old/`'s folder-name
+detection, is done as organize/dedupe above.)
 
 ### 2. Fix encoding checks and broken umlauts (ä ö ü ß …)
 
@@ -727,8 +730,9 @@ Slice 2 is **done** (2026-11):
   fixtxt would use; reports and the journal are fsynced.
 
 Next slices:
-- Signal handling: `signal.NotifyContext` in main, a ctx in `Config`, `exec.CommandContext`
-  for ffmpeg, and removing the temp file on cancel.
+- Signal handling in the CLI: `signal.NotifyContext` in main and the subcommands, passed as
+  the modules' and organize's `Options.Ctx` (the `ui` subcommand and the module contexts
+  exist); `exec.CommandContext` for the encodes, and removing the temp file on cancel.
 - Parse each song's txt **once** into a `Song` struct (tags with their original case and
   order, note lines, the chosen txt file) that all modules share. This replaces substring
   reference checks. (Dry-run already applies earlier modules' planned txt changes through
@@ -738,7 +742,7 @@ Next slices:
   at least opt-in destructive modules, progress output (n/total, ETA), and an undo journal
   for moves and txt edits (not for re-encoded media, see "Design decision").
 - Audio: loudness normalization (`loudnorm`, EBU R128) instead of peak normalization.
-- CI: `go vet`, `staticcheck` and `go test -race`.
+- CI: `staticcheck` (`go vet` and `go test -race` run already).
 
 ### 5. Final library structure: one folder per starting character
 
@@ -776,7 +780,7 @@ character, the way UltraStar Manager organizes songs:
 - **Folder name**: `Artist - Title`, built from the tags, with characters that are invalid
   on Windows/macOS/Linux replaced or removed. Keep qualifiers that change the song, such as
   `[DUET]` or `(Live)`. Renaming files inside a song folder (e.g. `Artist - Title.mp3`) is
-  optional, and the txt must be updated in the same step (`ReplaceInUSTxtFile`).
+  optional, and the txt must be updated in the same step (`utils.ReplaceFileReference`).
 - **Collisions across sources** are resolved by the duplicate detection from item 1: keep
   the best version, and send the others to `<out>/duplicates/<source>/…` for review.
 - Only songs that pass item 3's checks go into the library. Broken ones go to
