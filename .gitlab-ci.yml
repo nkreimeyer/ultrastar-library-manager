@@ -63,12 +63,21 @@ release:
   before_script: []
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/
+  # The release notes are the tag's section of CHANGELOG.md ("## [0.2.1] - date", without the heading).
   script:
-    - echo "Release $CI_COMMIT_TAG"
+    - VERSION="${CI_COMMIT_TAG#v}"
+    - |
+      awk -v v="$VERSION" '
+        /^## \[/ { if (on) exit; on = (index($0, "## [" v "]") == 1); next }
+        on && /^\[[^]]+\]: / { next }
+        on { print }
+      ' CHANGELOG.md | sed '/./,$!d' > release_notes.md
+    - test -s release_notes.md || { echo "CHANGELOG.md has no section for $VERSION"; exit 1; }
+    - cat release_notes.md
   release:
     tag_name: $CI_COMMIT_TAG
     name: $CI_COMMIT_TAG
-    description: library-manager $CI_COMMIT_TAG
+    description: ./release_notes.md
     assets:
       links:
         - name: library-manager-linux-amd64
