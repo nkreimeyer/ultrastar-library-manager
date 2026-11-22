@@ -69,19 +69,36 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      # The release notes are the tag's section of CHANGELOG.md ("## [0.2.1] - date", without
+      # the heading), as on GitLab.
+      - name: Release notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v v="$VERSION" '
+            /^## \[/ { if (on) exit; on = (index($0, "## [" v "]") == 1); next }
+            on && /^\[[^]]+\]: / { next }
+            on { print }
+          ' CHANGELOG.md | sed '/./,$!d' > release_notes.md
+          test -s release_notes.md || { echo "CHANGELOG.md has no section for $VERSION"; exit 1; }
+          cat release_notes.md
       - name: Create release
         working-directory: dist
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           sha256sum library-manager-* > SHA256SUMS
-          # A re-run (or a tag pushed again) replaces the assets of the existing release.
+          # A re-run (or a tag pushed again) replaces the notes and assets of the existing release.
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file ../release_notes.md
             gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber library-manager-* SHA256SUMS
           else
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes library-manager-* SHA256SUMS
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file ../release_notes.md library-manager-* SHA256SUMS
           fi

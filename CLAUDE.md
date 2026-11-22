@@ -122,7 +122,7 @@ Dependencies: `logrus` and `golang.org/x/text` (charmaps, UTF-16, Unicode normal
 CI: `.github/workflows/build.yml` (pushes to main, tags `v*`, pull requests, manual runs) and
 `.gitlab-ci.yml` (branch pushes, or the merge request pipeline while one is open; tags) run gofmt, vet
 and `go test -race` (with ffmpeg); only tags `v*` also cross-build linux/windows/darwin amd64 with `CGO_ENABLED=0` and make a
-release (GitHub with `SHA256SUMS`, GitLab with the tag's `CHANGELOG.md` section as notes; untagged runs do
+release (both with the tag's `CHANGELOG.md` section as notes, GitHub also with `SHA256SUMS`; untagged runs do
 not build). Both release jobs are idempotent: a re-run or a re-pushed tag updates the
 existing release (GitLab through the Releases API with the job token, not the `release:` keyword,
 which fails if the release exists; GitHub with `gh release upload --clobber`). The GitLab
