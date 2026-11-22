@@ -19,7 +19,7 @@ import (
 )
 
 func TestBuildFFmpegArgs(t *testing.T) {
-	head := []string{"-hide_banner", "-nostdin", "-loglevel", "error", "-i", "/lib/song/v.avi", "-map", "0:v:0"}
+	head := []string{"-hide_banner", "-nostdin", "-loglevel", "error", "-i", "/lib/song/v.avi", "-map", "0:V:0"}
 	x264 := []string{"-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23", "-maxrate", "2.5M", "-bufsize", "5.0M", "-preset", "fast"}
 	tail := []string{"-metadata", "SANITIZER_VIDEO=processed", "-movflags", "+use_metadata_tags", "-y", "/lib/song/.v.tmp.mp4"}
 	scale := []string{"-vf", "scale=w=1920:h=1080:force_original_aspect_ratio=decrease:force_divisible_by=2"}

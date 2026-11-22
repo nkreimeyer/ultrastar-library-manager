@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/nkreimeyer/library-manager/mediatools"
@@ -25,10 +24,8 @@ const maxStderr = 64 << 10
 // Head): the report quotes the first lines, so it does not change with a longer tail.
 func capStderr() *mediatools.OutputCap { return mediatools.NewOutputCap(maxStderr, 0) }
 
-// estimatedMsg is what ffprobe logs (at warning level) when it guesses the duration of
-// an mp3 from the bitrate of its first frames: a VBR file without Xing/VBRI header, as
-// left behind by many cutting tools. The guess can be off by a factor of two or more.
-const estimatedMsg = "Estimating duration from bitrate"
+// estimatedMsg is mediatools.EstimatedDurationMsg.
+const estimatedMsg = mediatools.EstimatedDurationMsg
 
 // probeMedia runs ffprobe on path (an absolute path) and returns the container duration,
 // the stream types, the audio bitrate and the video size and bitrate. An estimated
@@ -52,14 +49,14 @@ func probeMedia(ctx context.Context, path string) (info mediaInfo, fileResult bo
 			if msg == "" {
 				msg = probeErr.Err.Error()
 			}
-			return mediaInfo{}, ctx.Err() == nil && mediatools.FileFailure(probeErr.Err, probeErr.Stderr), errors.New(msg)
+			return mediaInfo{}, ctx.Err() == nil && mediatools.FileFailure(probeErr.Err, probeErr.Stderr, path), errors.New(msg)
 		case errors.Is(err, mediatools.ErrNotRun):
 			return mediaInfo{}, false, fmt.Errorf("%w: %v", errToolFailed, err)
 		}
 		return mediaInfo{}, false, err // unparsable output
 	}
 	info = fromProbe(probe)
-	fileResult = !mediatools.SystemError(probe.Log)
+	fileResult = !mediatools.SystemError(probe.Log, path)
 	if info.HasAudio && strings.Contains(probe.Log, estimatedMsg) {
 		d, ok, measured := measureDuration(ctx, path)
 		if ok {
@@ -85,26 +82,14 @@ func measureDuration(ctx context.Context, path string) (sec float64, ok, fileRes
 	cmd.Stderr = stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return 0, false, mediatools.FileFailure(err, stderr.String())
+		return 0, false, mediatools.FileFailure(err, stderr.String(), path)
 	}
 	sec, ok = parseProgressDuration(string(out))
-	return sec, ok, !mediatools.SystemError(stderr.String())
+	return sec, ok, !mediatools.SystemError(stderr.String(), path)
 }
 
-// parseProgressDuration returns the last out_time_us of ffmpeg -progress output, in seconds.
-func parseProgressDuration(out string) (float64, bool) {
-	sec, ok := 0.0, false
-	for _, line := range strings.Split(out, "\n") {
-		v, found := strings.CutPrefix(strings.TrimSpace(line), "out_time_us=")
-		if !found {
-			continue
-		}
-		if us, err := strconv.ParseInt(v, 10, 64); err == nil && us > 0 {
-			sec, ok = float64(us)/1e6, true
-		}
-	}
-	return sec, ok
-}
+// parseProgressDuration is mediatools.ParseProgressDuration.
+func parseProgressDuration(out string) (float64, bool) { return mediatools.ParseProgressDuration(out) }
 
 // fromProbe extracts what check uses from an ffprobe result.
 func fromProbe(probe mediatools.ProbeInfo) mediaInfo {
@@ -161,11 +146,11 @@ func decodeCheck(ctx context.Context, path string) (decodeErr, decodeWarn string
 			if msg == "" {
 				msg = err.Error()
 			}
-			return msg, "", mediatools.FileFailure(err, stderr.String()), nil
+			return msg, "", mediatools.FileFailure(err, stderr.String(), path), nil
 		}
 		return "", "", false, fmt.Errorf("%w: ffmpeg: %v", errToolFailed, err)
 	}
-	return "", toolMessage(dropNullMuxerLines(stderr.Head()), path, 3), !mediatools.SystemError(stderr.String()), nil
+	return "", toolMessage(dropNullMuxerLines(stderr.Head()), path, 3), !mediatools.SystemError(stderr.String(), path), nil
 }
 
 // dropNullMuxerLines removes the messages of ffmpeg's null output muxer ("[null @ 0x…]

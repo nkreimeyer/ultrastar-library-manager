@@ -257,6 +257,9 @@ type encodePlan struct {
 	reEncode    bool
 	resize      bool
 	crf         int // only used when reEncode is set
+	// probed reports that ffprobe read the original before the encode: then
+	// sameVideoDuration must be able to read it again.
+	probed bool
 }
 
 // outputExt returns the extension of the processed file: re-encoded videos become MP4,
@@ -291,15 +294,17 @@ func (pl encodePlan) describe() string {
 }
 
 // buildFFmpegArgs returns the ffmpeg arguments that turn input into output according to pl.
-// Only the first video stream is kept. Audio streams are copied unless they are removed;
-// without the explicit audio mapping "-map 0:v:0" would silently drop them.
+// Only the first video stream that is not an attached picture ("V", as FirstVideo) is
+// kept: a cover stored before the video must not replace it. Audio streams are copied
+// unless they are removed; without the explicit audio mapping "-map 0:V:0" would silently
+// drop them.
 func buildFFmpegArgs(input, output string, pl encodePlan) []string {
 	args := []string{
 		"-hide_banner",
 		"-nostdin", // never read from the terminal; several ffmpeg processes run in parallel
 		"-loglevel", "error",
 		"-i", filepath.Clean(input),
-		"-map", "0:v:0",
+		"-map", "0:V:0",
 	}
 
 	if pl.removeAudio {
@@ -377,13 +382,15 @@ func canCarryMarker(file string) bool {
 }
 
 // plan decides what has to be done with file from its ffprobe result (probeErr is the
-// error of that probe). ok is false if the file needs no processing.
+// error of that probe: nil, or ffprobe failing on the file itself, see
+// mediatools.UnreadableFile). ok is false if the file needs no processing.
 func (p *processor) plan(dir, file string, probe mediatools.ProbeInfo, probeErr error) (pl encodePlan, ok bool) {
-	video, hasVideo := probe.FirstStream("video")
+	video, hasVideo := probe.FirstVideo()
+	pl.probed = probeErr == nil
 	switch {
 	case probeErr != nil:
-		// ffprobe cannot read the video stream. Try to re-encode anyway: if ffmpeg cannot
-		// read the file either, it is reported as potentially corrupted.
+		// ffprobe cannot read the file. Try to re-encode anyway: if ffmpeg cannot read it
+		// either, it is reported as potentially corrupted.
 		log.Debugf("Error probing %s: %v", file, probeErr)
 		pl.reEncode = true
 	case !hasVideo:
@@ -442,6 +449,14 @@ func (p *processor) processVideoFile(dir, file string) {
 	if p.isStop(probeErr) {
 		// plan would take it for an unreadable video and encode it.
 		log.Debugf("Not processing %s: the run was stopped", file)
+		return
+	}
+	if why := probeTrouble(probe, probeErr, file); why != "" {
+		// Not knowing the video, plan would re-encode it (and convert and delete a non-MP4
+		// one): a good, maybe already processed video would lose quality for a read error
+		// of the file system. The next run tries again.
+		log.Errorf("Skipping %s: %s", file, why)
+		p.ops.Fail()
 		return
 	}
 	if probeErr == nil && markerFromProbe(probe).tagged {
@@ -503,6 +518,21 @@ func (p *processor) processVideoFile(dir, file string) {
 	p.encode(dir, file, pl)
 }
 
+// probeTrouble returns why the ffprobe result probe (with the error probeErr) of path says
+// nothing reliable about the file, or "" if it does: ffprobe read it, or failed on the file
+// itself (mediatools.UnreadableFile). Otherwise ffprobe could not run, was killed, hit a
+// read error of the file system (also with exit 0: its result may be partial, see
+// mediatools.ReadError) or printed no usable JSON.
+func probeTrouble(probe mediatools.ProbeInfo, probeErr error, path string) string {
+	switch {
+	case probeErr == nil && mediatools.ReadError(probe.Log, path):
+		return "ffprobe reported a read error: " + strings.TrimSpace(probe.Log)
+	case probeErr != nil && !mediatools.UnreadableFile(probeErr, path):
+		return fmt.Sprintf("probing it failed: %v", probeErr)
+	}
+	return ""
+}
+
 // renamedPath returns the path file gets when pl changes its extension.
 func renamedPath(file string, pl encodePlan) string {
 	return strings.TrimSuffix(file, filepath.Ext(file)) + pl.outputExt(file)
@@ -546,11 +576,27 @@ func (p *processor) encode(dir, file string, pl encodePlan) {
 		p.ops.Fail()
 		return
 	}
-	ok, msg, err := sameVideoDuration(p.context(), file, tmp, !pl.removeAudio)
+	if mediatools.ReadError(string(out), file, tmp) {
+		// ffmpeg exits 0 after a read error of the input (a NAS dropping out for a moment)
+		// and writes only what it read. Not a corrupted file: the next run tries again.
+		// (A damaged file's messages, such as a demuxer's ENOMEM for a bogus size, are no
+		// read error: such a result fails the duration check and is reported as corrupted.)
+		os.Remove(tmp) // our own temp file, not a library file
+		log.Errorf("Not replacing %s: ffmpeg reported a read error, the result may be incomplete: %s", file, strings.TrimSpace(string(out)))
+		p.ops.Fail()
+		return
+	}
+	ok, msg, err := sameVideoDuration(p.context(), file, tmp, !pl.removeAudio, pl.probed)
 	if p.isStop(err) {
 		// Unchecked, the result may have lost a damaged section; the original stays.
 		os.Remove(tmp) // our own temp file, not a library file
 		log.Infof("Not replacing %s: the run was stopped before its result was checked", file)
+		return
+	}
+	if err != nil {
+		os.Remove(tmp) // our own temp file, not a library file
+		log.Errorf("Not replacing %s, keeping the original: %v", file, err)
+		p.ops.Fail()
 		return
 	}
 	if !ok {
@@ -607,7 +653,7 @@ func (p *processor) replaceOriginal(dir, file, tmp string, pl encodePlan) {
 				return
 			}
 			log.Infof("Re-encoded video is larger than the original (%d > %d bytes), only stripping the audio of %s", outInfo.Size(), inInfo.Size(), file)
-			p.encode(dir, file, encodePlan{removeAudio: true})
+			p.encode(dir, file, encodePlan{removeAudio: true, probed: pl.probed})
 			return
 		}
 		log.Infof("Processed video is larger than the original (%d > %d bytes), keeping %s", outInfo.Size(), inInfo.Size(), file)
@@ -726,7 +772,11 @@ func (p *processor) tagByRemux(file string) error {
 		"-i", filepath.Clean(file),
 		"-map", "0", "-c", "copy",
 	}, markerArgs(tmp), []string{"-y", filepath.Clean(tmp)})
-	if out, err := mediatools.CombinedOutput(exec.Command("ffmpeg", args...)); err != nil {
+	out, err := mediatools.CombinedOutput(exec.Command("ffmpeg", args...))
+	if err == nil && mediatools.ReadError(string(out), file, tmp) {
+		err = errors.New("read error")
+	}
+	if err != nil {
 		os.Remove(tmp) // our own temp file, not a library file
 		return fmt.Errorf("ffmpeg remux: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -750,18 +800,26 @@ func (p *processor) tagByRemux(file string) error {
 // stripping the audio shortens the container when the audio is the longer stream. If the
 // original's video stream has no known duration, the container durations are compared
 // when the audio is kept (keepsAudio); with neither known there is nothing to compare and
-// the result counts as matching. An out that ffprobe cannot read never matches.
+// the result counts as matching. An out that ffprobe cannot read never matches, and
+// neither does one without a video stream when the original has one. An original ffprobe
+// could not read before the encode either (inProbed false) has nothing to compare.
 //
 // Neither probe goes through the media cache: out is a temp file just written, and in is
 // probed again right before it is replaced for good, so the check never rests on a stored
 // result.
 //
-// stopErr is ctx.Err() if a done ctx stopped a probe: then nothing was compared (an
+// err is ctx.Err() if a done ctx stopped a probe, and another error if the check could not
+// be made: the probe of out says nothing about it (probeTrouble: a read error, a killed
+// ffprobe, no JSON), or ffprobe cannot read the original again although it read it before
+// the encode (inProbed), or reported a read error on it. Then nothing was compared (an
 // unread original would otherwise count as matching) and ok and why mean nothing.
-func sameVideoDuration(ctx context.Context, in, out string, keepsAudio bool) (ok bool, why string, stopErr error) {
+func sameVideoDuration(ctx context.Context, in, out string, keepsAudio, inProbed bool) (ok bool, why string, err error) {
 	outProbe, err := mediatools.Probe(ctx, out)
 	if stoppedBy(ctx, err) {
 		return false, "", err
+	}
+	if trouble := probeTrouble(outProbe, err, out); trouble != "" {
+		return false, "", fmt.Errorf("checking the processed video: %s", trouble)
 	}
 	if err != nil {
 		return false, fmt.Sprintf("ffprobe cannot read the processed video: %v", err), nil
@@ -770,6 +828,19 @@ func sameVideoDuration(ctx context.Context, in, out string, keepsAudio bool) (ok
 	inProbe, inErr := mediatools.Probe(ctx, in)
 	if stoppedBy(ctx, inErr) {
 		return false, "", inErr
+	}
+	if inProbed {
+		if inErr != nil {
+			return false, "", fmt.Errorf("ffprobe cannot read the original again to compare it with the result: %v", inErr)
+		}
+		if mediatools.ReadError(inProbe.Log, in) {
+			return false, "", fmt.Errorf("ffprobe reported a read error on the original: %s", strings.TrimSpace(inProbe.Log))
+		}
+	}
+	if _, hasVideo := outProbe.FirstVideo(); !hasVideo && inErr == nil {
+		if _, origVideo := inProbe.FirstVideo(); origVideo {
+			return false, "the processed file has no video stream", nil
+		}
 	}
 	want := videoDuration(inProbe)
 	if inErr != nil || want <= 0 || got <= 0 {
@@ -795,9 +866,9 @@ func sameVideoDuration(ctx context.Context, in, out string, keepsAudio bool) (ok
 }
 
 // videoDuration returns the duration in seconds of the first video stream of probe (see
-// streamDuration); 0 if it is not known or there is no video stream.
+// streamDuration and FirstVideo); 0 if it is not known or there is no video stream.
 func videoDuration(probe mediatools.ProbeInfo) float64 {
-	video, _ := probe.FirstStream("video")
+	video, _ := probe.FirstVideo()
 	return streamDuration(video)
 }
 
@@ -1088,7 +1159,7 @@ func markerFromProbe(probe mediatools.ProbeInfo) markerProbe {
 // which falls back to the container rate of a file without audio instead of measuring.
 // A measured bitrate is kept in the cache c (nil = none) as kindPackets.
 func videoBitrate(c *mediacache.Cache, file string, probe mediatools.ProbeInfo) (int, error) {
-	video, ok := probe.FirstStream("video")
+	video, ok := probe.FirstVideo()
 	if !ok {
 		return 0, errors.New("no video stream")
 	}
@@ -1104,7 +1175,7 @@ func videoBitrate(c *mediacache.Cache, file string, probe mediatools.ProbeInfo) 
 	if ok && cached.Bitrate > 0 {
 		return cached.Bitrate, nil
 	}
-	cmd := exec.Command("ffprobe", "-v", "error", selectStreams, "v:0", showEntries, "packet=size", "-of", "csv=p=0", "--", filepath.Clean(file))
+	cmd := exec.Command("ffprobe", "-v", "error", selectStreams, "V:0", showEntries, "packet=size", "-of", "csv=p=0", "--", filepath.Clean(file))
 	stderr := mediatools.CapOutput()
 	cmd.Stderr = stderr
 	out, err := cmd.Output()
@@ -1114,15 +1185,16 @@ func videoBitrate(c *mediacache.Cache, file string, probe mediatools.ProbeInfo) 
 	bitrate, err := packetBitrate(out, duration)
 	// A read error on the file system (a NAS) may end the packet list early, with exit 0:
 	// such a sum is not stored.
-	if err == nil && !mediatools.SystemError(stderr.String()) {
+	if err == nil && !mediatools.SystemError(stderr.String(), file) {
 		c.Store(st, kindPackets, packetResult{Bitrate: bitrate})
 	}
 	return bitrate, err
 }
 
 // kindPackets is the media cache kind of a video's measured packet bitrate (videoBitrate).
-// The duration it divides by comes from the probe of the same, unchanged file.
-const kindPackets = "fixvideos.packets/1"
+// The duration it divides by comes from the probe of the same, unchanged file. /1
+// measured "v:0", which may be a cover picture stored before the video.
+const kindPackets = "fixvideos.packets/2"
 
 // packetResult is the cached result of the packet-size measurement.
 type packetResult struct {
@@ -1149,18 +1221,18 @@ func packetBitrate(sizes []byte, duration float64) (int, error) {
 	return int(float64(total) * 8 / duration), nil
 }
 
-// videoResolution returns the size of the first video stream in probe.
+// videoResolution returns the size of the first video stream in probe (FirstVideo).
 func videoResolution(probe mediatools.ProbeInfo) (int, int, error) {
-	video, ok := probe.FirstStream("video")
+	video, ok := probe.FirstVideo()
 	if !ok {
 		return 0, 0, errors.New("no video stream")
 	}
 	return video.Width, video.Height, nil
 }
 
-// videoFramerate returns the frame rate of the first video stream in probe.
+// videoFramerate returns the frame rate of the first video stream in probe (FirstVideo).
 func videoFramerate(probe mediatools.ProbeInfo) (float64, error) {
-	video, _ := probe.FirstStream("video")
+	video, _ := probe.FirstVideo()
 	return parseFramerate(video.RFrameRate)
 }
 

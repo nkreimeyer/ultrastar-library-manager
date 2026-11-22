@@ -129,25 +129,29 @@ func TestCachedPeak(t *testing.T) {
 	cache := mediacache.Open(context.Background(), dir)
 
 	for _, path := range []string{silent, loud} {
-		if _, err := cachedPeak(cache, path, false); err != nil {
+		if _, _, err := cachedPeak(cache, path, false); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// The decoded length is stored with the peak.
+	if _, d, err := cachedPeak(cache, silent, false); err != nil || d < 0.9 || d > 1.1 || cache.Stats().Hits == 0 {
+		t.Errorf("cached decoded length = %v, %v (stats %+v); want 1 s from the cache", d, err, cache.Stats())
 	}
 	if st := cache.Stats(); st.Stored != 2 {
 		t.Fatalf("stored = %d, want 2", st.Stored)
 	}
 	testutil.FakeVersions(t, "7.1", "7.1") // a measurement would fail now
-	if p, err := cachedPeak(cache, silent, false); err != nil || !math.IsInf(p, -1) {
+	if p, _, err := cachedPeak(cache, silent, false); err != nil || !math.IsInf(p, -1) {
 		t.Errorf("cached silent peak = %v, %v; want -Inf", p, err)
 	}
-	if p, err := cachedPeak(cache, loud, false); err != nil || p != -3.5 {
+	if p, _, err := cachedPeak(cache, loud, false); err != nil || p != -3.5 {
 		t.Errorf("cached peak = %v, %v; want -3.5", p, err)
 	}
-	if _, err := cachedPeak(cache, loud, true); err == nil {
+	if _, _, err := cachedPeak(cache, loud, true); err == nil {
 		t.Error("a peak measured without downmix was used for the downmix")
 	}
 	// Without a cache it measures (and fails with the fake ffmpeg).
-	if _, err := cachedPeak(nil, loud, false); err == nil {
+	if _, _, err := cachedPeak(nil, loud, false); err == nil {
 		t.Error("cachedPeak(nil) did not measure")
 	}
 }
@@ -165,6 +169,7 @@ func TestCachedPeakReadErrorNotStored(t *testing.T) {
 		name, out string
 		stored    int64
 	}{
+		// A read error: the peak may be that of a part of the file, so it is an error.
 		{"read error", "a.wav: Input/output error\\nPeak level dB: -20.0\\n", 0},
 		{"clean", "Peak level dB: -20.0\\n", 1},
 	} {
@@ -173,7 +178,11 @@ func TestCachedPeakReadErrorNotStored(t *testing.T) {
 				"ffmpeg": "#!/bin/sh\nif [ \"$1\" = -version ]; then echo 'ffmpeg version 7.1'; exit 0; fi\nprintf '" + tt.out + "' >&2\n",
 			})
 			cache := mediacache.Open(context.Background(), dir)
-			if p, err := cachedPeak(cache, path, false); err != nil || p != -20 {
+			p, _, err := cachedPeak(cache, path, false)
+			if tt.stored == 0 && (err == nil || !strings.Contains(err.Error(), "read error")) {
+				t.Fatalf("cachedPeak = %v, %v; want a read error", p, err)
+			}
+			if tt.stored == 1 && (err != nil || p != -20) {
 				t.Fatalf("cachedPeak = %v, %v", p, err)
 			}
 			if st := cache.Stats(); st.Stored != tt.stored {

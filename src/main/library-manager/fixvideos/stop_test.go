@@ -240,7 +240,7 @@ func TestSameVideoDurationStoppedAtOriginal(t *testing.T) {
 	defer cancel()
 	cancelWhen(t, mark, cancel)
 
-	ok, _, err := sameVideoDuration(ctx, filepath.Join(dir, "in.mkv"), filepath.Join(dir, "out.mp4"), false)
+	ok, _, err := sameVideoDuration(ctx, filepath.Join(dir, "in.mkv"), filepath.Join(dir, "out.mp4"), false, true)
 	if ok || !errors.Is(err, context.Canceled) {
 		t.Errorf("sameVideoDuration = %v, %v; want false, context.Canceled", ok, err)
 	}
@@ -254,7 +254,7 @@ func TestSameVideoDurationStoppedAtResult(t *testing.T) {
 	defer cancel()
 	cancelWhen(t, mark, cancel)
 
-	ok, why, err := sameVideoDuration(ctx, filepath.Join(dir, "in.mkv"), filepath.Join(dir, "out.mp4"), false)
+	ok, why, err := sameVideoDuration(ctx, filepath.Join(dir, "in.mkv"), filepath.Join(dir, "out.mp4"), false, true)
 	if ok || why != "" || !errors.Is(err, context.Canceled) {
 		t.Errorf("sameVideoDuration = %v, %q, %v; want false, \"\", context.Canceled", ok, why, err)
 	}

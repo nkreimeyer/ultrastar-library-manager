@@ -157,7 +157,7 @@ func TestCachedPeakNeverStoresNaNOrInf(t *testing.T) {
 			if cache == nil {
 				t.Fatal("no cache")
 			}
-			peak, err := cachedPeak(cache, path, false)
+			peak, _, err := cachedPeak(cache, path, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,7 +178,7 @@ func TestMeasurePeakResultOutputHandling(t *testing.T) {
 	const lines = "l1\nl2\nl3\nl4\nl5"
 	t.Run("error includes the last lines", func(t *testing.T) {
 		fakeAudioTools(t, stereoMP3JSON, lines, 1)
-		_, ok, err := measurePeakResult("x.mp3", false)
+		_, _, ok, err := measurePeakResult("x.mp3", false)
 		if err == nil || ok {
 			t.Fatalf("err = %v, ok = %v", err, ok)
 		}
@@ -188,15 +188,33 @@ func TestMeasurePeakResultOutputHandling(t *testing.T) {
 	})
 	t.Run("no error, no peak", func(t *testing.T) {
 		fakeAudioTools(t, stereoMP3JSON, lines, 0)
-		if _, ok, err := measurePeakResult("x.mp3", false); err == nil || ok || !strings.Contains(err.Error(), "peak level not found") {
+		if _, _, ok, err := measurePeakResult("x.mp3", false); err == nil || ok || !strings.Contains(err.Error(), "peak level not found") {
 			t.Errorf("err = %v, ok = %v", err, ok)
 		}
 	})
-	t.Run("system error is not cacheable", func(t *testing.T) {
+	t.Run("system error is an error", func(t *testing.T) {
+		// ffmpeg exits 0 after a read error: the peak may be that of a part of the file.
 		fakeAudioTools(t, stereoMP3JSON, "Peak level dB: -4.0\nInput/output error", 0)
-		peak, ok, err := measurePeakResult("x.mp3", false)
-		if err != nil || ok || peak != -4 {
-			t.Errorf("peak = %v, ok = %v, err = %v; want -4, false, nil", peak, ok, err)
+		_, _, ok, err := measurePeakResult("x.mp3", false)
+		if err == nil || ok || !strings.Contains(err.Error(), "read error") {
+			t.Errorf("ok = %v, err = %v; want a read error", ok, err)
+		}
+	})
+	t.Run("a decoder's generic error is no read error", func(t *testing.T) {
+		// AVERROR(EPERM) is -1: ffmpeg prints it for a damaged AAC frame and decodes on.
+		fakeAudioTools(t, stereoMP3JSON, "[aist#0:0/aac @ 0x1] [dec:aac @ 0x2] Error submitting packet to decoder: Operation not permitted\nPeak level dB: -4.0", 0)
+		peak, _, ok, err := measurePeakResult("x.m4a", false)
+		if err != nil || !ok || peak != -4 {
+			t.Errorf("peak = %v, ok = %v, err = %v; want -4, true, nil", peak, ok, err)
+		}
+	})
+	t.Run("system message in the path or the metadata is no error", func(t *testing.T) {
+		// At info level ffmpeg prints the input path and its tags (indented).
+		out := "Input #0, mp3, from /lib/Timed Out/x.mp3:\n  Metadata:\n    title           : Broken Pipe\nPeak level dB: -4.0"
+		fakeAudioTools(t, stereoMP3JSON, out, 0)
+		peak, _, ok, err := measurePeakResult("/lib/Timed Out/x.mp3", false)
+		if err != nil || !ok || peak != -4 {
+			t.Errorf("peak = %v, ok = %v, err = %v; want -4, true, nil", peak, ok, err)
 		}
 	})
 	t.Run("system error result is not stored", func(t *testing.T) {
@@ -206,8 +224,8 @@ func TestMeasurePeakResultOutputHandling(t *testing.T) {
 		testutil.WriteFile(t, path, "x")
 		age(t, path)
 		cache := mediacache.Open(context.Background(), dir)
-		if _, err := cachedPeak(cache, path, false); err != nil {
-			t.Fatal(err)
+		if _, _, err := cachedPeak(cache, path, false); err == nil {
+			t.Fatal("cachedPeak = nil error, want the read error")
 		}
 		if got := cache.Stats().Stored; got != 0 {
 			t.Errorf("Stored = %d, want 0", got)
@@ -220,7 +238,7 @@ func TestMeasurePeakResultOutputHandling(t *testing.T) {
 		testutil.WriteFile(t, path, "x")
 		age(t, path)
 		cache := mediacache.Open(context.Background(), dir)
-		if _, err := cachedPeak(cache, path, false); err == nil {
+		if _, _, err := cachedPeak(cache, path, false); err == nil {
 			t.Fatal("no error")
 		}
 		if got := cache.Stats().Stored; got != 0 {

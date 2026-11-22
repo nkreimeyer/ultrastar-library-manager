@@ -257,11 +257,11 @@ func TestSameVideoDurationUnknownInputAndUnreadableOutput(t *testing.T) {
 
 	for _, keepsAudio := range []bool{false, true} {
 		for _, in := range []string{garbage, missing} {
-			if ok, why, stop := sameVideoDuration(ctx, in, good, keepsAudio); !ok || why != "" || stop != nil {
+			if ok, why, stop := sameVideoDuration(ctx, in, good, keepsAudio, false); !ok || why != "" || stop != nil {
 				t.Errorf("unreadable input %s, keepsAudio=%v: = %v, %q, %v; want a match", filepath.Base(in), keepsAudio, ok, why, stop)
 			}
 		}
-		ok, why, stop := sameVideoDuration(ctx, good, garbage, keepsAudio)
+		ok, why, stop := sameVideoDuration(ctx, good, garbage, keepsAudio, true)
 		if ok || stop != nil || !strings.HasPrefix(why, "ffprobe cannot read the processed video") {
 			t.Errorf("unreadable output, keepsAudio=%v: = %v, %q, %v; want a mismatch", keepsAudio, ok, why, stop)
 		}

@@ -437,14 +437,14 @@ func TestPlan(t *testing.T) {
 		video := filepath.Join(song, "v"+tt.size+".avi")
 		makeMediaFrom(t, video, "testsrc=size="+tt.size+":rate=25:duration=0.2", "-c:v", "mpeg4", "-q:v", "1", "-an")
 		pl, ok := p.planFile(song, video)
-		if want := (encodePlan{reEncode: true, crf: tt.crf}); !ok || pl != want {
+		if want := (encodePlan{reEncode: true, crf: tt.crf, probed: true}); !ok || pl != want {
 			t.Errorf("plan(%s) = %+v, %v; want %+v, true", tt.size, pl, ok, want)
 		}
 	}
 
 	garbage := filepath.Join(song, "garbage.avi")
 	testutil.WriteFile(t, garbage, strings.Repeat("garbage", 200))
-	if pl, ok := p.planFile(song, garbage); !ok || !pl.reEncode || pl.resize || pl.removeAudio {
+	if pl, ok := p.planFile(song, garbage); !ok || !pl.reEncode || pl.resize || pl.removeAudio || pl.probed {
 		t.Errorf("plan(garbage) = %+v, %v; want a re-encode attempt", pl, ok)
 	}
 

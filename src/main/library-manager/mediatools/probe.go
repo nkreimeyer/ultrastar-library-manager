@@ -20,7 +20,7 @@ var ErrNotRun = errors.New("ffprobe could not be run")
 // ProbeError is returned by Probe when ffprobe ran but failed (it exited with an error):
 // the file is unreadable.
 type ProbeError struct {
-	Err    error  // the *exec.ExitError
+	Err    error  // the *exec.ExitError; from the media cache a plain error with its message
 	Stderr string // ffprobe's messages (capped, see CapOutput)
 }
 
@@ -130,6 +130,19 @@ func (p ProbeInfo) FirstStream(codecType string) (Stream, bool) {
 	return Stream{}, false
 }
 
+// FirstVideo returns the first video stream that is not an attached picture (cover art
+// stored as a one-frame video stream), as ffmpeg's "V" stream specifier ("-map 0:V:0",
+// "-select_streams V:0") selects it: the moving video of the file, even if its cover comes
+// first.
+func (p ProbeInfo) FirstVideo() (Stream, bool) {
+	for _, s := range p.Streams {
+		if s.CodecType == "video" && s.Disposition.AttachedPic == 0 {
+			return s, true
+		}
+	}
+	return Stream{}, false
+}
+
 // HasStream reports whether the file has a stream of the given codec type.
 func (p ProbeInfo) HasStream(codecType string) bool {
 	_, ok := p.FirstStream(codecType)
@@ -143,6 +156,34 @@ func ParseBitrate(s string) int64 {
 		return n
 	}
 	return 0
+}
+
+// EstimatedDurationMsg is what ffprobe logs (at warning level) when it guesses the
+// duration of an mp3 from the bitrate of its first frames: a VBR file without Xing/VBRI
+// header, as left behind by many cutting tools. The guess can be off by a factor of two or
+// more.
+const EstimatedDurationMsg = "Estimating duration from bitrate"
+
+// DurationEstimated reports whether ffprobe only estimated the container duration of the
+// file (EstimatedDurationMsg in its Log).
+func (p ProbeInfo) DurationEstimated() bool {
+	return strings.Contains(p.Log, EstimatedDurationMsg)
+}
+
+// ParseProgressDuration returns the last out_time_us of ffmpeg "-progress" output, in
+// seconds: how much of the input ffmpeg decoded (or copied). ok is false without a
+// positive value.
+func ParseProgressDuration(out string) (sec float64, ok bool) {
+	for _, line := range strings.Split(out, "\n") {
+		v, found := strings.CutPrefix(strings.TrimSpace(line), "out_time_us=")
+		if !found {
+			continue
+		}
+		if us, err := strconv.ParseInt(v, 10, 64); err == nil && us > 0 {
+			sec, ok = float64(us)/1e6, true
+		}
+	}
+	return sec, ok
 }
 
 // ParseSeconds parses an ffprobe duration ("123.456000", "N/A", ""); ok is false unless

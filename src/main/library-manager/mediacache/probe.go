@@ -54,10 +54,10 @@ func Probe(ctx context.Context, c *Cache, path string) (mediatools.ProbeInfo, er
 	var probeErr *mediatools.ProbeError
 	switch {
 	case ctx.Err() != nil:
-	case err == nil && !mediatools.SystemError(info.Log):
+	case err == nil && !mediatools.SystemError(info.Log, path):
 		stored := info
 		c.Store(st, KindProbe, probeResult{Info: &stored, Log: info.Log})
-	case errors.As(err, &probeErr) && probeErr.Err != nil && mediatools.FileFailure(probeErr.Err, probeErr.Stderr):
+	case errors.As(err, &probeErr) && probeErr.Err != nil && mediatools.FileFailure(probeErr.Err, probeErr.Stderr, path):
 		c.Store(st, KindProbe, probeResult{Log: info.Log,
 			Error: &probeFailure{Message: probeErr.Err.Error(), Stderr: probeErr.Stderr}})
 	}

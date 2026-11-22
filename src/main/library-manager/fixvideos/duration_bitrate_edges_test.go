@@ -86,7 +86,7 @@ func TestSameVideoDurationUnknownBoundaries(t *testing.T) {
 	ctx := context.Background()
 	check := func(name, in, out string, keepsAudio, want bool) {
 		t.Helper()
-		ok, why, stop := sameVideoDuration(ctx, in, out, keepsAudio)
+		ok, why, stop := sameVideoDuration(ctx, in, out, keepsAudio, true)
 		if ok != want || stop != nil {
 			t.Errorf("%s: sameVideoDuration = %v, %q, %v; want %v", name, ok, why, stop, want)
 		}

@@ -73,9 +73,12 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               Stats; probe.go: Probe (mediatools.Probe through the cache, kind "probe/1")
   mediatools/                 mediatools.go: Detect, Lookup, Require (ffmpeg/ffprobe on PATH, "-version" parsed: releases,
                               N-… and date git builds; >= 5.1); probe.go: Probe (one ffprobe JSON call -> ProbeInfo),
-                              FirstStream/HasStream, HasTag (marker tags), VideoBitrate (the one bitrate rule);
+                              FirstStream/HasStream, FirstVideo (no attached picture, ffmpeg's "V"), HasTag (marker tags),
+                              VideoBitrate (the one bitrate rule), DurationEstimated, ParseProgressDuration;
                               output.go: OutputCap/CombinedOutput (head 16 KiB + tail 48 KiB of ffmpeg output);
-                              failure.go: FileFailure/SystemError (may a tool result be cached?)
+                              failure.go: FileFailure/SystemError (may a tool result be cached? paths given are cut
+                              out, indented lines skipped), ReadError (is a result of an exit 0 incomplete? read/I/O
+                              messages only), UnreadableFile (a probe error about the file itself)
   webui/                      browser UI: presence.go (open pages = open /api/job/events streams; WatchClients), server.go (single-use token -> session cookie lm_session_<port>, CheckAddr,
                               Host/Origin/JSON checks, CSP, routes),
                               jobs.go (one job at a time, logrus hook, SSE /api/job/events), system.go (tools, folder lister),
@@ -417,7 +420,7 @@ Same exit codes and leftover-argument rule.
   at Open disables the cache for the same reason, and so does a tool that is found but whose
   `-version` run fails, with a warning; a missing tool still counts as version ""). Kinds carry a version (`probe/1`,
   `check.media/1` (probe result incl. measured duration, or the error message),
-  `check.decode/1` (`-deep`), `fixaudio.peak/1`, `fixvideos.packets/1`): a change in how a
+  `check.decode/1` (`-deep`), `fixaudio.peak/2` (with the decoded length), `fixvideos.packets/2` (`V:0`)): a change in how a
   result is computed bumps the kind. `mediacache.Probe` caches successes (with `Log`) and
   `*mediatools.ProbeError` (rebuilt with a plain `Err` of the same message); never
   `ErrNotRun`, ctx errors, parse errors, tool failures or stopped runs. A failure is only
@@ -425,7 +428,9 @@ Same exit codes and leftover-argument rule.
   signal such as the OOM killer, and no system error in the output); a result whose tool
   output names a system error (`mediatools.SystemError`: `Input/output error`, a dropped
   connection, `Permission denied`, out of memory, …; ffprobe may exit 0 with partial
-  results) is never cached, in every kind. Otherwise a NAS hiccup during one run would
+  results) is never cached, in every kind. Callers pass the file's path: it is cut out of
+  each line, and indented lines (ffmpeg's dump of streams and metadata at info level) are
+  skipped, so a folder "Timed Out" or a title tag "Broken Pipe" is no system error. Otherwise a NAS hiccup during one run would
   make a good file "unreadable" until it changes. fixvideos never
   uses the cache for its temp files or `sameVideoDuration` (the final check before a
   replace). Save prunes entries not seen in this run whose file is gone (a folder that
@@ -501,7 +506,13 @@ stripped from the only audio source, and the README.
   Do not add backups of re-encoded videos. The same goes for conversions that change the
   name (`.avi` → `.mp4`): the original is deleted once the txt points to the new file.
 - fixaudio **does** keep a copy of every source file it re-encodes, in `<out>/originals/`
-  (`ops.CopyInto`, before `ops.Replace`). Each file is processed only once, thanks to the
+  (`ops.CopyInto`, before `ops.Replace`). An encode whose output names a read error
+  (`mediatools.ReadError`), or whose result is empty or more than max(0.5 s, 1 %) shorter or
+  longer than what the peak measurement decoded of the original (`checkEncoded`; the
+  decoded length, not the header: a cut-off download keeps the header of the whole file;
+  skipped when unknown or when ffprobe only estimates the result's duration), replaces
+  nothing and is a counted failure; so is a peak measured with a read error in ffmpeg's
+  output. Each file is processed only once, thanks to the
   marker tag or journal, so it is backed up only once.
 - Re-encoding must be idempotent. Mark processed or checked media with a tag
   (`SANITIZER_NORMALIZED`, `SANITIZER_VIDEO`). Formats that cannot hold one, and files
@@ -520,7 +531,17 @@ stripped from the only audio source, and the README.
   `potentiallyCorruptedFiles.txt`: ffmpeg exits 0 on an AVI with a damaged section and
   drops it, so the video would run ahead of the song with no original left. Such a file is
   encoded (and discarded) again on every run, like unreadable input. Unreadable input is
-  exit 183, or exit 1 with "Invalid data found" (ffmpeg 5.1/6.0). Each real run rebuilds
+  exit 183, or exit 1 with "Invalid data found" (ffmpeg 5.1/6.0). A probe that says nothing
+  about the file (`mediatools.UnreadableFile` false: a read error of the file system, a
+  killed ffprobe, no JSON; or exit 0 with a read error in its log, `mediatools.ReadError`)
+  is a counted failure and starts no encode. An encode or tagging remux whose output names a
+  read error, and a `sameVideoDuration` that cannot check (the result's probe says nothing,
+  or an original ffprobe read before the encode, `encodePlan.probed`, cannot be read again),
+  are counted failures too, never `potentiallyCorruptedFiles.txt` entries. ReadError, not
+  SystemError, decides after an exit 0: a damaged file makes ffmpeg print ENOMEM (a bogus
+  sample size) or EPERM (-1, a decoder's generic error), and such a result goes through the
+  duration check as before. A result without a video stream never matches one with. The video is always
+  the first stream that is not an attached picture (`FirstVideo`, `-map 0:V:0`). Each real run rebuilds
   `potentiallyCorruptedFiles.txt`: an old entry is dropped when the run found the video
   readable or the file is gone; a dry run never writes it and only logs what it would drop.
 - Symlinked media count as media (discovery, `collectVideos`), but fixaudio and fixvideos

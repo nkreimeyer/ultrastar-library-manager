@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - UI: the time left no longer reads "1 h 60 min", and sizes no longer show "10.0 KB", "1000 KB" or "1 bytes".
+- `-m`: a video whose probe failed because of a read error (a NAS dropping out), a killed ffprobe or unusable ffprobe output is skipped and counted as a failure; before, it was re-encoded, and a non-MP4 one converted with its original deleted, even if it was fine or already processed.
+- `-m`: a re-encode during which ffmpeg reported a read error, or whose original could not be read again for the duration check, no longer replaces (or converts and deletes) the original; it counts as a failure and the next run tries again.
+- `-m`: a cover picture stored before the video in a file is no longer taken for the video (which could replace the video with a picture-only file, or measure the cover's bitrate and skip a video that needs a re-encode); a result without a video stream never replaces a video.
+- `-a`: an encode during which ffmpeg reported a read error, or that came out shorter than the original decodes, no longer replaces the original and marks it as normalized; a peak measured during a read error is no longer used for the gain.
+- The media cache now stores results for files whose path, title or other tags contain words like "Timed Out", "Broken Pipe" or "Permission Denied"; before, they were taken for read errors and probed again on every run.
 
 ## [0.2.2] - 2026-11-22
 
