@@ -251,6 +251,9 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 // errBusy is returned when a job is started while another one runs.
 var errBusy = errors.New("another job is running; wait for it or cancel it first")
 
+// errClosed is returned when a job is started while the program stops.
+var errClosed = errors.New("the program is shutting down; no new job is started")
+
 func (s *Server) newID(prefix string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

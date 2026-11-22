@@ -383,7 +383,8 @@ Same exit codes and leftover-argument rule.
   them). The start URL's token works once (a signed-in browser opening it again is only
   redirected); the cookie is `lm_session_<port>`, as browsers share cookies across ports.
   Only the newest analysis of each kind is kept. Every job handler starts its job with
-  `Server.startJob` (202 with the job, 409 while one runs); a dedupe ignores the request's
+  `Server.startJob` (202 with the job, 409 while one runs, 503 once `Server.Close` closed the runner: a request
+  still handled during shutdown starts nothing); a dedupe ignores the request's
   priority/ignoreThe (the dedupe CLI has no such flags). Event streams send `id: <job>/<next line>`
   with each log event and resume from `Last-Event-ID`; `Server.Close` ends them (before
   `http.Server.Shutdown`; each sends the final job state first). `ui` stops on SIGINT, SIGTERM

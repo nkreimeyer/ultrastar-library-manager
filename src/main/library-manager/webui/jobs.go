@@ -95,6 +95,10 @@ type jobRunner struct {
 	cur  *job // the running or last finished job
 	wg   sync.WaitGroup
 	hook *logHook
+	// closed is set by close: from then on start refuses (errClosed), so no job starts
+	// that close neither cancels nor waits for (a request still handled while the program
+	// stops), and wg.Add never runs concurrently with close's wg.Wait.
+	closed bool
 }
 
 func newJobRunner() *jobRunner {
@@ -104,10 +108,14 @@ func newJobRunner() *jobRunner {
 	return r
 }
 
-// start runs fn as the new job, unless one is running (errBusy).
+// start runs fn as the new job, unless one is running (errBusy) or the runner is closed
+// (errClosed).
 func (r *jobRunner) start(id, kind string, ops *fsops.Ops, fn func(ctx context.Context, c jobControl) (any, error)) (Job, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return Job{}, errClosed
+	}
 	if r.cur != nil && r.cur.State == stateRunning {
 		return Job{}, errBusy
 	}
@@ -144,11 +152,15 @@ func (r *jobRunner) start(id, kind string, ops *fsops.Ops, fn func(ctx context.C
 	return j.snapshot(), nil
 }
 
-// startJob starts fn as the new job and answers 202 with the job, or 409 with errBusy's
-// message while another job runs. Every handler that starts a job answers this way.
-// It reports whether the job started.
+// startJob starts fn as the new job and answers 202 with the job, 409 with errBusy's
+// message while another job runs, or 503 with errClosed's once the program stops. Every
+// handler that starts a job answers this way. It reports whether the job started.
 func (s *Server) startJob(w http.ResponseWriter, id, kind string, ops *fsops.Ops, fn func(ctx context.Context, c jobControl) (any, error)) bool {
 	job, err := s.jobs.start(id, kind, ops, fn)
+	if errors.Is(err, errClosed) {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return false
+	}
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
 		return false
@@ -207,8 +219,15 @@ func (r *jobRunner) cancelRunning() bool {
 	return true
 }
 
+// close refuses every later start, stops the running job and waits for it. A start that
+// won the lock before it has done its wg.Add, so the Wait covers that job too.
 func (r *jobRunner) close() {
-	r.cancelRunning()
+	r.mu.Lock()
+	r.closed = true
+	if r.cur != nil && r.cur.State == stateRunning {
+		r.cur.cancel()
+	}
+	r.mu.Unlock()
 	r.wg.Wait()
 }
 
