@@ -108,7 +108,8 @@ test-assets/                  local fixture library (gitignored, not in the repo
 
 Dependencies: `logrus` and `golang.org/x/text` (charmaps, UTF-16, Unicode normalization).
 CI: `.github/workflows/build.yml` and `.gitlab-ci.yml` run gofmt, vet and `go test -race` (with ffmpeg),
-then cross-build linux/windows/darwin amd64 with `CGO_ENABLED=0`; tags `v*` make a release. The GitLab
+on every push; only tags `v*` also cross-build linux/windows/darwin amd64 with `CGO_ENABLED=0` and make a
+release (untagged runs do not build). The GitLab
 jobs carry the runner tag `docker` (they need the Docker executor: `image:` is ignored by a shell runner). Keep the
 module free of cgo so this keeps working.
 Runtime needs `ffmpeg` ≥ 5.1 and `ffprobe` on PATH for `-m` and `-a` (enforced: `mediatools.Require`
