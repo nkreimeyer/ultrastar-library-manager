@@ -90,7 +90,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               a request's dryRun only plans: ops follows cfg.DryRun),
                               remove.go (the Remove task: validate/analyse/apply over organize.Remove, patterns as text; apply
                               re-plans as a dry run and stops if the removed songs differ (less the reviewer's "keep" list,
-                              organize.RemoveOptions.Keep); undo is the shared organize undo),
+                              organize.RemoveOptions.Keep); undo is the shared organize undo;
+                              the job's Ctx and Progress reach RemoveOptions, a stop ends the job cancelled),
                               tidy.go (the tidy-up options and stepRun: the steps of one job on one ops),
                               static/ (index.html, style.css, app.js: embedded, no build step)
   organize/                   organize/dedupe/add: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey, StripCopySuffix),
@@ -371,7 +372,8 @@ Same exit codes and leftover-argument rule.
   compares the new plan with the reviewed one (`organize.PlanDiff`: action, target, keeper per
   `Ref`) and stops before the first move if they differ (the analysis then holds the new plan).
   `organize.Options` has `Ctx` (checked before each inspection and move; a run stopped during the moves is journaled, a parked song is moved
-  out of its temporary name) and `Progress`. `fsops.Stats` has JSON names (the UI reads
+  out of its temporary name) and `Progress`; so has `organize.RemoveOptions` (a stop while the tags
+  are read moves nothing, moves not tried are `skipped` with "the run was stopped"). `fsops.Stats` has JSON names (the UI reads
   them). The start URL's token works once (a signed-in browser opening it again is only
   redirected); the cookie is `lm_session_<port>`, as browsers share cookies across ports.
   Only the newest analysis of each kind is kept. Every job handler starts its job with

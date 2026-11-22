@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nkreimeyer/library-manager/internal/testutil"
+	"github.com/nkreimeyer/library-manager/organize"
 )
 
 func removeLibrary(t *testing.T) (lib, out string) {
@@ -129,5 +131,41 @@ func TestRemoveApplyPlanChanged(t *testing.T) {
 	s.do("POST", "/api/remove/apply", map[string]any{"analysis": id}, &j)
 	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 3 {
 		t.Fatalf("second apply: %+v", j)
+	}
+}
+
+// A remove stopped during the moves ends "cancelled" after the current move, and the
+// shared undo puts that song back.
+func TestRemoveApplyStopped(t *testing.T) {
+	s := newTestServer(t)
+	lib, out := removeLibrary(t)
+	before := testutil.Tree(t, lib)
+	var j Job
+	s.do("POST", "/api/remove/analyse", removeRequest{Library: lib, Out: out, Patterns: "ABBA"}, &j)
+	j = s.wait()
+	id := j.Result.(map[string]any)["analysis"].(string)
+
+	removeProgressHook = func(phase string, done int) {
+		if phase == organize.PhaseMove && done == 1 {
+			s.srv.jobs.cancelRunning()
+		}
+	}
+	t.Cleanup(func() { removeProgressHook = nil })
+	s.do("POST", "/api/remove/apply", map[string]any{"analysis": id}, &j)
+	if j = s.wait(); j.State != stateCancelled || j.Stats.Moved != 1 || j.Stats.Failed != 0 {
+		t.Fatalf("stopped apply: %+v", j)
+	}
+	if _, err := os.Stat(filepath.Join(lib, "A", "ABBA - Waterloo", "song.txt")); err != nil {
+		t.Errorf("the song after the stop was moved: %v", err)
+	}
+	if !strings.Contains(testutil.ReadFile(t, filepath.Join(out, removeReportFile)), `"outcome": "skipped"`) {
+		t.Error("the report does not list the skipped move")
+	}
+	s.do("POST", "/api/organize/undo", folderRequest{Library: lib, Out: out}, &j)
+	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 1 {
+		t.Fatalf("undo job: %+v", j)
+	}
+	if !maps.Equal(testutil.Tree(t, lib), before) {
+		t.Error("the undo did not restore the library")
 	}
 }

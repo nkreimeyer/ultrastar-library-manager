@@ -122,9 +122,8 @@ func (s *Server) handleRemoveAnalyse(w http.ResponseWriter, r *http.Request) {
 		if err := cfg.PrepareOutDir(); err != nil {
 			return nil, err
 		}
-		c.Progress("inspect", 0, 0)
 		log.Infof("Checking remove (dry run, nothing is changed); library %s, output %s", cfg.Library, cfg.OutDir)
-		if err := organize.Remove(cfg, ops, patterns); err != nil {
+		if err := organize.RemoveWith(cfg, ops, patterns, organize.RemoveOptions{Ctx: ctx, Progress: c.Progress}); err != nil {
 			return nil, err
 		}
 		data, err := os.ReadFile(cfg.ReportPath(removeReportFile))
@@ -163,6 +162,10 @@ func (s *Server) handleRemoveAnalysis(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, v)
 }
+
+// removeProgressHook, if set (tests), is called after each progress report of the real
+// remove run of an apply job.
+var removeProgressHook func(phase string, done int)
 
 // handleRemoveApply runs the reviewed remove for real. It plans again first (a dry run,
 // like the check); if that would remove other songs than the reviewed plan, nothing is
@@ -226,9 +229,16 @@ func (s *Server) handleRemoveApply(w http.ResponseWriter, r *http.Request) {
 		if err := cfg.PrepareOutDir(); err != nil {
 			return nil, err
 		}
-		c.Progress("inspect", 0, 0)
-		// Plan again, without changing anything, and compare with what was reviewed.
-		if err := organize.RemoveWith(dryCfg, fsops.New(true), patterns, opts); err != nil {
+		opts.Ctx = ctx
+		// Plan again, without changing anything, and compare with what was reviewed. Only its
+		// reading of the songs is shown as progress: its planned moves would look like moves.
+		dryOpts := opts
+		dryOpts.Progress = func(phase string, done, total int) {
+			if phase == organize.PhaseInspect {
+				c.Progress(phase, done, total)
+			}
+		}
+		if err := organize.RemoveWith(dryCfg, fsops.New(true), patterns, dryOpts); err != nil {
 			return nil, err
 		}
 		data, err := os.ReadFile(cfg.ReportPath(removeReportFile))
@@ -260,7 +270,7 @@ func (s *Server) handleRemoveApply(w http.ResponseWriter, r *http.Request) {
 			}
 			// The analysis shows the plan without the songs to keep, as a fresh check would find it:
 			// the changed songs matter, the choices of the reviewer are asked for again.
-			if err := organize.Remove(dryCfg, fsops.New(true), patterns); err != nil {
+			if err := organize.RemoveWith(dryCfg, fsops.New(true), patterns, organize.RemoveOptions{Ctx: ctx}); err != nil {
 				return nil, err
 			}
 			full, err := os.ReadFile(cfg.ReportPath(removeReportFile))
@@ -283,6 +293,15 @@ func (s *Server) handleRemoveApply(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		a.applied = true
 		s.mu.Unlock()
+		opts.Progress = c.Progress
+		if removeProgressHook != nil {
+			opts.Progress = func(phase string, done, total int) {
+				c.Progress(phase, done, total)
+				removeProgressHook(phase, done)
+			}
+		}
+		// A stop ends the moves after the current one (Ctx); the job then ends as stopped
+		// and the shared undo puts back what was moved.
 		runErr := organize.RemoveWith(cfg, ops, patterns, opts)
 		res := map[string]any{"analysis": a.id, "outDir": cfg.OutDir, "library": cfg.Library}
 		if data, err := os.ReadFile(cfg.ReportPath(removeReportFile)); err == nil {

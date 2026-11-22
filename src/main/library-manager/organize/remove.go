@@ -256,6 +256,14 @@ type RemoveOptions struct {
 	// Keep lists songs (their path in the library, with "/") that match a pattern but stay:
 	// the report lists them as left in place, with ReasonKept.
 	Keep map[string]bool
+	// Ctx stops the run (nil = never). It is checked while the tags are read (a stop then
+	// moves nothing) and before each move; a run stopped during the moves is journaled like
+	// a complete one, so Undo reverts what it did, and the report lists the moves not tried
+	// as skipped. RemoveWith then returns Ctx.Err().
+	Ctx context.Context
+	// Progress, if set, is called with the phase (PhaseInspect: the tags are read,
+	// PhaseMove), the number of songs done and their total. Calls are serialized.
+	Progress func(phase string, done, total int)
 }
 
 // ReasonKept is the reason of a matching song in RemoveOptions.Keep.
@@ -270,9 +278,20 @@ func RemoveWith(cfg config.OrganizeConfig, ops *fsops.Ops, patterns []Pattern, o
 	if err != nil {
 		return fmt.Errorf("finding song folders in %q: %w", cfg.Library, err)
 	}
+	ctx := opts.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	progress := func(phase string, done, total int) {
+		if opts.Progress != nil {
+			opts.Progress(phase, done, total)
+		}
+	}
 	songs := make([]removeSong, len(folders))
-	_ = utils.ForEachParallel(context.Background(), folders, utils.Parallel{
-		Workers: workers,
+	progress(PhaseInspect, 0, len(folders))
+	_ = utils.ForEachParallel(ctx, folders, utils.Parallel{
+		Workers:  workers,
+		Progress: func(done, total int) { progress(PhaseInspect, done, total) },
 		OnPanic: func(i int, _ any) {
 			// Never matched, like a folder whose txt cannot be read: it stays.
 			log.Errorf("Remove: %s not read: internal error (logged above); it stays in place", folders[i])
@@ -280,6 +299,11 @@ func RemoveWith(cfg config.OrganizeConfig, ops *fsops.Ops, patterns []Pattern, o
 			songs[i] = noTagsSong(cfg.Library, folders[i])
 		},
 	}, func(i int, folder string) { songs[i] = readRemoveSong(ops, cfg.Library, folder) })
+	// Also after a stop during the last folders: nothing is moved.
+	if err := ctx.Err(); err != nil {
+		log.Warnf("Remove: stopped while reading the songs; nothing was moved")
+		return err
+	}
 	sort.Slice(songs, func(a, b int) bool { return songs[a].Rel < songs[b].Rel })
 	ds, counts := planRemove(songs, patterns)
 	for i, d := range ds {
@@ -306,10 +330,27 @@ func RemoveWith(cfg config.OrganizeConfig, ops *fsops.Ops, patterns []Pattern, o
 		}
 	}
 	a := newApplier(cfg, ops, cands, outcomes)
+	a.ctx = ctx
+	total, moved := 0, 0
+	for _, d := range ds {
+		if d.Pattern >= 0 && !d.Left {
+			total++
+		}
+	}
+	progress(PhaseMove, 0, total)
 	for i, d := range ds {
-		if d.Pattern < 0 || d.Left || !a.ready(i) {
+		if d.Pattern < 0 || d.Left {
 			continue
 		}
+		if a.cancelled() {
+			outcomes[i] = moveOutcome{Status: outcomeSkipped, Note: noteStopped}
+			continue
+		}
+		if !a.ready(i) {
+			continue
+		}
+		moved++
+		progress(PhaseMove, moved, total)
 		dst, err := ops.MoveInto(songs[i].Folder, cfg.RemovedDir(), filepath.FromSlash(songs[i].Rel))
 		if err != nil {
 			log.Errorf("Removing %s: %v", songs[i].Rel, err) // counted by ops
@@ -332,6 +373,10 @@ func RemoveWith(cfg config.OrganizeConfig, ops *fsops.Ops, patterns []Pattern, o
 		rep.Summary.Removed, rep.Summary.Songs, rep.Summary.LeftInPlace, len(rep.Unmatched), rep.Summary.Moved, verb, rep.Summary.Failed, cfg.ReportPath(removeReportTxt))
 	if a.j.failed {
 		return fmt.Errorf("the journal %s cannot be written; the remaining moves were not attempted", cfg.JournalPath())
+	}
+	if err := ctx.Err(); err != nil && a.stopped {
+		log.Warnf("Remove: stopped during the moves; the moves done so far are journaled (undo reverts them)")
+		return err
 	}
 	return nil
 }
