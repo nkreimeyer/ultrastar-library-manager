@@ -18,8 +18,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
           cache-dependency-path: src/main/library-manager/go.sum
@@ -48,8 +48,8 @@ jobs:
       CGO_ENABLED: '0'
       OUT: library-manager-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
           cache-dependency-path: src/main/library-manager/go.sum
@@ -57,7 +57,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME}"
           go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$OUT" .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.OUT }}
           path: src/main/library-manager/${{ env.OUT }}
@@ -75,11 +75,11 @@ jobs:
       run:
         working-directory: .
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: CHANGELOG.md
           sparse-checkout-cone-mode: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
