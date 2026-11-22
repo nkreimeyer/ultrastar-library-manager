@@ -2,7 +2,10 @@ package webui
 
 import (
 	"net/http"
+	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -51,5 +54,50 @@ func TestOverview(t *testing.T) {
 	var e apiError
 	if got := s.do("POST", "/api/overview", folderRequest{Library: filepath.Join(lib, "none")}, &e); got != http.StatusBadRequest {
 		t.Errorf("missing library: %d", got)
+	}
+}
+
+// An unreadable folder is counted as unreadable, never as a folder without a song txt: one
+// the discovery cannot list, and one that becomes unreadable after the discovery found it.
+func TestOverviewUnreadable(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a folder the user cannot read")
+	}
+	s := newTestServer(t)
+	lib, out := removeLibrary(t) // 3 songs
+	testutil.WriteFile(t, filepath.Join(lib, "Junk", "stray.txt"), "no song here")
+	before := filepath.Join(lib, "Q", "Queen - Before")
+	after := filepath.Join(lib, "Q", "Queen - After")
+	writeSong(t, before, "Queen", "Before", nil)
+	writeSong(t, after, "Queen", "After", nil)
+	lock := func(dir string) {
+		if err := os.Chmod(dir, 0); err != nil {
+			t.Error(err)
+		}
+		t.Cleanup(func() { os.Chmod(dir, 0o755) })
+	}
+	lock(before)
+	overviewAfterDiscoveryHook = func(folders []string) {
+		if !slices.Contains(folders, after) {
+			t.Errorf("discovery did not find %s: %v", after, folders)
+		}
+		lock(after)
+	}
+	t.Cleanup(func() { overviewAfterDiscoveryHook = nil })
+
+	var j Job
+	if got := s.do("POST", "/api/overview", folderRequest{Library: lib, Out: out}, &j); got != http.StatusAccepted {
+		t.Fatalf("overview: %d", got)
+	}
+	if j = s.wait(); j.State != stateDone {
+		t.Fatalf("job: %+v", j)
+	}
+	var res overviewResult
+	s.do("GET", "/api/job", nil, &struct{ Result *overviewResult }{&res})
+	if res.Unreadable != 2 || res.NoSong != 1 || res.Songs != 3 || res.NoAudio != 0 {
+		t.Errorf("counts = %+v", res)
+	}
+	if j.Stats.Failed != 2 {
+		t.Errorf("failed = %d, want 2", j.Stats.Failed)
 	}
 }

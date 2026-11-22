@@ -816,7 +816,8 @@ function viewOverview() {
     h("li", null, `${fmt(o.withVideo)} with a video${pct(o.withVideo)}`),
     h("li", null, `${fmt(o.withImage)} with a picture${pct(o.withImage)}`),
     o.noAudio ? h("li", null, `${fmt(o.noAudio)} without any audio or video file`) : null,
-    o.noSong ? h("li", null, `${plural(o.noSong, "folder", "folders")} without a song text, not counted above`) : null));
+    o.noSong ? h("li", null, `${plural(o.noSong, "folder", "folders")} without a song text, not counted above`) : null,
+    o.unreadable ? h("li", null, `${plural(o.unreadable, "folder or song text", "folders or song texts")} that could not be read, not counted above (the log names them)`) : null));
   if (o.buckets.length) {
     const max = Math.max(...o.buckets.map((b) => b.songs));
     add(frag, h("h2", null, "By folder"), h("ul", { class: "buckets" }, o.buckets.map((b) => h("li", null,

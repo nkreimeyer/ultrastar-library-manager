@@ -21,15 +21,18 @@ import (
 // overviewResult is the result of an overview job: what the library holds, counted from the
 // folders and file names (a txt is only opened to see whether it is a song; no media is probed).
 type overviewResult struct {
-	Library   string        `json:"library"`
-	OutDir    string        `json:"outDir"`
-	Songs     int           `json:"songs"`  // folders with a song txt
-	NoSong    int           `json:"noSong"` // folders the tools treat as a song folder but that have no song txt
-	Bytes     int64         `json:"bytes"`
-	WithVideo int           `json:"withVideo"`
-	WithImage int           `json:"withImage"` // a cover or background picture (any image file)
-	NoAudio   int           `json:"noAudio"`   // no audio and no video file in the folder
-	Buckets   []bucketCount `json:"buckets"`
+	Library string `json:"library"`
+	OutDir  string `json:"outDir"`
+	Songs   int    `json:"songs"`  // folders with a song txt
+	NoSong  int    `json:"noSong"` // folders the tools treat as a song folder but that have no song txt
+	// Unreadable counts what could not be read and so is in none of the other counts: folders
+	// and song txts the discovery skipped, and song folders that could not be listed.
+	Unreadable int           `json:"unreadable"`
+	Bytes      int64         `json:"bytes"`
+	WithVideo  int           `json:"withVideo"`
+	WithImage  int           `json:"withImage"` // a cover or background picture (any image file)
+	NoAudio    int           `json:"noAudio"`   // no audio and no video file in the folder
+	Buckets    []bucketCount `json:"buckets"`
 	// SetAside counts what waits in the output folder: song folders in invalid/,
 	// duplicates/ and removed/, files in extra-files/.
 	SetAside map[string]int `json:"setAside"`
@@ -44,12 +47,17 @@ type bucketCount struct {
 type songSummary struct {
 	bucket                      string
 	bytes                       int64
-	video, image, audio, failed bool
+	video, image, audio, failed bool // failed: the folder could not be listed
 	song                        bool // a song txt is there
 }
 
-// summarizeSong lists one song folder (its own files, not the subfolders).
-func summarizeSong(lib, folder string) songSummary {
+// overviewAfterDiscoveryHook, if set (tests only), runs between the discovery and the
+// summaries of the song folders it found.
+var overviewAfterDiscoveryHook func(folders []string)
+
+// summarizeSong lists one song folder (its own files, not the subfolders). A folder that
+// cannot be listed is logged and counted once in ops.
+func summarizeSong(ops *fsops.Ops, lib, folder string) songSummary {
 	s := songSummary{bucket: "(top level)"}
 	if rel, err := filepath.Rel(lib, folder); err == nil {
 		if first, _, ok := strings.Cut(filepath.ToSlash(rel), "/"); ok {
@@ -58,6 +66,7 @@ func summarizeSong(lib, folder string) songSummary {
 	}
 	entries, err := os.ReadDir(folder)
 	if err != nil {
+		ops.SkipUnreadable(folder, err)
 		s.failed = true
 		return s
 	}
@@ -101,15 +110,24 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		res := overviewResult{Library: cfg.Library, OutDir: cfg.OutDir, Buckets: []bucketCount{}, SetAside: map[string]int{}}
+		// The ops is new: every failure so far is a folder or txt the discovery could not read.
+		res.Unreadable = int(ops.Stats().Failed)
+		if overviewAfterDiscoveryHook != nil {
+			overviewAfterDiscoveryHook(folders)
+		}
 		byBucket := map[string]*bucketCount{}
 		var mu sync.Mutex
 		err = utils.ForEachParallel(ctx, folders, utils.Parallel{
 			Workers:  min(16, runtime.NumCPU()),
 			Progress: func(done, total int) { c.Progress("inspect", done, total) },
 		}, func(_ int, folder string) {
-			sum := summarizeSong(cfg.Library, folder)
+			sum := summarizeSong(ops, cfg.Library, folder)
 			mu.Lock()
 			defer mu.Unlock()
+			if sum.failed {
+				res.Unreadable++
+				return
+			}
 			if !sum.song {
 				res.NoSong++
 				return
@@ -129,7 +147,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			if sum.image {
 				res.WithImage++
 			}
-			if !sum.audio && !sum.video && !sum.failed {
+			if !sum.audio && !sum.video {
 				res.NoAudio++
 			}
 		})
