@@ -79,4 +79,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           sha256sum library-manager-* > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes library-manager-* SHA256SUMS
+          # A re-run (or a tag pushed again) replaces the assets of the existing release.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber library-manager-* SHA256SUMS
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes library-manager-* SHA256SUMS
+          fi
