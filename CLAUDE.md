@@ -609,7 +609,10 @@ artists (`artistSimilar`), same `variantWords`; candidates come from an inverted
 index (shingles in > 50 songs ignored) and a coarse 50 ms chart key. Measured on the 15,147-song
 library (2026-11-14, txt-only shadow copy, no ffprobe): exact content 90 duplicates, plus the
 similarity check 195, plus the key fixes 259 (no false merge found in review). **Still open:**
-re-timed charts (another tempo) are only listed, never joined; artist aliases (`30`/`Thirty Seconds
+re-timed charts (another tempo) are only listed, never joined; the chart key rounds every note to
+the 50 ms grid (`chartGridMs`), so the same chart shifted by ~20–25 ms (within `chartToleranceMs`)
+usually gets another key and is found only through the lyrics (≥ `minShingles` shingles), never for
+short or repetitive lyrics; a shift-tolerant key (note count plus relative pitches) would fix it; artist aliases (`30`/`Thirty Seconds
 to Mars`, `CCR`), placeholder artists, U+FFFD as a wildcard, German `ae`/`ä` spellings; audio fingerprints, and choosing between several song txts *inside one folder* by content.
 
 Inside one folder, fixtxt still keeps only the newest song txt (`DuplicateTxts`, by mtime, no
