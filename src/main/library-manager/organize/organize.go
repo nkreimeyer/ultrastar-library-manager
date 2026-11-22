@@ -211,7 +211,7 @@ func Run(cfg config.OrganizeConfig, ops *fsops.Ops, opts Options) error {
 		Broken: opts.Broken, KeepDuplicates: opts.KeepDuplicates,
 	}
 	for _, src := range cfg.Sources {
-		if src.Path == cfg.Library {
+		if config.SamePath(src.Path, cfg.Library) {
 			planOpts.LibrarySource = true
 		}
 	}
@@ -286,7 +286,7 @@ func newCandidate(cfg config.OrganizeConfig, src config.Source, folder string, i
 	c := Candidate{
 		Source: src.Index, Tier: src.Tier, Label: src.Label, Folder: folder,
 		Rel:       filepath.ToSlash(cfg.RelPath(src, folder)),
-		InLibrary: src.Path == cfg.Library,
+		InLibrary: config.SamePath(src.Path, cfg.Library),
 	}
 	if err != nil {
 		c.Unreadable = true
@@ -812,7 +812,7 @@ func emptiedCategories(cfg config.OrganizeConfig, cands []Candidate, outcomes ma
 		root := roots[cands[i].Source]
 		for dir := filepath.Dir(cands[i].Folder); dir != root && config.IsWithin(dir, root) && !seen[dir]; dir = filepath.Dir(dir) {
 			seen[dir] = true
-			if cfg.Library != "" && root == cfg.Library && isBucketDir(cfg.Library, dir) {
+			if cfg.Library != "" && config.SamePath(root, cfg.Library) && isBucketDir(cfg.Library, dir) {
 				continue
 			}
 			if isEmptyTree(dir) {

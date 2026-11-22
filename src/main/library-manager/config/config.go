@@ -179,6 +179,16 @@ func IsWithin(path, root string) bool {
 	return isWithin(path, root, runtime.GOOS)
 }
 
+// SamePath reports whether a and b name the same folder: equal on Linux, equal ignoring case
+// on darwin and windows and, on darwin, Unicode normalization too (the folding of IsWithin).
+// Use it, not ==, to compare the library, source and output paths of a configuration.
+func SamePath(a, b string) bool { return samePath(a, b, runtime.GOOS) }
+
+// samePath is SamePath for the given GOOS.
+func samePath(a, b, goos string) bool {
+	return a == b || (isWithin(a, b, goos) && isWithin(b, a, goos))
+}
+
 // isWithin is IsWithin for the given GOOS, so the case-insensitive rule is tested on Linux.
 func isWithin(path, root, goos string) bool {
 	if goos == "darwin" {

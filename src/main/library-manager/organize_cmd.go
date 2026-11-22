@@ -115,7 +115,7 @@ func runOrganize(mode organize.Mode, args []string, output io.Writer) int {
 	if !fs.setLogLevel() {
 		return exitUsage
 	}
-	return journaledRun("organize", *undo, *library, *outDir, *dryRun,
+	return journaledRun(string(mode), *undo, *library, *outDir, *dryRun,
 		func() (config.OrganizeConfig, error) {
 			return organize.NewConfig(mode, tiers, *library, *outDir, *dryRun)
 		},

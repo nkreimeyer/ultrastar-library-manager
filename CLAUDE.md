@@ -220,7 +220,8 @@ Same exit codes and leftover-argument rule.
 
 - `config.New` resolves symlinks and refuses an out dir inside the song dir (`IsWithin`
   ignores case on darwin and windows, and Unicode normalization on darwin, like APFS/NTFS;
-  GOOS is a parameter of `isWithin`). `PrepareOutDir`
+  GOOS is a parameter of `isWithin`); library, source and out paths are compared with
+  `SamePath`, the same folding (a library equal to a source takes the source's spelling). `PrepareOutDir`
   writes the `.library-manager-output` marker; discovery skips folders containing it (and the
   legacy `.songs-sanitizer-output` of the old program name). The program was called
   songs-sanitizer until 2026-11-14; the media tags (`SANITIZER_*`), the default

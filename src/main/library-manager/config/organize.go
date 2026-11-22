@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"golang.org/x/text/unicode/norm"
@@ -54,7 +55,15 @@ type OrganizeConfig struct {
 // tiers may be empty (an undo run, which needs no sources), and library may be "" if
 // outDir is given (undo with -o only); checking that a regular run has both is up to the
 // caller.
+//
+// Paths are compared like IsWithin compares them: on darwin and windows "~/songs" and
+// "~/Songs" are the same folder (SamePath).
 func NewOrganize(tiers [][]string, library, outDir string, dryRun bool) (OrganizeConfig, error) {
+	return newOrganize(tiers, library, outDir, dryRun, runtime.GOOS)
+}
+
+// newOrganize is NewOrganize with the path rules of the given GOOS.
+func newOrganize(tiers [][]string, library, outDir string, dryRun bool, goos string) (OrganizeConfig, error) {
 	cfg := OrganizeConfig{DryRun: dryRun}
 	labels := map[string]bool{} // lower-cased labels taken so far
 	for tier, paths := range tiers {
@@ -68,11 +77,11 @@ func NewOrganize(tiers [][]string, library, outDir string, dryRun bool) (Organiz
 			}
 			for _, prev := range cfg.Sources {
 				switch {
-				case prev.Path == src:
+				case samePath(prev.Path, src, goos):
 					return OrganizeConfig{}, fmt.Errorf("source dir %q is given twice", src)
-				case IsWithin(src, prev.Path):
+				case isWithin(src, prev.Path, goos):
 					return OrganizeConfig{}, fmt.Errorf("source dir %q must not be inside the source dir %q", src, prev.Path)
-				case IsWithin(prev.Path, src):
+				case isWithin(prev.Path, src, goos):
 					return OrganizeConfig{}, fmt.Errorf("source dir %q must not be inside the source dir %q", prev.Path, src)
 				}
 			}
@@ -96,11 +105,14 @@ func NewOrganize(tiers [][]string, library, outDir string, dryRun bool) (Organiz
 		}
 		for _, s := range cfg.Sources {
 			switch {
-			case s.Path == absLib:
-				// The library is also a source: its songs are candidates, too.
-			case IsWithin(absLib, s.Path):
+			case samePath(s.Path, absLib, goos):
+				// The library is also a source: its songs are candidates, too. On a
+				// case-insensitive system it may be spelled differently; the source's
+				// spelling is kept, so both paths stay equal strings.
+				absLib = s.Path
+			case isWithin(absLib, s.Path, goos):
 				return OrganizeConfig{}, fmt.Errorf("library dir %q must not be inside the source dir %q", absLib, s.Path)
-			case IsWithin(s.Path, absLib):
+			case isWithin(s.Path, absLib, goos):
 				return OrganizeConfig{}, fmt.Errorf("source dir %q must not be inside the library dir %q; give the library itself as a source instead", s.Path, absLib)
 			}
 		}
@@ -127,9 +139,9 @@ func NewOrganize(tiers [][]string, library, outDir string, dryRun bool) (Organiz
 	for _, d := range dirs {
 		switch {
 		case d.path == "":
-		case IsWithin(absOut, d.path):
+		case isWithin(absOut, d.path, goos):
 			return OrganizeConfig{}, fmt.Errorf("output dir %q must not be inside the %s %q", absOut, d.kind, d.path)
-		case IsWithin(d.path, absOut):
+		case isWithin(d.path, absOut, goos):
 			return OrganizeConfig{}, fmt.Errorf("%s %q must not be inside the output dir %q; use a different -o", d.kind, d.path, absOut)
 		}
 	}
@@ -215,18 +227,23 @@ func NewDedupe(library, outDir string, dryRun bool) (OrganizeConfig, error) {
 // the first source of the first tier, so it is compared with the sources and wins a tie
 // (source order). No source may be the library itself.
 func NewAdd(tiers [][]string, library, outDir string, dryRun bool) (OrganizeConfig, error) {
+	return newAdd(tiers, library, outDir, dryRun, runtime.GOOS)
+}
+
+// newAdd is NewAdd with the path rules of the given GOOS.
+func newAdd(tiers [][]string, library, outDir string, dryRun bool, goos string) (OrganizeConfig, error) {
 	if len(tiers) == 0 {
 		return OrganizeConfig{}, fmt.Errorf("at least one source dir is required")
 	}
 	if library == "" {
 		return OrganizeConfig{}, fmt.Errorf("a library dir is required")
 	}
-	cfg, err := NewOrganize(tiers, library, outDir, dryRun)
+	cfg, err := newOrganize(tiers, library, outDir, dryRun, goos)
 	if err != nil {
 		return OrganizeConfig{}, err
 	}
 	for _, s := range cfg.Sources {
-		if s.Path == cfg.Library {
+		if samePath(s.Path, cfg.Library, goos) {
 			return OrganizeConfig{}, fmt.Errorf("source dir %q is the library; add always compares the sources with the library, so do not give it as -s", s.Path)
 		}
 	}
@@ -236,5 +253,5 @@ func NewAdd(tiers [][]string, library, outDir string, dryRun bool) (OrganizeConf
 	withLib := make([][]string, len(tiers))
 	copy(withLib, tiers)
 	withLib[0] = append([]string{cfg.Library}, tiers[0]...)
-	return NewOrganize(withLib, cfg.Library, cfg.OutDir, dryRun)
+	return newOrganize(withLib, cfg.Library, cfg.OutDir, dryRun, goos)
 }

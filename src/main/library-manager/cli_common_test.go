@@ -218,8 +218,7 @@ func TestUndoNeedsFolderPerCommand(t *testing.T) {
 	}
 }
 
-// A failed run names its command: remove logs "remove failed", the organize family
-// "organize failed".
+// A failed run names its command: "dedupe failed", "add failed", not "organize failed".
 func TestFailedRunNamesCommand(t *testing.T) {
 	base, _, _, _ := cliFixture(t)
 	file := filepath.Join(base, "file")
@@ -227,10 +226,26 @@ func TestFailedRunNamesCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	bad := filepath.Join(file, "out")
-	for cmd, want := range map[string]string{"organize": "organize", "dedupe": "organize", "add": "organize", "remove": "remove"} {
+	for cmd, want := range map[string]string{"organize": "organize", "dedupe": "dedupe", "add": "add", "remove": "remove"} {
 		code, _, logs := runCaptured(t, cmd, "-undo", "-o", bad)
 		if code != exitFailures || !testutil.ContainsPrefix(logs, want+" failed: reading the journal: ") {
 			t.Errorf("%s -undo with an unreadable journal: exit %d, logs %q, want %q failed", cmd, code, logs, want)
 		}
+	}
+	// A regular dedupe of a library that cannot be listed.
+	lib := filepath.Join(base, "locked")
+	if err := os.Mkdir(lib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(lib, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(lib, 0o755) })
+	if _, err := os.ReadDir(lib); err == nil {
+		t.Skip("the locked library is readable (running as root)")
+	}
+	code, _, logs := runCaptured(t, "dedupe", "-no-cache", "-l", lib, "-o", filepath.Join(base, "dedupe-out"))
+	if code != exitFailures || !testutil.ContainsPrefix(logs, "dedupe failed: ") {
+		t.Errorf("dedupe of an unreadable library: exit %d, logs %q, want \"dedupe failed\"", code, logs)
 	}
 }
