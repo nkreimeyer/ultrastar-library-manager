@@ -121,7 +121,7 @@ test-assets/                  local fixture library (gitignored, not in the repo
 Dependencies: `logrus` and `golang.org/x/text` (charmaps, UTF-16, Unicode normalization).
 CI: `.github/workflows/build.yml` (pushes to main, tags `v*`, pull requests, manual runs) and
 `.gitlab-ci.yml` (branch pushes, or the merge request pipeline while one is open; tags) run gofmt, vet
-and `go test -race` (with ffmpeg); only tags `v*` also cross-build linux/windows/darwin amd64 with `CGO_ENABLED=0` and make a
+and `go test -race` (with ffmpeg); only tags `v*` also cross-build linux/windows/darwin amd64 and darwin arm64 with `CGO_ENABLED=0` and make a
 release (both with the tag's `CHANGELOG.md` section as notes, GitHub also with `SHA256SUMS`; untagged runs do
 not build). Both release jobs are idempotent: a re-run or a re-pushed tag updates the
 existing release (GitLab through the Releases API with the job token, not the `release:` keyword,

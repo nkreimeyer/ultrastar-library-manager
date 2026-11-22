@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Releases include a macOS binary for Apple Silicon (`library-manager-darwin-arm64`).
+- `docs/ffmpeg-windows.md`: how to install ffmpeg on Windows, also without the command line.
+
 ## [0.2.2] - 2026-11-22
 
 ### Fixed

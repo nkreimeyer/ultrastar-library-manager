@@ -38,14 +38,15 @@ jobs:
     strategy:
       matrix:
         include:
-          - { goos: linux,   ext: '' }
-          - { goos: windows, ext: '.exe' }
-          - { goos: darwin,  ext: '' }
+          - { goos: linux,   goarch: amd64, ext: '' }
+          - { goos: windows, goarch: amd64, ext: '.exe' }
+          - { goos: darwin,  goarch: amd64, ext: '' }
+          - { goos: darwin,  goarch: arm64, ext: '' }
     env:
       GOOS: ${{ matrix.goos }}
-      GOARCH: amd64
+      GOARCH: ${{ matrix.goarch }}
       CGO_ENABLED: '0'
-      OUT: library-manager-${{ matrix.goos }}-amd64${{ matrix.ext }}
+      OUT: library-manager-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

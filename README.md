@@ -16,13 +16,13 @@ Prebuilt binaries for all three platforms are on the
 
 | | Linux | Windows | macOS |
 |---|---|---|---|
-| Release binary | `library-manager-linux-amd64` | `library-manager-windows-amd64.exe` | `library-manager-darwin-amd64` |
+| Release binary | `library-manager-linux-amd64` | `library-manager-windows-amd64.exe` | `library-manager-darwin-amd64` (Intel), `library-manager-darwin-arm64` (Apple Silicon) |
 | Start the UI | run it or double-click (opens a terminal) | double-click the `.exe` | double-click (opens Terminal) |
-| Install ffmpeg | `sudo apt install ffmpeg` / `sudo pacman -S ffmpeg` | `winget install ffmpeg` | `brew install ffmpeg` |
+| Install ffmpeg | `sudo apt install ffmpeg` / `sudo pacman -S ffmpeg` | `winget install ffmpeg`, or [step by step without the command line](docs/ffmpeg-windows.md) | `brew install ffmpeg` |
 | `-s` with several folders | separated by `:` | separated by `;` | separated by `:` |
 
-The release binaries are built for amd64 only. On Apple Silicon the macOS binary runs under
-Rosetta 2; on other CPUs (e.g. ARM Linux or Windows on ARM) build it yourself, see "Build".
+The release binaries are built for amd64 (Linux, Windows, macOS) and arm64 (macOS, for Apple
+Silicon Macs). On other CPUs (e.g. ARM Linux or Windows on ARM) build it yourself, see "Build".
 Path handling follows each file system: case-insensitive comparison on Windows and macOS, Unicode
 normalization (NFC/NFD) on macOS, and folder names that are safe on all three systems. A library
 can be moved between the platforms. The CI runs the tests on Linux only.
@@ -225,7 +225,7 @@ window for itself (Linux: the first of x-terminal-emulator, gnome-terminal, kons
 mate-terminal, kitty, alacritty, wezterm, xterm that is installed; macOS: Terminal; Windows
 gives a double-clicked program its console window anyway; on macOS a downloaded binary may first
 need `chmod +x` and, because it is unsigned, a right-click → Open or `xattr -d com.apple.quarantine
-library-manager-darwin-amd64`). Keep
+<file>`). Keep
 the terminal window open while you use it. The UI stops by itself about 15 seconds after the
 last browser tab is closed (a reload or a short network gap does not count) unless a job is
 still running; `-keep-running` turns that off. Closing the window (or Ctrl-C) stops the UI and any
@@ -579,7 +579,7 @@ free of C dependencies):
 
 ```bash
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o library-manager.exe .
-CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -o library-manager-darwin-arm64 .
+CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -o library-manager-darwin-arm64 .   # Apple Silicon
 ```
 
 Fully statically linked Linux binary:
@@ -591,8 +591,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -tags netgo -ldflags '-w -extl
 
 Prebuilt binaries: the CI (`.github/workflows/build.yml`) runs gofmt,
 `go vet` and the tests on every push (pushes to `main` and pull requests). Only a tag
-`v*` also builds `library-manager-{linux,windows,darwin}-amd64` and creates a release with the
-three binaries attached (with a `SHA256SUMS` file).
+`v*` also builds the binaries (`library-manager-{linux,windows,darwin}-amd64` and
+`library-manager-darwin-arm64`) and creates a release with them attached (with a `SHA256SUMS` file).
 
 ### Tests
 
