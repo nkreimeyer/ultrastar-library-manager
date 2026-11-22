@@ -785,12 +785,16 @@ async function loadAside() {
 
 const bytesText = (n) => {
   const units = ["bytes", "KB", "MB", "GB", "TB"];
+  // One decimal below 10, none above; the value is rounded first so that 999.9 KB moves on to MB.
+  const round = (x) => (x < 10 ? Math.round(x * 10) / 10 : Math.round(x));
   let i = 0;
-  while (n >= 1000 && i < units.length - 1) {
+  while (i < units.length - 1 && (i ? round(n) : n) >= 1000) {
     n /= 1000;
     i++;
   }
-  return `${i ? n.toFixed(n < 10 ? 1 : 0) : n} ${units[i]}`;
+  if (!i) return `${n} ${n === 1 ? "byte" : "bytes"}`;
+  const r = round(n);
+  return `${r < 10 ? r.toFixed(1) : r} ${units[i]}`;
 };
 
 async function openOriginals(cfg) {
@@ -1060,8 +1064,9 @@ function etaText(j) {
   if (!(j.total > 0) || doneHere < 3 || secs < 5 || j.done >= j.total) return "";
   const left = (secs / doneHere) * (j.total - j.done);
   if (left < 45) return "less than a minute left";
-  if (left < 3600) return `about ${Math.round(left / 60)} min left`;
-  return `about ${Math.floor(left / 3600)} h ${Math.round((left % 3600) / 60)} min left`;
+  const mins = Math.round(left / 60);
+  if (mins < 60) return `about ${mins} min left`;
+  return `about ${Math.floor(mins / 60)} h ${mins % 60} min left`;
 }
 
 function updateRunning() {

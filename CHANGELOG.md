@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Releases include a macOS binary for Apple Silicon (`library-manager-darwin-arm64`).
 - `docs/ffmpeg-windows.md`: how to install ffmpeg on Windows, also without the command line.
 
+### Fixed
+
+- UI: the time left no longer reads "1 h 60 min", and sizes no longer show "10.0 KB", "1000 KB" or "1 bytes".
+
 ## [0.2.2] - 2026-11-22
 
 ### Fixed
