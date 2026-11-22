@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - UI: putting back set-aside items refuses anything that is not a listed song or file (such as a whole category or part of a song), and a song whose old folder outside the library is gone, for example on an unplugged drive, is shown as blocked instead of being put back into a newly created folder.
 - A failed `dedupe` or `add` run (or its `-undo`) now says "dedupe failed" or "add failed" instead of "organize failed".
 - On macOS and Windows, a library given in another case than its source (`-s ~/songs -l ~/Songs`) is treated as the same folder instead of failing with "library dir must not be inside the source dir"; a source given twice in different case is reported as given twice.
+- UI: jobs with very long logs no longer slow down; the log keeps the newest 20000 to 22000 lines instead of exactly 20000.
 
 ## [0.2.1] - 2026-11-22
 

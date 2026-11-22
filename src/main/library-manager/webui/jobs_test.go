@@ -155,9 +155,9 @@ func TestJobLogLines(t *testing.T) {
 	if _, _, lines, _ = r.current(3); len(lines) != 0 {
 		t.Errorf("from 3: %s", msgs(lines))
 	}
-	next() // 8 lines, the newest 5 are kept
+	next() // 8 lines: the 7th cuts the log back to the newest 5, then the 8th is added
 	j, _, lines, _ = r.current(0)
-	if j.Logs != 8 || msgs(lines) != "3:line 3 4:line 4 5:line 5 6:line 6 7:line 7" {
+	if j.Logs != 8 || msgs(lines) != "2:line 2 3:line 3 4:line 4 5:line 5 6:line 6 7:line 7" {
 		t.Errorf("after trimming: logs = %d, %s", j.Logs, msgs(lines))
 	}
 	if _, _, lines, _ = r.current(6); msgs(lines) != "6:line 6 7:line 7" {
@@ -169,6 +169,56 @@ func TestJobLogLines(t *testing.T) {
 	if j, _, _, _ := r.current(0); j.Logs != 8 {
 		t.Errorf("after the end: logs = %d", j.Logs)
 	}
+}
+
+// TestJobLogTrimAmortised: the log is not cut for every line over the cap, only once it is
+// 10 % over, and then back to the cap; line numbers stay continuous and a request for a
+// dropped line gets the lines from the oldest kept one on.
+func TestJobLogTrimAmortised(t *testing.T) {
+	old := maxLogLines
+	maxLogLines = 100
+	t.Cleanup(func() { maxLogLines = old })
+	r := newRunner(t)
+	write := func(from, to int) func(jobControl) {
+		return func(jobControl) {
+			for i := from; i < to; i++ {
+				log.Infof("line %d", i)
+			}
+		}
+	}
+	// window uses Errorf, not Fatalf: the job waits for every next() and would block the
+	// cleanup's r.close().
+	window := func(wantFirst, wantLogs int) {
+		t.Helper()
+		j, _, lines, _ := r.current(0)
+		if j.Logs != wantLogs || len(lines) != wantLogs-wantFirst {
+			t.Errorf("logs = %d, %d lines; want %d, %d", j.Logs, len(lines), wantLogs, wantLogs-wantFirst)
+			return
+		}
+		for k, l := range lines {
+			if l.N != wantFirst+k || l.Msg != fmt.Sprintf("line %d", wantFirst+k) {
+				t.Errorf("line %d = %d:%s", k, l.N, l.Msg)
+				return
+			}
+		}
+	}
+	next := step(t, r, fsops.New(true), write(0, 101), write(101, 110), write(110, 111), write(111, 230))
+	next()
+	window(0, 101) // one over the cap: not cut yet
+	next()
+	window(0, 110) // at the limit: still not cut
+	next()
+	window(11, 111) // one over the limit: back to the newest 100
+	next()
+	window(121, 230) // cut every 11 lines, last at line 220 (to 121..220), then 221..229 added
+	if _, _, lines, _ := r.current(5); len(lines) != 109 || lines[0].N != 121 {
+		t.Errorf("from a dropped line: %d lines, first %v", len(lines), lines[:min(1, len(lines))])
+	}
+	if _, _, lines, _ := r.current(228); msgs(lines) != "228:line 228 229:line 229" {
+		t.Errorf("from 228: %s", msgs(lines))
+	}
+	next()
+	r.wg.Wait()
 }
 
 // TestJobEventsAcrossJobs reads one event stream over two jobs: each log line arrives

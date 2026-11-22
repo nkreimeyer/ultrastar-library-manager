@@ -24,8 +24,13 @@ const (
 	stateCancelled = "cancelled"
 )
 
-// maxLogLines is how many log lines of a job are kept (the newest).
+// maxLogLines is how many log lines of a job are kept (the newest). The log grows to
+// logTrimLimit() lines (10 % more) before it is cut back to maxLogLines in one step, so a
+// long job does not copy the whole log under jobRunner.mu for every new line.
 var maxLogLines = 20000
+
+// logTrimLimit is the length at which a job's log is cut back to maxLogLines.
+func logTrimLimit() int { return maxLogLines + max(1, maxLogLines/10) }
 
 // Job is the state of a job as the UI sees it.
 type Job struct {
@@ -244,9 +249,12 @@ func (h *logHook) Fire(e *log.Entry) error {
 		return nil
 	}
 	j.logs = append(j.logs, LogLine{N: j.logBase + len(j.logs), Time: e.Time, Level: e.Level.String(), Msg: e.Message})
-	if len(j.logs) > maxLogLines {
+	if len(j.logs) > logTrimLimit() {
+		// In place: current hands out copies, never the slice itself.
 		drop := len(j.logs) - maxLogLines
-		j.logs = append(j.logs[:0:0], j.logs[drop:]...)
+		n := copy(j.logs, j.logs[drop:])
+		clear(j.logs[n:]) // free the dropped messages
+		j.logs = j.logs[:n]
 		j.logBase += drop
 	}
 	j.version++
