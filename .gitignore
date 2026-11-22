@@ -1,5 +1,12 @@
-.vscode/settings.json
+**/.vscode/settings.json
 .sonarlint/
 .continue/
 test-assets/
-src/main/library-manager/library-manager
+# Binaries built in the module folder (README "Build", the CI names) and the GitLab build's dist/.
+/src/main/library-manager/library-manager*
+/src/main/library-manager/mybin
+/dist/
+# Python bytecode and pytest caches of the legacy scripts in old/.
+__pycache__/
+*.py[cod]
+.pytest_cache/

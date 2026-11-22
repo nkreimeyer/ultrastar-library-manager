@@ -130,6 +130,9 @@ it. A library root that is itself a song folder gets no cache.
     background are told apart by file name hints (`[CO]`, `[BG]`, the words `cover`,
     `background`, `bg`, unless they are part of the song's name) and then by shape (square
     within 5 % = cover); JPEG, PNG, GIF, BMP and WebP headers are read
+  - spells existing `#VOCALS`/`#INSTRUMENTAL` values exactly like the file on disk when
+    they differ only in case or Unicode normalization (`vocals.MP3` -> `Vocals.mp3`); stems
+    are never chosen, added or removed
   - removes repeated header tags, keeping the last one (the one UltraStar uses)
   - fills a missing or empty `#ARTIST`/`#TITLE` from the folder name when it is obvious:
     the folder is named `Artist - Title` (separated by ` - ` with spaces; `AC-DC` or an en
@@ -190,8 +193,10 @@ it. A library root that is itself a song folder gets no cache.
     runs; containers that cannot hold the tag (AVI, MPEG) are recorded in `media-journal.txt`
 - **audio** (`-a`) – downmixes multichannel audio to stereo and peak-normalizes to -3 dB
   (true sample peak), keeping codec, bitrate, tags and embedded cover art. The original is
-  copied to `originals/` first. Normalized files are tagged (`SANITIZER_NORMALIZED`, or
-  recorded in `media-journal.txt` for raw AAC/WAV) and not normalized again on later runs.
+  copied to `originals/` first. Normalized files are tagged (`SANITIZER_NORMALIZED`) and
+  recorded in `media-journal.txt`, and they are not normalized again on later runs. WAV, raw
+  AAC and `.m4a` files get no tag (for `.m4a` the tag would drop the cover and the iTunes
+  tags), so the journal is their only record: keep it.
   `#VOCALS`/`#INSTRUMENTAL` stems are left alone so their mix balance is kept, and so are
   symbolic links to audio files
 
@@ -239,8 +244,8 @@ program with exit code 1.
 
 The start page lists these tasks:
 
-- **Tidy up my library**: `dedupe` together with the sanitizer's text, cleanup, audio and video
-  steps; you choose the steps. Undo covers only the duplicates and broken songs set aside:
+- **Tidy up my library**: `dedupe` together with the text, cleanup, audio and video steps of
+  the module run (`library-manager -s`); you choose the steps. Undo covers only the duplicates and broken songs set aside:
   leftover files and folders without a song stay in `extra-files/` and `invalid/` of the output
   folder, and fixed song texts, evened-out audio and converted videos stay as they are.
 - **Add new songs to my library** (`add`) and **Build a new library from folders** (`organize`).
@@ -308,7 +313,7 @@ recorded in a journal and can be undone with `-undo`.
 
 **Recommended workflow:**
 
-1. Run the sanitizer on every source first (`library-manager -s <source> -n`, then without
+1. Run the modules on every source first (`library-manager -s <source> -n`, then without
    `-n`; add `-k` to see what check reports). fixtxt repairs encodings, file references and
    missing `#ARTIST`/`#TITLE` tags, so fixable songs are not sent to `invalid/` by organize.
 2. `library-manager organize … -n` and review `organize_plan.txt` in the output folder: what
@@ -327,7 +332,7 @@ recorded in a journal and can be undone with `-undo`.
 | `-deep` | off | Fully decode every referenced audio/video file while checking the songs (slow) |
 | `-n` | off | Dry run: write the plan report only; nothing is moved and no journal entry is written |
 | `-no-cache` | off | Probe every media file again: neither read nor write the media cache (see "Media cache") |
-| `-undo` | off | Undo the most recent organize run that was not undone yet |
+| `-undo` | off | Undo the most recent organize, dedupe, add or remove run that was not undone yet (they share one journal) |
 | `-v <level>` | `info` | Log level |
 
 **Tiers.** With three sources, one high quality and two low quality ones:
@@ -460,7 +465,9 @@ out `-priority` (or give both in one tier, `-s /m/library:/m/new`) to let qualit
 To add new songs without re-bucketing the library, use `add` instead (see below).
 
 **Undo.** `organize -undo -o <out>` (or `-l <library>` for the default output folder)
-reverts the most recent run that was not undone yet: every move in reverse order, and the
+reverts the most recent run that was not undone yet (the journal is shared with dedupe,
+add and remove, so this is the newest of those runs, whichever command made it): every move
+in reverse order, and the
 library folders the run created are removed again if they are empty. A move whose target
 is gone or whose original place is taken again is skipped and counted as failed. If a
 move failed because something is in the way, the run is not marked as undone: clear the
@@ -500,7 +507,7 @@ keeper stays where it is, whatever the folder layout. The other versions go to
 `<out>/invalid/<library name>/…`. Broken songs without a working version, songs with an
 encoding problem and unreadable folders stay. Nothing is renamed or re-bucketed. The plan,
 `-n`, the journal and `-undo` work as for organize (the output folder is the same
-`organize-output/` by default, and `-undo` reverts the newest organize, dedupe or add run).
+`organize-output/` by default, and `-undo` reverts the newest organize, dedupe, add or remove run: they share one journal).
 
 ## Adding songs to a library (`add`)
 
@@ -551,10 +558,10 @@ All three can be repeated and combined. Tags are compared as the duplicate detec
 case, accents, spaces, punctuation, a leading `The` (or `(The)`), `feat.` parts, noise
 qualifiers and `_dupl<n>` marks do not matter, so `-artist "the cure"` also removes `Cure (The)`.
 A missing `#ARTIST` or `#TITLE` is taken from an obvious `Artist - Title` folder name (the
-same rule the sanitizer uses to fill it; the report marks such matches), so a library that was
+same rule fixtxt uses to fill it; the report marks such matches), so a library that was
 not sanitized yet can be cleaned too. Songs without a readable song txt are never matched, and a matching song whose txt has an
-encoding problem stays in place (its tags may be read wrongly; fix it with the sanitizer
-first). Run with `-n` first: `remove_plan.txt` (and `remove_plan.json`) in the output folder
+encoding problem stays in place (its tags may be read wrongly; fix it with fixtxt
+(`library-manager -s <library>`) first). Run with `-n` first: `remove_plan.txt` (and `remove_plan.json`) in the output folder
 list every song that would go, the pattern that matched it, and the patterns that matched
 nothing (usually a typo); a real run writes them for what it removed.
 
@@ -589,10 +596,13 @@ cd src/main/library-manager
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -tags netgo -ldflags '-w -extldflags "-static"' -o library-manager .
 ```
 
-Prebuilt binaries: the CI (`.github/workflows/build.yml`) runs gofmt,
-`go vet` and the tests on every push (pushes to `main` and pull requests). Only a tag
-`v*` also builds the binaries (`library-manager-{linux,windows,darwin}-amd64` and
-`library-manager-darwin-arm64`) and creates a release with them attached (with a `SHA256SUMS` file).
+Prebuilt binaries: the CI (`.github/workflows/build.yml`) runs gofmt, `go vet` and
+`go test -race` (with ffmpeg installed) on pushes to `main`, on pull requests, on tags `v*`
+and on manual runs. `.gitlab-ci.yml` does the same on GitLab for every branch push (or for
+the merge request pipeline while one is open) and for tags. Only a tag `v*` also builds the
+binaries (`library-manager-{linux,windows,darwin}-amd64` and `library-manager-darwin-arm64`)
+and creates a release with them: on GitHub attached to the release together with a
+`SHA256SUMS` file, on GitLab in the project's generic package registry, linked from the release.
 
 ### Tests
 

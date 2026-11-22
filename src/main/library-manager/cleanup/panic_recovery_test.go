@@ -21,11 +21,11 @@ func TestRunRecoversPanicInOneFolder(t *testing.T) {
 	hook := testutil.CaptureLogsAt(t, log.InfoLevel)
 	boom := filepath.Join(cfg.SongDir, "Boom")
 	orig := directoryCleaner
-	directoryCleaner = func(cfg config.Config, ops *fsops.Ops, folder string) {
+	directoryCleaner = func(cfg config.Config, ops *fsops.Ops, folder string) bool {
 		if folder == boom {
 			panic("boom")
 		}
-		orig(cfg, ops, folder)
+		return orig(cfg, ops, folder)
 	}
 	t.Cleanup(func() { directoryCleaner = orig })
 

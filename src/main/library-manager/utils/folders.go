@@ -19,8 +19,10 @@ import (
 //   - otherwise it is returned itself as a (probably broken) song folder, together with its
 //     subfolders (e.g. an empty "covers/" folder).
 //
-// Hidden folders, Synology "@eaDir" folders and sanitizer output folders (containing
-// config.OutputMarker) are skipped. In dry-run mode, folders and txts that an earlier
+// Hidden folders, Synology "@eaDir" folders and output folders (containing
+// config.OutputMarker or the legacy marker) are skipped. Symlinks to folders are not
+// followed (no loops, no songs from outside the library); they are logged and count as
+// content, so their parent is never returned as one (broken) song. In dry-run mode, folders and txts that an earlier
 // module would have moved away are skipped too, and txts are read as an earlier module
 // would have written them (ops.ReadFile). Unreadable folders and song txts are logged, counted
 // once per run in ops (which may be nil) and skipped; only an unreadable songDir is an error.
@@ -31,7 +33,11 @@ func GetAllSongFolders(ops *fsops.Ops, songDir string) ([]string, error) {
 	}
 	var songFolders []string
 	for _, entry := range entries {
-		if !entry.IsDir() || IsNoiseEntry(ops, songDir, entry.Name()) {
+		if IsNoiseEntry(ops, songDir, entry.Name()) {
+			continue
+		}
+		if !entry.IsDir() {
+			skipSymlinkedDir(songDir, entry)
 			continue
 		}
 		r := collectSongFolders(ops, filepath.Join(songDir, entry.Name()))
@@ -54,12 +60,12 @@ func collectSongFolders(ops *fsops.Ops, dir string) collected {
 	}
 
 	var subdirs []string
-	hasTxt, hasMedia := false, false
+	hasTxt, hasMedia, linkedDir := false, false, false
 	for _, e := range entries {
 		name := e.Name()
 		switch {
 		case config.IsOutputMarker(name):
-			log.Debugf("Skipping sanitizer output folder %s", dir)
+			log.Debugf("Skipping output folder %s", dir)
 			// Not content of a song, but never a reason to treat the parent as one song
 			// (which would move the output folder along with it).
 			return collected{content: true}
@@ -83,11 +89,13 @@ func collectSongFolders(ops *fsops.Ops, dir string) collected {
 			}
 		case !IsHidden(name) && (IsAudioFile(name) || IsVideoFile(name)):
 			hasMedia = true
+		case !IsNoiseEntry(ops, dir, name) && skipSymlinkedDir(dir, e):
+			linkedDir = true
 		}
 	}
 
 	var below []string
-	contentBelow := false
+	contentBelow := linkedDir // unknown content behind the link, like an unreadable folder
 	for _, sub := range subdirs {
 		r := collectSongFolders(ops, sub)
 		below = append(below, r.folders...)
@@ -100,6 +108,20 @@ func collectSongFolders(ops *fsops.Ops, dir string) collected {
 		// No txt or media anywhere below: this folder is a (broken or empty) song.
 		return collected{folders: []string{dir}, content: hasTxt || hasMedia}
 	}
+}
+
+// skipSymlinkedDir reports whether e, an entry of dir, is a symlink to a folder, and logs
+// that it is skipped. Discovery does not follow such links.
+func skipSymlinkedDir(dir string, e os.DirEntry) bool {
+	if e.Type()&os.ModeSymlink == 0 {
+		return false
+	}
+	path := filepath.Join(dir, e.Name())
+	if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
+		return false
+	}
+	log.Infof("Skipping symlinked folder %s (links are not followed)", path)
+	return true
 }
 
 // skipUnreadable logs an unreadable folder or file and counts it once per run.

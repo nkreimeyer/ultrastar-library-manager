@@ -72,6 +72,9 @@ func TestJobProgressVersion(t *testing.T) {
 		{"more done", "scan", 2, 5, true, 2, "scan"},
 		{"late report of an earlier item", "scan", 1, 5, false, 2, "scan"},
 		{"other total", "scan", 2, 6, true, 2, "scan"},
+		{"same phase starts again at 0", "scan", 0, 6, true, 0, "scan"},
+		{"its start reported twice", "scan", 0, 6, false, 0, "scan"},
+		{"and counts up again", "scan", 1, 6, true, 1, "scan"},
 		{"next phase starts at 0", "plan", 0, 3, true, 0, "plan"},
 	}
 	var steps []func(jobControl)

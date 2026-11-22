@@ -3,10 +3,53 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
+
+// A terminal launcher that fails at once (osascript without the permission to control
+// Terminal, a broken x-terminal-emulator) is no opened window: the caller starts the UI
+// itself, and the launcher's output is logged.
+func TestStartLauncher(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the launchers are shell scripts")
+	}
+	hook := logtest.NewGlobal()
+	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(make(log.LevelHooks)) })
+	for _, tt := range []struct {
+		name, script string
+		want         bool
+	}{
+		{"fails", "echo 'Not authorized to send Apple events to Terminal.' >&2; exit 1", false},
+		{"hands off", "exit 0", true},
+		{"stays as the window", "sleep 5", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			hook.Reset()
+			start := time.Now()
+			if got := startLauncher(exec.Command("sh", "-c", tt.script), 300*time.Millisecond); got != tt.want {
+				t.Errorf("startLauncher = %v, want %v", got, tt.want)
+			}
+			if d := time.Since(start); d > 3*time.Second {
+				t.Errorf("took %v", d)
+			}
+			logged := hook.LastEntry() != nil && strings.Contains(hook.LastEntry().Message, "Not authorized")
+			if logged != !tt.want {
+				t.Errorf("logged the launcher's output: %v, entries %v", logged, hook.AllEntries())
+			}
+		})
+	}
+	if startLauncher(exec.Command(filepath.Join(t.TempDir(), "missing")), time.Second) {
+		t.Error("a launcher that cannot start counts as a window")
+	}
+}
 
 func TestNeedsTerminal(t *testing.T) {
 	env := func(kv ...string) func(string) string {

@@ -204,7 +204,6 @@ button { font: inherit; cursor: pointer; }
   padding: 0.65rem 1.3rem;
 }
 .btn.primary:hover { background: color-mix(in srgb, var(--ink) 85%, var(--gold)); }
-.btn.danger { color: var(--red); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .link {
   border: 0; background: none; padding: 0; color: inherit; text-decoration: underline;
@@ -297,9 +296,7 @@ button { font: inherit; cursor: pointer; }
   display: inline-block; font-size: 0.75rem; padding: 0 0.4rem; border-radius: var(--radius-s);
   border: 1px solid currentColor; margin-left: 0.4rem; vertical-align: 0.1em; font-weight: 500;
 }
-.badge.weak { color: var(--gold-ink); }
 .badge.dup { color: var(--violet); }
-.badge.bad { color: var(--red); }
 
 /* Advanced table */
 

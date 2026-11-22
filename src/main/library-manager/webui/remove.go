@@ -167,6 +167,8 @@ func (s *Server) handleRemoveAnalysis(w http.ResponseWriter, r *http.Request) {
 // remove run of an apply job.
 var removeProgressHook func(phase string, done int)
 
+var errRemoveApplied = errors.New("this plan was applied already; check again for a new plan")
+
 // handleRemoveApply runs the reviewed remove for real. It plans again first (a dry run,
 // like the check); if that would remove other songs than the reviewed plan, nothing is
 // moved and the analysis shows the new plan.
@@ -188,7 +190,7 @@ func (s *Server) handleRemoveApply(w http.ResponseWriter, r *http.Request) {
 	applied := a.applied
 	s.mu.Unlock()
 	if applied {
-		writeError(w, http.StatusConflict, errors.New("this plan was applied already; check again for a new plan"))
+		writeError(w, http.StatusConflict, errRemoveApplied)
 		return
 	}
 	patterns, err := a.req.parse()
@@ -289,10 +291,10 @@ func (s *Server) handleRemoveApply(w http.ResponseWriter, r *http.Request) {
 				details: diff, result: map[string]any{"analysis": a.id, "planChanged": true},
 			}
 		}
+		if err := s.claimApply(&a.applied, errRemoveApplied); err != nil {
+			return nil, err
+		}
 		log.Infof("Applying remove: library %s, output %s", cfg.Library, cfg.OutDir)
-		s.mu.Lock()
-		a.applied = true
-		s.mu.Unlock()
 		opts.Progress = c.Progress
 		if removeProgressHook != nil {
 			opts.Progress = func(phase string, done, total int) {
@@ -303,6 +305,9 @@ func (s *Server) handleRemoveApply(w http.ResponseWriter, r *http.Request) {
 		// A stop ends the moves after the current one (Ctx); the job then ends as stopped
 		// and the shared undo puts back what was moved.
 		runErr := organize.RemoveWith(cfg, ops, patterns, opts)
+		// Applied once something moved (or the run finished): a stop or a failure before the
+		// first move can be applied again.
+		s.markApplied(&a.applied, ops, ctx, runErr)
 		res := map[string]any{"analysis": a.id, "outDir": cfg.OutDir, "library": cfg.Library}
 		if data, err := os.ReadFile(cfg.ReportPath(removeReportFile)); err == nil {
 			res["report"] = json.RawMessage(data)

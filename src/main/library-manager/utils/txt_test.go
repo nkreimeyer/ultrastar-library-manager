@@ -150,6 +150,27 @@ func TestReplaceFileReference(t *testing.T) {
 			t.Errorf("replaced=%v err=%v, file rewritten=%v", replaced, err, !after.ModTime().Equal(before.ModTime()))
 		}
 	})
+	// A lone "\r" is a line break (HeaderTags, songtxt); each line keeps its own ending.
+	for _, tc := range []struct{ name, in, want string }{
+		{"cr-only line endings",
+			"#TITLE:t\r#ARTIST:a\r#MP3:a.mp3\r#VIDEO:v.avi\r: 0 1 2 la\rE\r",
+			"#TITLE:t\r#ARTIST:a\r#MP3:a.mp3\r#VIDEO:v.mp4\r: 0 1 2 la\rE\r"},
+		{"mixed line endings",
+			"#TITLE:t\r\n#ARTIST:a\r#VIDEO:v.avi\n#COVER:v.avi\r: 0 1 2 la\r\nE",
+			"#TITLE:t\r\n#ARTIST:a\r#VIDEO:v.mp4\n#COVER:v.mp4\r: 0 1 2 la\r\nE"},
+		{"last line without ending", "#TITLE:t\r#VIDEO:v.avi", "#TITLE:t\r#VIDEO:v.mp4"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, txt := write(t, tc.in)
+			replaced, err := ReplaceFileReference(fsops.New(false), dir, "v.avi", "v.mp4")
+			if err != nil || !replaced {
+				t.Fatalf("replaced=%v err=%v", replaced, err)
+			}
+			if got := read(t, txt); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
 	t.Run("non utf8 txt is refused", func(t *testing.T) {
 		dir, _ := write(t, "#TITLE:M\xe4dchen\n#VIDEO:video.avi\n")
 		if _, err := ReplaceFileReference(fsops.New(false), dir, "video.avi", "video.mp4"); err == nil {

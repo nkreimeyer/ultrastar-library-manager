@@ -390,12 +390,13 @@ func (s *Server) handleOrganizeApply(w http.ResponseWriter, r *http.Request) {
 		run := &stepRun{tidy: a.req.Tidy, cfg: cfg, ops: ops, ctx: ctx, c: c, songs: a.req.options(m)}
 		run.songs.Exclude, run.songs.Join = exclude, join
 		var changed map[string]any // the result of a changed plan
+		accepted := false          // the song step runs with the reviewed plan
 		run.songs.Review = func(rv *organize.Review) error {
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			diff := organize.PlanDiff(a.review.Cands, a.plan, rv.Cands, rv.Plan)
 			if len(diff) == 0 {
-				a.applied = true
+				accepted = true
 				return nil
 			}
 			a.review, a.plan = rv, rv.Plan
@@ -428,7 +429,10 @@ func (s *Server) handleOrganizeApply(w http.ResponseWriter, r *http.Request) {
 			applyStartHook()
 		}
 		steps, runErr := run.run()
-		if noSongs {
+		// Applied once the run changed something or finished: one stopped or failed before
+		// its first change (also after the song step accepted the plan) can be applied again.
+		// (The applying flag keeps exclusions and joins out until the job ends.)
+		if noSongs || accepted {
 			s.markApplied(&a.applied, ops, ctx, runErr)
 		}
 		res := map[string]any{"analysis": a.id, "outDir": cfg.OutDir, "library": cfg.Library, "steps": steps}
@@ -436,7 +440,7 @@ func (s *Server) handleOrganizeApply(w http.ResponseWriter, r *http.Request) {
 			res["tidy"] = true // the page shows the steps (also after a reload)
 		}
 		s.mu.Lock()
-		reported := a.applied && a.review != nil // the song step ran with the reviewed plan
+		reported := accepted && a.review != nil // the song step ran with the reviewed plan
 		s.mu.Unlock()
 		if data, err := os.ReadFile(cfg.ReportPath("organize_plan.json")); err == nil && reported {
 			res["report"] = json.RawMessage(data)

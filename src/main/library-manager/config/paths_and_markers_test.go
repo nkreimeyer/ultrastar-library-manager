@@ -42,40 +42,6 @@ func TestRemovedDir(t *testing.T) {
 	}
 }
 
-// OutsideSongDir: a path equal to the song dir, a not-yet-existing child below it, and a
-// path reached through a symlink into it are refused; the error names the song dir.
-func TestOutsideSongDirRefusals(t *testing.T) {
-	root := mkdirs(t, "songs/Cat", "other")
-	cfg, err := New(filepath.Join(root, "songs"), "", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range []string{
-		filepath.Join(root, "songs", "Cat"),
-		filepath.Join(root, "songs", "does", "not", "exist"),
-		filepath.Join(root, "songs", "Cat", "..", "Cat", "x"),
-	} {
-		got, err := cfg.OutsideSongDir(p)
-		if err == nil || !strings.Contains(err.Error(), "must not be inside the song dir") {
-			t.Errorf("OutsideSongDir(%q) = %q, %v", p, got, err)
-		}
-	}
-	// A dangling symlink outside, whose target is inside the song dir.
-	link := filepath.Join(root, "other", "dangling")
-	if err := os.Symlink(filepath.Join(root, "songs", "new"), link); err != nil {
-		t.Skipf("symlinks not supported: %v", err)
-	}
-	if got, err := cfg.OutsideSongDir(link); err == nil {
-		t.Errorf("a dangling link into the song dir is accepted: %q", got)
-	}
-	// A relative path is made absolute.
-	t.Chdir(filepath.Join(root, "other"))
-	got, err := cfg.OutsideSongDir("rel")
-	if err != nil || !filepath.IsAbs(got) {
-		t.Errorf("OutsideSongDir(rel) = %q, %v", got, err)
-	}
-}
-
 func TestResolveSource(t *testing.T) {
 	root := realRoot(t, "src")
 	file := filepath.Join(root, "file.txt")

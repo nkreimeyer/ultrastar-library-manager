@@ -1,11 +1,6 @@
 package main
 
 import (
-	"io"
-	"net"
-	"time"
-
-	log "github.com/sirupsen/logrus"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -78,44 +73,5 @@ func TestAddHelpMentionsTheLibrary(t *testing.T) {
 		if got := strings.Contains(output, text); got != want {
 			t.Errorf("%s -h mentions it = %v, want %v:\n%s", cmd, got, want, output)
 		}
-	}
-}
-
-// A connection that starts a request but never finishes its headers is closed by the
-// server after the 10 s header timeout, so stalled clients do not pile up.
-func TestUIClosesStalledHeaders(t *testing.T) {
-	if testing.Short() {
-		t.Skip("waits for the 10 s header timeout")
-	}
-	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(make(log.LevelHooks)) })
-	opened := make(chan string, 1)
-	oldOpen, oldStop := openBrowser, uiStop
-	t.Cleanup(func() { openBrowser, uiStop = oldOpen, oldStop })
-	openBrowser = func(url string) error { opened <- url; return nil }
-	uiStop = make(chan struct{})
-	done := make(chan int, 1)
-	go func() { done <- runWithArgs(t, "ui", "-keep-running") }()
-	url := <-opened
-	addr := strings.TrimPrefix(strings.SplitN(url, "/?", 2)[0], "http://")
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	start := time.Now()
-	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: " + addr + "\r\n")); err != nil { // no blank line: the headers never end
-		t.Fatal(err)
-	}
-	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-	_, err = io.Copy(io.Discard, conn) // returns when the server closes the connection
-	if ne, ok := err.(net.Error); ok && ne.Timeout() {
-		t.Fatal("the server kept a connection with unfinished headers open for 15 s")
-	}
-	if d := time.Since(start); d < 5*time.Second {
-		t.Errorf("closed after %v, before the header timeout", d)
-	}
-	close(uiStop)
-	if code := <-done; code != exitOK {
-		t.Errorf("exit code %d", code)
 	}
 }

@@ -205,7 +205,9 @@ type group struct {
 //   - Working candidates are grouped by SongKey, and groups whose members share a content
 //     hash (same notes, timing and lyrics; duets and solo versions apart) are joined. The
 //     best one (see chooseKeeper) is the keeper, the others go to duplicates/ with the
-//     deciding criterion as reason (and joinedByContent if their SongKey differs).
+//     deciding criterion as reason, plus how they were joined if their SongKey differs
+//     (joinedByContent, joinedBySimilar, joinedByUser, or a joinedViaGroup text for a
+//     version that only shares the tags of a joined one).
 //   - The keeper's target is <Bucket>/<FolderName>, plus " [DUET]" for a duet whose title
 //     has no duet qualifier. Targets of different songs that collide (NameKey) get " (2)",
 //     " (3)", ...: keepers already in place at one of those names keep it, the others are
@@ -259,7 +261,25 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 	}
 	// Join the song keys of candidates with the same content.
 	uf := unionFind{}
-	joinedBy := map[int]string{}  // how a candidate was joined with another song key
+	joinedBy := map[int]string{}       // how a candidate was joined with another song key
+	keyJoinedBy := map[string]string{} // song key -> how it was first joined with another
+	// join joins the song keys of candidates a and b. Only a join of different keys is
+	// recorded, for both candidates and both keys, and the first mechanism wins (content,
+	// then similar, then the reviewer): two copies with the same tags are one key anyway.
+	join := func(a, b int, how string) {
+		if songKey[a] == songKey[b] {
+			return
+		}
+		uf.union(songKey[a], songKey[b])
+		for _, i := range []int{a, b} {
+			if joinedBy[i] == "" {
+				joinedBy[i] = how
+			}
+			if keyJoinedBy[songKey[i]] == "" {
+				keyJoinedBy[songKey[i]] = how
+			}
+		}
+	}
 	byContent := map[string]int{} // content key -> first working candidate with it
 	for _, i := range working {
 		ck := contentKey(&cands[i])
@@ -267,8 +287,7 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 			continue
 		}
 		if first, ok := byContent[ck]; ok {
-			uf.union(songKey[first], songKey[i])
-			joinedBy[i], joinedBy[first] = joinedByContent, joinedByContent
+			join(first, i, joinedByContent)
 		} else {
 			byContent[ck] = i
 		}
@@ -283,12 +302,7 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 	similar := findSimilar(cands, profiled)
 	for _, sp := range similar {
 		if similarJoin(cands, sp) {
-			uf.union(songKey[sp.A], songKey[sp.B])
-			for _, i := range []int{sp.A, sp.B} {
-				if joinedBy[i] == "" {
-					joinedBy[i] = joinedBySimilar
-				}
-			}
+			join(sp.A, sp.B, joinedBySimilar)
 		}
 	}
 	if len(opts.Join) > 0 {
@@ -302,12 +316,7 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 			if !okA || !okB {
 				continue
 			}
-			uf.union(songKey[a], songKey[b])
-			for _, i := range []int{a, b} {
-				if joinedBy[i] == "" {
-					joinedBy[i] = joinedByUser
-				}
-			}
+			join(a, b, joinedByUser)
 		}
 	}
 	groups := map[string]*group{}
@@ -340,6 +349,10 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 					switch {
 					case joinedBy[m] != "":
 						reason += joinedBy[m]
+					case keyJoinedBy[songKey[m]] == joinedBySimilar:
+						reason += joinedViaGroupSimilar
+					case keyJoinedBy[songKey[m]] == joinedByUser:
+						reason += joinedViaGroupUser
 					default:
 						reason += joinedViaGroup
 					}
@@ -374,7 +387,15 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 		p.Decisions[i] = d
 	}
 
-	assignTargets(cands, groups, groupKeys, opts.IgnoreThe, opts.LibraryInPlace)
+	// Library songs that already stay (excluded, unreadable, encoding problem, broken and
+	// kept) hold their paths: no numbered name may be one of them.
+	left := map[string]bool{}
+	for i := range cands {
+		if cands[i].InLibrary && p.Decisions[i].Action == ActLeft {
+			left[NameKey(cands[i].Rel)] = true
+		}
+	}
+	assignTargets(cands, groups, groupKeys, opts.IgnoreThe, opts.LibraryInPlace, left)
 	for _, k := range groupKeys {
 		g := groups[k]
 		c := &cands[g.keeper]
@@ -405,14 +426,20 @@ func MakePlan(cands []Candidate, opts PlanOptions) Plan {
 
 // assignTargets sets the bucket, name and collision-free target of every group. With
 // libraryInPlace, a keeper from the library keeps its own path as target, and no other
-// group gets a name with the same NameKey.
-func assignTargets(cands []Candidate, groups map[string]*group, keys []string, ignoreThe, libraryInPlace bool) {
+// group gets a name with the same NameKey. left holds the NameKeys of the library songs
+// that already stay where they are: a numbered name skips them (a plain name held by one
+// still leaves its keeper in place, see resolveOccupied). Songs that only stay later
+// (resolveOccupied, keepLibraryLosers) can still take a numbered name.
+func assignTargets(cands []Candidate, groups map[string]*group, keys []string, ignoreThe, libraryInPlace bool, left map[string]bool) {
 	families := map[string][]*group{} // NameKey(bucket/name) -> groups, in SongKey order
 	var familyKeys []string
 	// claimed holds the NameKey of every bucket/name that is taken, across all families:
 	// a numbered name must not be another song's plain name ("X (2)" titled so), nor the
 	// numbered name of another family, nor the path of a library song that stays.
 	claimed := map[string]bool{}
+	for k := range left {
+		claimed[k] = true
+	}
 	staying := map[string]bool{} // NameKeys of the library keepers that stay
 	for _, k := range keys {
 		g := groups[k]
@@ -650,8 +677,8 @@ type step struct {
 // a move waits while another pending move still has its source at the target or above
 // it (a song folder named like the bucket). If every pending move waits (a cycle, e.g.
 // two songs swapping names, or a song folder whose target lies inside itself), the first
-// first one whose source blocks a move is moved to tempName(n) first. Moves are taken in target order, so the result is
-// deterministic. It is pure.
+// move whose source blocks a move is moved to tempName(n) first. Moves are taken in
+// target order, so the result is deterministic. It is pure.
 func orderMoves(moves []libMove, tempName func(n int) string) []step {
 	pending := append([]libMove(nil), moves...)
 	sort.SliceStable(pending, func(a, b int) bool { return pending[a].Dst < pending[b].Dst })

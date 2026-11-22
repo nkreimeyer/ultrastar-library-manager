@@ -633,7 +633,7 @@ func TestCopyTree(t *testing.T) {
 	}
 
 	dst := filepath.Join(t.TempDir(), "copy")
-	if err := copyTree(src, dst); err != nil {
+	if _, err := copyTree(src, dst); err != nil {
 		t.Fatal(err)
 	}
 	if a, b := snapshot(t, src), snapshot(t, dst); strings.Join(a, "\n") != strings.Join(b, "\n") {
@@ -652,7 +652,7 @@ func TestCopyTreeSingleFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst := filepath.Join(t.TempDir(), "cover.jpg")
-	if err := copyTree(src, dst); err != nil {
+	if _, err := copyTree(src, dst); err != nil {
 		t.Fatal(err)
 	}
 	st, err := os.Stat(dst)

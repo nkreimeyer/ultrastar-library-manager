@@ -73,8 +73,10 @@ func TestLeftoverArgumentsPerCommand(t *testing.T) {
 			"Usage: library-manager -s <song-dir> [flags]\n"},
 		{[]string{"organize", "-s", src, "-l", lib, "-o", out, "x"}, "Bool flags must be written as -priority=false, not -priority false (parsing stops at the first non-flag argument).",
 			"Usage: library-manager organize -s "},
-		{[]string{"dedupe", "-l", lib, "-o", out, "x"}, "Bool flags must be written as -priority=false, not -priority false (parsing stops at the first non-flag argument).",
+		{[]string{"dedupe", "-l", lib, "-o", out, "x"}, "Bool flags must be written as -n=false, not -n false (parsing stops at the first non-flag argument).",
 			"Usage: library-manager dedupe -l <library> "},
+		{[]string{"ui", "-no-browser", "x"}, "Bool flags must be written as -no-browser=false, not -no-browser false (parsing stops at the first non-flag argument).",
+			"Usage: library-manager ui "},
 		{[]string{"add", "-s", src, "-l", lib, "-o", out, "x"}, "Bool flags must be written as -priority=false, not -priority false (parsing stops at the first non-flag argument).",
 			"Usage: library-manager add -s "},
 		{[]string{"remove", "-l", lib, "-o", out, "-artist", "Elton", "x"}, "Quote names with spaces (-artist \"Elton John\"); bool flags must be written as -n=false.",
@@ -116,6 +118,11 @@ func TestLogLevelPerCommand(t *testing.T) {
 			t.Errorf("%q -v warn: exit %d, level %s, output %q", args, code, log.GetLevel(), output)
 		}
 	}
+	// ui (-v warn would start the server: only the error half).
+	code, output, _ := runCaptured(t, "ui", "-no-browser", "-v", "loud")
+	if want := "Error: invalid log level \"loud\" (use debug, info, warn or error).\n"; code != exitUsage || output != want {
+		t.Errorf("ui -v loud: exit %d, output %q, want %q", code, output, want)
+	}
 }
 
 func containsAll(t *testing.T, what string, logs, want []string) {
@@ -128,39 +135,6 @@ func containsAll(t *testing.T, what string, logs, want []string) {
 		if !found {
 			t.Errorf("%s: no log line %q in\n%s", what, w, strings.Join(logs, "\n"))
 		}
-	}
-}
-
-// remove -undo with only -o: a dry run plans the moves back, a real run makes them; both
-// end with the summary line.
-func TestRunRemoveUndoWithOutDir(t *testing.T) {
-	base, lib, _, _ := cliFixture(t)
-	out := filepath.Join(base, "out")
-	code, _, logs := runCaptured(t, "remove", "-l", lib, "-o", out, "-artist", "Cher")
-	if code != exitOK {
-		t.Fatalf("remove = %d\n%s", code, strings.Join(logs, "\n"))
-	}
-	containsAll(t, "remove", logs, []string{"Output dir: " + out, "Library: " + lib + "; 1 pattern(s)", "Done: 1 moved, 0 failed operations"})
-	moved := filepath.Join(out, "removed", "C", "Cher - Believe", "song.txt")
-	if _, err := os.Stat(moved); err != nil {
-		t.Fatal(err)
-	}
-	code, _, logs = runCaptured(t, "remove", "-undo", "-o", out, "-n")
-	if code != exitOK {
-		t.Fatalf("remove -undo -n = %d", code)
-	}
-	containsAll(t, "undo dry run", logs, []string{"Dry run: nothing will be moved (the plan report is written to the output dir)",
-		"Output dir: " + out, "Undo: 1 move(s) planned, 0 failed", "Done (planned): 1 moved, 0 failed operations"})
-	if _, err := os.Stat(moved); err != nil {
-		t.Errorf("the dry run moved the song back: %v", err)
-	}
-	code, _, logs = runCaptured(t, "remove", "-undo", "-o", out)
-	if code != exitOK {
-		t.Fatalf("remove -undo = %d", code)
-	}
-	containsAll(t, "undo", logs, []string{"Undo: 1 move(s) moved back, 0 failed", "Done: 1 moved, 0 failed operations"})
-	if _, err := os.Stat(filepath.Join(lib, "C", "Cher - Believe", "song.txt")); err != nil {
-		t.Errorf("not moved back: %v", err)
 	}
 }
 

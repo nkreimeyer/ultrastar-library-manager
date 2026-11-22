@@ -249,7 +249,7 @@ func TestMoveCrossDeviceSourceVisibleDuringCopy(t *testing.T) {
 	src := filepath.Join(srcRoot, "Song")
 	writeFile(t, filepath.Join(src, "song.txt"), "x", 0o644)
 	var during []string
-	copyAcross = func(from, to string) error {
+	copyAcross = func(from, to string) (bool, error) {
 		during = testutil.DirNames(t, srcRoot)
 		if from != src {
 			t.Errorf("copying from %s, want the source under its own name %s", from, src)
@@ -280,12 +280,12 @@ func TestMoveCrossDeviceParkAfterCopyFails(t *testing.T) {
 	src := filepath.Join(parent, "Song")
 	writeFile(t, filepath.Join(src, "song.txt"), "x", 0o644)
 	before := snapshot(t, src)
-	copyAcross = func(from, to string) error {
-		err := copyTree(from, to)
+	copyAcross = func(from, to string) (bool, error) {
+		created, err := copyTree(from, to)
 		if cerr := os.Chmod(parent, 0o555); cerr != nil {
 			t.Fatal(cerr)
 		}
-		return err
+		return created, err
 	}
 	t.Cleanup(func() {
 		copyAcross = copyTree
@@ -448,7 +448,7 @@ func TestCopyTreeReadOnlyDir(t *testing.T) {
 	before := snapshot(t, src)
 	dst := filepath.Join(t.TempDir(), "copy")
 	t.Cleanup(func() { os.Chmod(filepath.Join(dst, "ro"), 0o755) })
-	if err := copyTree(src, dst); err != nil {
+	if _, err := copyTree(src, dst); err != nil {
 		t.Fatal(err)
 	}
 	if got := snapshot(t, dst); strings.Join(got, "\n") != strings.Join(before, "\n") {
@@ -465,7 +465,7 @@ func TestCopyTreeRejectsFIFO(t *testing.T) {
 	if err := mkfifo(filepath.Join(src, "pipe"), 0o644); err != nil {
 		t.Skip("mkfifo:", err)
 	}
-	if err := copyTree(src, filepath.Join(t.TempDir(), "copy")); err == nil ||
+	if _, err := copyTree(src, filepath.Join(t.TempDir(), "copy")); err == nil ||
 		!strings.Contains(err.Error(), "unsupported file type") {
 		t.Errorf("copyTree with a FIFO = %v", err)
 	}
@@ -475,10 +475,10 @@ func TestCopyTreeUnreadableSource(t *testing.T) {
 	testutil.SkipIfRoot(t)
 	src := filepath.Join(t.TempDir(), "Song")
 	writeFile(t, filepath.Join(src, "a.txt"), "x", 0o000)
-	if err := copyTree(src, filepath.Join(t.TempDir(), "copy")); !errors.Is(err, fs.ErrPermission) {
+	if _, err := copyTree(src, filepath.Join(t.TempDir(), "copy")); !errors.Is(err, fs.ErrPermission) {
 		t.Errorf("copyTree of an unreadable file = %v", err)
 	}
-	if err := copyTree(filepath.Join(t.TempDir(), "missing"), filepath.Join(t.TempDir(), "copy")); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := copyTree(filepath.Join(t.TempDir(), "missing"), filepath.Join(t.TempDir(), "copy")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("copyTree of a missing source = %v", err)
 	}
 }

@@ -16,13 +16,18 @@ import (
 // (the tool could not be started). It is an operation failure, not a finding.
 var errToolFailed = errors.New("tool failed")
 
-// maxStderr caps the ffmpeg/ffprobe output kept in memory. Only the first lines are
-// quoted, but a badly corrupt video can print a line per frame.
+// maxStderr caps the start of the ffmpeg/ffprobe output kept in memory (the kept tail
+// adds up to mediatools.DefaultTail). Only the first lines are quoted, but a badly
+// corrupt video can print a line per frame.
 const maxStderr = 64 << 10
 
-// capStderr returns a writer for ffmpeg/ffprobe messages. Only their start is used (its
-// Head): the report quotes the first lines, so it does not change with a longer tail.
-func capStderr() *mediatools.OutputCap { return mediatools.NewOutputCap(maxStderr, 0) }
+// capStderr returns a writer for ffmpeg/ffprobe messages. The report quotes only their
+// start (Head), so it does not change with a longer output; the tail is kept for
+// mediatools.FileFailure/SystemError, because a read error is printed where it happens,
+// possibly after many KiB of per-frame decode errors.
+func capStderr() *mediatools.OutputCap {
+	return mediatools.NewOutputCap(maxStderr, mediatools.DefaultTail)
+}
 
 // estimatedMsg is mediatools.EstimatedDurationMsg.
 const estimatedMsg = mediatools.EstimatedDurationMsg
@@ -78,6 +83,7 @@ func measureDuration(ctx context.Context, path string) (sec float64, ok, fileRes
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-i", path,
 		"-map", "0:a:0", "-c", "copy", "-f", "null", "-progress", "pipe:1", "-nostats", "-")
 	cmd.WaitDelay = mediatools.WaitDelay
+	mediatools.Detach(cmd)
 	stderr := capStderr()
 	cmd.Stderr = stderr
 	out, err := cmd.Output()
@@ -115,8 +121,9 @@ func fromProbe(probe mediatools.ProbeInfo) mediaInfo {
 		}
 	}
 	// Streams in some containers (Ogg, Matroska, WebM) carry no bit_rate; the container
-	// rate is then the audio rate, unless a video stream is part of it.
-	if info.HasAudio && info.AudioBitrate == 0 && info.VideoHeight == 0 {
+	// rate is then the audio rate, unless a moving video stream (also one of unknown
+	// size) is part of it.
+	if info.HasAudio && info.AudioBitrate == 0 && !info.HasVideo {
 		info.AudioBitrate = mediatools.ParseBitrate(probe.Format.BitRate)
 	}
 	// "N/A" or missing for streams without a known length.
@@ -137,6 +144,7 @@ func fromProbe(probe mediatools.ProbeInfo) mediaInfo {
 func decodeCheck(ctx context.Context, path string) (decodeErr, decodeWarn string, fileResult bool, err error) {
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-threads", "1", "-i", path, "-f", "null", "-")
 	cmd.WaitDelay = mediatools.WaitDelay
+	mediatools.Detach(cmd)
 	stderr := capStderr()
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {

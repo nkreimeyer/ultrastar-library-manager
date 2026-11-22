@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/nkreimeyer/library-manager/config"
 	"github.com/nkreimeyer/library-manager/fsops"
@@ -20,6 +22,11 @@ import (
 // The folders of the output dir that hold what the tools set aside, and where they come
 // from. Only a move the journal knows has an exact origin; the mirrored layout of
 // extra-files/ and invalid/ (<out>/<section>/<path in the library>) gives a likely one.
+// In invalid/, organize, dedupe and add put a <label>/ (a source's base name) first. When
+// the top folder of an item is no folder of the library, an item below the library's own
+// label goes back below the library without it, and one below the label of another
+// source (originLabels: a folder of duplicates/ or of a journaled move) has no likely
+// origin. Other items keep the mirror (fixtxt and cleanup move whole categories too).
 const (
 	SectionRemoved    = "removed"     // remove
 	SectionDuplicates = "duplicates"  // organize, dedupe, add: <label>/<path>
@@ -101,9 +108,38 @@ func sectionRel(rel string) (string, error) {
 	return r, nil
 }
 
+// labelKey folds a label the way config's uniqueLabel compares them (case, NFC).
+func labelKey(s string) string { return strings.ToLower(norm.NFC.String(s)) }
+
+// originLabels returns the labelKeys of the source labels organize, dedupe and add used in
+// the output dir: the folders of duplicates/ and the label folder of every journaled move
+// into duplicates/ or invalid/. It only reads; an unreadable duplicates/ adds nothing.
+func originLabels(cfg config.OrganizeConfig, journal map[string]string) map[string]bool {
+	labels := map[string]bool{}
+	if entries, err := os.ReadDir(cfg.DuplicatesDir()); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && !utils.IsHidden(e.Name()) {
+				labels[labelKey(e.Name())] = true
+			}
+		}
+	}
+	for dst := range journal {
+		for _, section := range []string{SectionDuplicates, SectionInvalid} {
+			rel, err := filepath.Rel(filepath.Join(cfg.OutDir, section), dst)
+			if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			if label, _, deeper := strings.Cut(rel, string(filepath.Separator)); deeper {
+				labels[labelKey(label)] = true
+			}
+		}
+	}
+	return labels
+}
+
 // origin returns where the item at <out>/<section>/<rel> is put back to, and whether the
-// journal said so. "" = unknown.
-func origin(cfg config.OrganizeConfig, journal map[string]string, section, rel string) (string, bool) {
+// journal said so. "" = unknown. labels comes from originLabels.
+func origin(cfg config.OrganizeConfig, journal map[string]string, labels map[string]bool, section, rel string) (string, bool) {
 	path := filepath.Join(cfg.OutDir, section, rel)
 	if src, ok := journal[path]; ok {
 		return src, true
@@ -113,9 +149,36 @@ func origin(cfg config.OrganizeConfig, journal map[string]string, section, rel s
 		if cfg.Library == "" {
 			return "", false // a guess needs the library (else rel would be relative to the CWD)
 		}
+		first, rest, deeper := strings.Cut(rel, string(filepath.Separator))
+		if section == SectionInvalid && deeper && !isDir(filepath.Join(cfg.Library, first)) {
+			if isLabelOf(first, filepath.Base(cfg.Library)) {
+				return filepath.Join(cfg.Library, rest), false // organize's invalid/<label>/<path>
+			}
+			if labels[labelKey(first)] {
+				return "", false // invalid/<label of another source>/<path>
+			}
+		}
 		return filepath.Join(cfg.Library, rel), false
 	}
 	return "", false
+}
+
+// isDir reports whether path is a folder (read-only; for the guessed origin only).
+func isDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
+// isLabelOf reports whether folder is the label config gives a source named name: the
+// name itself or with a " (n)" suffix, compared like config's uniqueLabel (case, NFC).
+func isLabelOf(folder, name string) bool {
+	if open := strings.LastIndex(folder, " ("); open >= 0 && strings.HasSuffix(folder, ")") {
+		num := folder[open+2 : len(folder)-1]
+		if n, err := strconv.Atoi(num); err == nil && n >= 2 && strconv.Itoa(n) == num && labelKey(folder[:open]) == labelKey(name) {
+			return true
+		}
+	}
+	return labelKey(folder) == labelKey(name)
 }
 
 // blocked returns why origin cannot take the item now ("" = it can).
@@ -170,6 +233,7 @@ func ListSetAside(cfg config.OrganizeConfig, ops *fsops.Ops) ([]SetAsideItem, er
 // SetAsideItem.Name (Restore only needs the paths).
 func listSetAside(cfg config.OrganizeConfig, ops *fsops.Ops, journal map[string]string, sections []string, names bool) ([]SetAsideItem, error) {
 	items := []SetAsideItem{}
+	labels := originLabels(cfg, journal)
 	var err error
 	for _, section := range sections {
 		dir := filepath.Join(cfg.OutDir, section)
@@ -204,7 +268,7 @@ func listSetAside(cfg config.OrganizeConfig, ops *fsops.Ops, journal map[string]
 		}
 		for i := range got {
 			it := &got[i]
-			it.Origin, it.Exact = origin(cfg, journal, section, filepath.FromSlash(it.Rel))
+			it.Origin, it.Exact = origin(cfg, journal, labels, section, filepath.FromSlash(it.Rel))
 			it.Blocked = blocked(cfg, ops, it.Origin)
 		}
 		sort.Slice(got, func(a, b int) bool { return got[a].Rel < got[b].Rel })
@@ -264,6 +328,7 @@ func Restore(cfg config.OrganizeConfig, ops *fsops.Ops, refs []RestoreRef, opts 
 	if err != nil {
 		return err
 	}
+	labels := originLabels(cfg, journal)
 	j := newJournal(ops, cfg.JournalPath(), cfg.Library)
 	restored := 0
 	for n, ref := range refs {
@@ -291,7 +356,7 @@ func Restore(cfg config.OrganizeConfig, ops *fsops.Ops, refs []RestoreRef, opts 
 			ops.Fail()
 			continue
 		}
-		dst, _ := origin(cfg, journal, ref.Section, rel)
+		dst, _ := origin(cfg, journal, labels, ref.Section, rel)
 		if why := blocked(cfg, ops, dst); why != "" {
 			log.Errorf("Restore: %s stays: %s", path, why)
 			ops.Fail()

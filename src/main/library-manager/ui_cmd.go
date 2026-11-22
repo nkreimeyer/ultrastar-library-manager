@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -11,19 +9,23 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"slices"
 	"syscall"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 
+	"github.com/nkreimeyer/library-manager/mediatools"
 	"github.com/nkreimeyer/library-manager/webui"
 )
 
-// openBrowser opens url in the default browser; a variable so tests do not open one.
-var openBrowser = func(url string) error {
+// browserCommand is the command that opens url in the default browser, in a session of its
+// own (newSession).
+func browserCommand(goos, url string) *exec.Cmd {
 	var cmd *exec.Cmd
-	switch runtime.GOOS {
+	switch goos {
 	case "windows":
 		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
 	case "darwin":
@@ -31,6 +33,13 @@ var openBrowser = func(url string) error {
 	default:
 		cmd = exec.Command("xdg-open", url)
 	}
+	newSession(cmd)
+	return cmd
+}
+
+// openBrowser opens url in the default browser; a variable so tests do not open one.
+var openBrowser = func(url string) error {
+	cmd := browserCommand(runtime.GOOS, url)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -41,9 +50,14 @@ var openBrowser = func(url string) error {
 // listen opens the UI's listener; a variable so tests can make the server stop by itself.
 var listen = net.Listen
 
-// stopSignals are the signals that stop the UI: Ctrl-C, SIGTERM and SIGHUP (the terminal
-// window was closed). A signal the program was started with ignored stays ignored: Notify
-// would install a handler, and "nohup library-manager ui &" would stop at the logout.
+// closeServer stops the UI server: it cancels a running job and waits for it. A variable so
+// a test can make it wait.
+var closeServer = (*webui.Server).Close
+
+// stopSignals are the signals that stop the UI: SIGTERM always, so that kill stops it, and
+// Ctrl-C and SIGHUP (the terminal window was closed) unless the program was started with
+// them ignored: Notify would install a handler, and "nohup library-manager ui &" would stop
+// at the logout.
 func stopSignals() []os.Signal {
 	var sigs []os.Signal
 	for _, sig := range []os.Signal{os.Interrupt, syscall.SIGHUP} {
@@ -69,39 +83,27 @@ var uiStop chan struct{}
 // runUI serves the browser UI until Ctrl-C (or the console window is closed).
 // noArgs: started without any argument, e.g. by a double-click.
 func runUI(args []string, output io.Writer, noArgs bool) int {
-	fs := flag.NewFlagSet(os.Args[0]+" ui", flag.ContinueOnError)
-	fs.SetOutput(output)
+	prog := filepath.Base(os.Args[0])
+	fs := newSubcommand(prog+" ui", output)
 	addr := fs.String("addr", "127.0.0.1:0", "Address to listen on (loopback only; port 0 = any free port)")
 	noBrowser := fs.Bool("no-browser", false, "Do not open the browser, only print the address")
 	keepRunning := fs.Bool("keep-running", false, "Do not stop when the last browser tab is closed (stop with Ctrl-C)")
-	logLevel := fs.String("v", "info", "Log level (debug, info, warn, error)")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: %s ui [-addr 127.0.0.1:0] [-no-browser] [-keep-running] [-v level]\n\n"+
+		fmt.Fprintf(output, "Usage: %s ui [-addr 127.0.0.1:0] [-no-browser] [-keep-running] [-v level]\n\n"+
 			"Starts the browser UI. Running %s without any argument does the same (started outside a terminal,\n"+
 			"for example by a double-click, it opens a terminal window for itself). The UI stops by itself when\n"+
-			"the last browser tab is closed, unless a job is running.\n\n", os.Args[0], os.Args[0])
+			"the last browser tab is closed, unless a job is running.\n\nFlags:\n", prog, prog)
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return exitOK
-		}
+	if code, ok := fs.parse(args, boolFlagHint("no-browser")); !ok {
+		return code
+	}
+	if !fs.setLogLevel() {
 		return exitUsage
 	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(output, "unexpected arguments: %q\n", fs.Args())
-		return exitUsage
-	}
-	level, err := log.ParseLevel(*logLevel)
-	if err != nil {
-		fmt.Fprintf(output, "invalid -v %q: %v\n", *logLevel, err)
-		return exitUsage
-	}
-	log.SetLevel(level)
 
 	if err := webui.CheckAddr(*addr); err != nil {
-		fmt.Fprintf(output, "invalid -addr %q: %v\n", *addr, err)
-		return exitUsage
+		return fs.usageError("invalid -addr %q: %v", *addr, err)
 	}
 	ln, err := listen("tcp", *addr) // fails e.g. if the port is in use: not a usage error
 	if err != nil {
@@ -119,6 +121,9 @@ func runUI(args []string, output io.Writer, noArgs bool) int {
 	// song parked under a temporary name out of it and journals the moves).
 	ctx, stop := signal.NotifyContext(context.Background(), stopSignals()...)
 	defer stop()
+	// The media tools run in a process group of their own: a Ctrl-C in the terminal reaches
+	// only this process, which stops the job, and a running encode finishes.
+	defer mediatools.SetDetachChildren(true)()
 
 	url := srv.StartURL()
 	fmt.Fprintf(output, "library-manager %s: the UI runs at\n\n    %s\n\n", version, url)
@@ -146,7 +151,7 @@ func runUI(args []string, output io.Writer, noArgs bool) int {
 	}
 	select {
 	case <-ctx.Done():
-		log.Infof("Stopping the UI")
+		log.Infof("Stopping the UI: a running job ends first (press Ctrl-C again to quit at once)")
 	case <-gone:
 		log.Infof("The browser tab was closed: stopping the UI")
 	case <-uiStop:
@@ -155,7 +160,17 @@ func runUI(args []string, output io.Writer, noArgs bool) int {
 		srv.Close()
 		return exitFailures
 	}
-	srv.Close() // cancels a running job and waits for it
+	// From here on Ctrl-C and SIGTERM have their default action again: a second one while
+	// the job ends quits at once instead of being swallowed. A hangup stays caught: closing
+	// a terminal sends two SIGHUPs (the shell's and the tty's) within a millisecond, and the
+	// second must not kill the job the first one stops (a song parked mid-move).
+	if slices.Contains(stopSignals(), os.Signal(syscall.SIGHUP)) {
+		hup := make(chan os.Signal, 1)
+		signal.Notify(hup, syscall.SIGHUP)
+		defer signal.Stop(hup)
+	}
+	stop()
+	closeServer(srv) // cancels a running job and waits for it
 	// The event streams are closed already; what Shutdown still waits for is a request in
 	// flight, and a connection a browser opened ahead of time that Go counts as idle only after
 	// five seconds. A second is plenty for the former and keeps a closed tab from lingering.

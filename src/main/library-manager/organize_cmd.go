@@ -89,7 +89,11 @@ func runOrganize(mode organize.Mode, args []string, output io.Writer) int {
 		}
 		fs.PrintDefaults()
 	}
-	if code, ok := fs.parse(args, boolFlagHint("priority")); !ok {
+	hint := boolFlagHint("priority")
+	if mode == organize.ModeDedupe {
+		hint = boolFlagHint("n") // dedupe has no -priority
+	}
+	if code, ok := fs.parse(args, hint); !ok {
 		return code
 	}
 	set := map[string]bool{}

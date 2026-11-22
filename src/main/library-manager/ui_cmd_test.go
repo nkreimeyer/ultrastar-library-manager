@@ -9,9 +9,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -23,6 +26,21 @@ func init() {
 	openBrowser = func(string) error { return nil }
 	launchTerminal = func() bool { return false } // nor a terminal window
 	browserGrace = 300 * time.Millisecond
+}
+
+// SIGTERM always stops the UI (kill), even if the program was started with it ignored;
+// Ctrl-C and SIGHUP only if they were not ignored (nohup).
+func TestStopSignals(t *testing.T) {
+	old := signalIgnored
+	t.Cleanup(func() { signalIgnored = old })
+	signalIgnored = func(os.Signal) bool { return true }
+	if got := stopSignals(); !slices.Equal(got, []os.Signal{syscall.SIGTERM}) {
+		t.Errorf("all ignored: %v, want only SIGTERM", got)
+	}
+	signalIgnored = func(os.Signal) bool { return false }
+	if got := stopSignals(); !slices.Equal(got, []os.Signal{os.Interrupt, syscall.SIGHUP, syscall.SIGTERM}) {
+		t.Errorf("none ignored: %v", got)
+	}
 }
 
 func TestUIUsage(t *testing.T) {
@@ -212,5 +230,92 @@ func TestUIBrowserOpenFails(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the UI did not stop")
+	}
+}
+
+// A connection that starts a request but never finishes its headers is closed by the
+// server after the 10 s header timeout, so stalled clients do not pile up.
+func TestUIClosesStalledHeaders(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits for the 10 s header timeout")
+	}
+	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(make(log.LevelHooks)) })
+	opened := make(chan string, 1)
+	oldOpen, oldStop := openBrowser, uiStop
+	t.Cleanup(func() { openBrowser, uiStop = oldOpen, oldStop })
+	openBrowser = func(url string) error { opened <- url; return nil }
+	uiStop = make(chan struct{})
+	done := make(chan int, 1)
+	go func() { done <- runWithArgs(t, "ui", "-keep-running") }()
+	url := <-opened
+	addr := strings.TrimPrefix(strings.SplitN(url, "/?", 2)[0], "http://")
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	start := time.Now()
+	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: " + addr + "\r\n")); err != nil { // no blank line: the headers never end
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	_, err = io.Copy(io.Discard, conn) // returns when the server closes the connection
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatal("the server kept a connection with unfinished headers open for 15 s")
+	}
+	if d := time.Since(start); d < 5*time.Second {
+		t.Errorf("closed after %v, before the header timeout", d)
+	}
+	close(uiStop)
+	if code := <-done; code != exitOK {
+		t.Errorf("exit code %d", code)
+	}
+}
+
+// failingListener accepts nothing: Serve returns its error at once.
+type failingListener struct{ net.Listener }
+
+func (l failingListener) Accept() (net.Conn, error) { return nil, errors.New("accept broke") }
+
+// A server that stops by itself is exit 1, and the UI does not wait for a signal.
+func TestUIServerStopsUnexpectedly(t *testing.T) {
+	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(make(log.LevelHooks)) })
+	oldListen, oldStop := listen, uiStop
+	t.Cleanup(func() { listen, uiStop = oldListen, oldStop })
+	uiStop = nil // only the server can end this run
+	listen = func(network, addr string) (net.Listener, error) {
+		ln, err := net.Listen(network, addr)
+		return failingListener{ln}, err
+	}
+	out := &syncBuffer{}
+	done := make(chan int, 1)
+	go func() { done <- runUI([]string{"-no-browser", "-keep-running"}, out, false) }()
+	select {
+	case code := <-done:
+		if code != exitFailures {
+			t.Errorf("exit code %d, want %d", code, exitFailures)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the UI kept running after its server stopped")
+	}
+}
+
+// A bad -addr is refused before anything listens.
+func TestUIBadAddrNeverListens(t *testing.T) {
+	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(make(log.LevelHooks)) })
+	oldListen := listen
+	t.Cleanup(func() { listen = oldListen })
+	listen = func(network, addr string) (net.Listener, error) {
+		t.Errorf("listened on %q", addr)
+		return net.Listen(network, "127.0.0.1:0")
+	}
+	for _, addr := range []string{"0.0.0.0:0", "localhost:0", "127.0.0.1", "127.0.0.1:-1", "127.0.0.1:http", "[::]:0", "8080", ""} {
+		out := &syncBuffer{}
+		if got := runUI([]string{"-addr", addr, "-no-browser"}, out, false); got != exitUsage {
+			t.Errorf("-addr %q = %d, want %d", addr, got, exitUsage)
+		}
+		if !strings.Contains(out.String(), "invalid -addr") {
+			t.Errorf("-addr %q: output %q", addr, out.String())
+		}
 	}
 }

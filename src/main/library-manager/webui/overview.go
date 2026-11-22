@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"net/http"
 	"os"
@@ -71,6 +72,13 @@ func summarizeSong(ops *fsops.Ops, lib, folder string) songSummary {
 		return s
 	}
 	_, findErr := utils.FindSongTxt(nil, folder)
+	if findErr != nil && !errors.Is(findErr, os.ErrNotExist) {
+		// A txt that cannot be read (the discovery may have stopped at a song txt before
+		// it): unreadable, never a folder without a song txt.
+		ops.SkipUnreadable(folder, findErr)
+		s.failed = true
+		return s
+	}
 	s.song = findErr == nil
 	for _, e := range entries {
 		if e.IsDir() || utils.IsHidden(e.Name()) {

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Danke GPT 4 dafür siehe mehr im Readme
+# Deletes (rm -rf) every top-level folder of -d that contains no *.<-f> file; -n = dry run.
 
 # Usage information
 function usage() {

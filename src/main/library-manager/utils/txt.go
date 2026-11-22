@@ -196,10 +196,20 @@ func IsFileReferenced(ops *fsops.Ops, dirpath, checkFilename string) bool {
 	if err != nil {
 		return true
 	}
-	if bytes.Contains(data, []byte(checkFilename)) {
-		return true
+	return IsNameReferencedIn([][]byte{data}, checkFilename)
+}
+
+// IsNameReferencedIn reports whether name appears in one of txts, raw song txt contents,
+// the way IsFileReferenced matches: byte-exactly, or case-insensitively and
+// Unicode-normalized (NFC) in the decoded text.
+func IsNameReferencedIn(txts [][]byte, name string) bool {
+	want := normalizeName(name)
+	for _, data := range txts {
+		if bytes.Contains(data, []byte(name)) || strings.Contains(normalizeName(DecodeTxt(data).Text), want) {
+			return true
+		}
 	}
-	return strings.Contains(normalizeName(DecodeTxt(data).Text), normalizeName(checkFilename))
+	return false
 }
 
 func normalizeName(s string) string {
@@ -293,7 +303,7 @@ func FileReferenceReplacement(ops *fsops.Ops, dir, oldName, newName string) (txt
 	// UTF-8 evidence for DecodeTxt, while the NFC letters are.
 	newName = norm.NFC.String(newName)
 	replaced := false
-	lines := strings.SplitAfter(string(raw), "\n")
+	lines := splitLinesKeepEnding(string(raw))
 	for i, line := range lines {
 		body := strings.TrimRight(line, "\r\n")
 		ending := line[len(body):]
@@ -324,6 +334,28 @@ func FileReferenceReplacement(ops *fsops.Ops, dir, oldName, newName string) (txt
 		return "", nil, err
 	}
 	return txt, content, nil
+}
+
+// splitLinesKeepEnding splits s into lines that end at "\r\n", "\r" or "\n" (a lone "\r"
+// is a line break, as in HeaderTags and songtxt), each keeping its own ending, so that
+// joining them gives s again. The last piece has no ending (it may be empty).
+func splitLinesKeepEnding(s string) []string {
+	var lines []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\r':
+			if i+1 < len(s) && s[i+1] == '\n' {
+				i++
+			}
+		case '\n':
+		default:
+			continue
+		}
+		lines = append(lines, s[start:i+1])
+		start = i + 1
+	}
+	return append(lines, s[start:])
 }
 
 // rewritableUTF8 returns nil if DecodeTxt reads content, the content of txt, as UTF-8

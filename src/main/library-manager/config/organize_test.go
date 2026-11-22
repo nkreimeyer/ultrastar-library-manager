@@ -164,6 +164,37 @@ func TestUniqueLabel(t *testing.T) {
 	}
 }
 
+// A source at a filesystem, drive or share root gets a label without a separator, so its
+// songs still go below their own label folder in duplicates/ and invalid/.
+func TestSourceLabel(t *testing.T) {
+	for _, tc := range []struct{ goos, src, want string }{
+		{"windows", `E:\`, "E"},
+		{"windows", `E:`, "E"},
+		{"windows", `\\srv\share`, "share"},
+		{"windows", `\\srv\share\`, "share"},
+		{"windows", `\\?\F:\`, "F"},
+		{"windows", `C:\Karaoke`, "Karaoke"},
+		{"windows", `C:\Songs\Karaoke\`, "Karaoke"},
+		{"windows", `C:/Songs/USB`, "USB"},
+		{"linux", "/", "root"},
+		{"linux", "/media/usb", "usb"},
+		{"linux", `/media/a\b`, `a\b`}, // a backslash is a plain character on Unix
+		{"darwin", "/Volumes/USB/", "USB"},
+		{"linux", "/media/?", "?"}, // only Windows' \\?\ prefix is no name
+		{"windows", `\\?\`, "root"},
+	} {
+		if got := sourceLabel(tc.src, tc.goos); got != tc.want {
+			t.Errorf("sourceLabel(%q, %s) = %q, want %q", tc.src, tc.goos, got, tc.want)
+		}
+	}
+	labels := map[string]bool{}
+	a := uniqueLabel(sourceLabel(`E:\`, "windows"), labels)
+	b := uniqueLabel(sourceLabel(`F:\`, "windows"), labels)
+	if a != "E" || b != "F" {
+		t.Errorf("two drive roots labelled %q and %q, want E and F", a, b)
+	}
+}
+
 func TestOrganizePrepareOutDir(t *testing.T) {
 	root := realRoot(t)
 	cfg, err := NewOrganize(nil, filepath.Join(root, "lib"), "", false)

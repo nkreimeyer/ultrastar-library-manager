@@ -138,9 +138,10 @@ var errCheckApplied = errors.New("the broken songs were moved already; check aga
 var applyStartHook func()
 
 // claimApply starts the work of an apply job: an analysis that an earlier job applied is
-// not applied again. (The handler checked before starting the job, but that job may have
-// been waiting behind another apply of the same analysis; jobs run one at a time, so none
-// runs now.)
+// not applied again. (The handler checked before starting the job, but an earlier apply
+// of the same analysis may still have been running then and marked it applied before it
+// ended. Jobs never queue and run one at a time, so none runs now and this check, under
+// s.mu, is final.)
 func (s *Server) claimApply(applied *bool, errApplied error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

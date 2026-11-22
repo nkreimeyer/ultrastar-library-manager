@@ -42,11 +42,12 @@ func TestDecodeTxtBoundaries(t *testing.T) {
 			wantText: "AÜ€B",
 		},
 		{
-			// DF BF is U+07FF, the last code point of the NKo block: CP1252 "ß¿".
+			// DF BF is U+07FF, the last code point of the NKo block: CP1252 "ß¿". ("¿"
+			// between two letters would look like CP1250, see looksLikeCP1250.)
 			name:     "isolated U+07FF is CP1252 ß¿",
-			raw:      "#TITLE:A\xDF\xBFB\n",
+			raw:      "#TITLE:A\xDF\xBF B\n",
 			wantEnc:  EncCP1252,
-			wantText: "Aß¿B",
+			wantText: "Aß¿ B",
 		},
 		{
 			// D0 A0 (U+0420 "Р") would be an accidental pair if it were isolated, but byte

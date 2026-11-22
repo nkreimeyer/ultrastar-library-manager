@@ -48,3 +48,47 @@ func TestMakePlanJoin(t *testing.T) {
 		t.Errorf("reversed pair: %+v", d)
 	}
 }
+
+// The reason of a joined duplicate names the mechanism that joined it: a copy that only
+// shares the tags of a song the reviewer joined is not said to match "by its notes", and
+// a content twin with the same tags does not hide the reviewer's join.
+func TestMakePlanJoinReasons(t *testing.T) {
+	video := Quality{HasVideo: true}
+	tests := []struct {
+		name      string
+		cands     []Candidate
+		join      [2]int         // candidates the reviewer joins; -1 = none
+		wantEnds  map[int]string // candidate -> suffix of its reason
+		wantOther int
+	}{
+		{"same-tag copy of a joined song", []Candidate{
+			song(hq, "x1", "Alpha", "Song", Quality{}),
+			song(hq, "x2", "Alpha", "Song", Quality{}),
+			song(hq, "y", "Beta", "Song", video),
+		}, [2]int{0, 2}, map[int]string{0: joinedByUser, 1: joinedViaGroupUser}, 2},
+		{"content twin with the same tags", []Candidate{
+			withHash(song(hq, "a1", "Alpha", "Song", Quality{}), "h1"),
+			withHash(song(hq, "a2", "Alpha", "Song", Quality{}), "h1"),
+			withHash(song(hq, "b", "Beta", "Song", video), "h2"),
+		}, [2]int{0, 2}, map[int]string{0: joinedByUser, 1: joinedViaGroupUser}, 2},
+		{"same-tag copy of a content match", []Candidate{
+			withHash(song(hq, "a1", "Alpha", "Song", Quality{}), "h1"),
+			song(hq, "a2", "Alpha", "Song", Quality{}),
+			withHash(song(hq, "b", "Beta", "Song", video), "h1"),
+		}, [2]int{-1, -1}, map[int]string{0: joinedByContent, 1: joinedViaGroup}, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var opts PlanOptions
+			if tt.join[0] >= 0 {
+				opts.Join = [][2]string{{tt.cands[tt.join[0]].Ref(), tt.cands[tt.join[1]].Ref()}}
+			}
+			p := MakePlan(tt.cands, opts)
+			for i, want := range tt.wantEnds {
+				if d := p.Decisions[i]; d.Action != ActDuplicate || d.Other != tt.wantOther || !strings.HasSuffix(d.Reason, want) {
+					t.Errorf("%s = %+v, want a duplicate of %s ending in %q", tt.cands[i].Ref(), d, tt.cands[tt.wantOther].Ref(), want)
+				}
+			}
+		})
+	}
+}

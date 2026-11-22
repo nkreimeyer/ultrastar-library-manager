@@ -62,7 +62,8 @@ type Options struct {
 	// returns Ctx.Err().
 	Ctx context.Context
 	// Progress, if set, is called with the phase (PhaseInspect, PhaseMove), the number of
-	// items done and their total. It may be called from several goroutines at once.
+	// items done and their total. Calls are serialized (utils.ForEachParallel serializes
+	// those of the inspection pool; the moves run in one goroutine).
 	Progress func(phase string, done, total int)
 	// Exclude lists candidates (by Ref) that are left where they are ("excluded in
 	// review"); see PlanOptions.Exclude.
@@ -93,6 +94,7 @@ type UndoOptions struct {
 	// it; Undo then returns Ctx.Err().
 	Ctx context.Context
 	// Progress, if set, is called with PhaseUndo, the number of entries done and their total.
+	// Calls are serialized.
 	Progress func(phase string, done, total int)
 }
 
@@ -838,10 +840,10 @@ func isBucketDir(lib, dir string) bool {
 	return b == BucketDigits || b == BucketOther || (len(b) == 1 && b[0] >= 'A' && b[0] <= 'Z')
 }
 
-// Undo reverts the most recent run of the journal (organize, dedupe, add or remove) that
-// was not undone yet: its moves in reverse order, each only if its target still exists and
-// its source does not (fsops.MoveTo checks both; a failing move is logged, counted and
-// skipped). A move whose target and source are both gone (moved or deleted by hand) is
+// Undo reverts the most recent run of the journal (organize, dedupe, add, remove, or a
+// Restore of set-aside items) that was not undone yet: its moves in reverse order, each
+// only if its target still exists and its source does not (fsops.MoveTo checks both; a
+// failing move is logged, counted and skipped). A move whose target and source are both gone (moved or deleted by hand) is
 // counted as failed and skipped. Each move back is journaled ("reverted"). Then it records
 // the run as undone, unless a move failed that a retry could do or opts.Ctx stopped it:
 // then the next Undo retries this run, skipping the reverted entries, instead of reverting

@@ -136,3 +136,10 @@ const joinedByUser = "; the tags differ, but you chose to treat it as the same s
 
 // joinedViaGroup: the version has the tags of a version that was joined by its notes.
 const joinedViaGroup = "; the tags differ, but a version with the same tags matches this song by its notes"
+
+// joinedViaGroupSimilar: the version has the tags of a version that the similarity check
+// joined.
+const joinedViaGroupSimilar = "; the tags differ, but a version with the same tags matches this song by its chart and lyrics"
+
+// joinedViaGroupUser: the version has the tags of a version the reviewer joined.
+const joinedViaGroupUser = "; the tags differ, but you chose to treat a version with the same tags as the same song"

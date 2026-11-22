@@ -573,8 +573,9 @@ func fixFileTags(lines []string, rootDir string, files songFiles, info SongInfo)
 // place (lines is modified, the tag keeps its spelling); an absent tag is returned as a
 // line to insert (#TITLE before #ARTIST). Tag lines are found the way players and check
 // read them (see nameTagLine). info is updated with the filled values, so that
-// the audio choice can use them. lines must not contain repeated tags. It also returns the
-// filled tags ("#ARTIST:value") and a note for missing_files.txt if a missing tag cannot be
+// the audio choice can use them. lines may repeat a tag (the caller removes repeats only
+// with FileTags): the last occurrence is the one read and filled, as players read it
+// (nameTagLine). It also returns the filled tags ("#ARTIST:value") and a note for missing_files.txt if a missing tag cannot be
 // filled.
 func fillNameTags(lines []string, rootDir string, info *SongInfo) (insert, filled, notes []string) {
 	fill := utils.TagsFromFolderName(filepath.Base(rootDir), info.Artist, info.Title)
@@ -749,15 +750,15 @@ func fileExists(dir, name string) bool {
 
 // resolveFileTag decides the value of a file tag (#MP3/#AUDIO, #VIDEO). A value naming an
 // existing file of the right kind is kept, or corrected to the on-disk spelling if it only
-// differs in case or Unicode normalization. A file of another kind is kept too if there is
-// no file of the right kind (#MP3 may name the video of a video-only song). A missing
-// file, or a file of the wrong kind (e.g. #MP3 pointing to a video while an audio file
-// exists, as left behind by an old bug), is replaced by choice.name. It returns the new
-// value, whether the tag has to be rewritten, and whether it would need a new value but
-// there is no choice.
-func resolveFileTag(rootDir, value string, choice fileChoice, isKind func(string) bool) (string, bool, bool) {
+// differs in case or Unicode normalization. A file for which fallback (may be nil) is true
+// is kept too if there is no file of the right kind (#MP3 may name the video of a
+// video-only song). A missing file, or a file of the wrong kind (e.g. #MP3 pointing to a
+// video while an audio file exists, as left behind by an old bug, or to an image), is
+// replaced by choice.name. It returns the new value, whether the tag has to be rewritten,
+// and whether it would need a new value but there is no choice.
+func resolveFileTag(rootDir, value string, choice fileChoice, isKind, fallback func(string) bool) (string, bool, bool) {
 	onDisk, exact, found := utils.ResolveFileName(rootDir, value)
-	if found && (isKind(onDisk) || choice.candidates == 0) {
+	if found && (isKind(onDisk) || (choice.candidates == 0 && fallback != nil && fallback(onDisk))) {
 		if exact || !utf8.ValidString(onDisk) {
 			return value, false, false
 		}
@@ -789,14 +790,14 @@ func updateTagsInLines(rootDir string, lines, updatedLines []string, files songF
 		case hasTag(line, "#MP3"), hasTag(line, "#AUDIO"):
 			found = setFlag(found, flagAudio)
 			tag, value := splitTag(line)
-			v, ok, unresolved := resolveFileTag(rootDir, value, audio, audio.isMainAudio)
+			v, ok, unresolved := resolveFileTag(rootDir, value, audio, audio.isMainAudio, utils.IsVideoFile)
 			if ok {
 				rewrite(i, tag, v)
 			}
 			audioUnresolved = audioUnresolved || unresolved
 		case hasTag(line, "#VIDEO"):
 			found = setFlag(found, flagVideo)
-			v, ok, unresolved := resolveFileTag(rootDir, tagValue(line), video, utils.IsVideoFile)
+			v, ok, unresolved := resolveFileTag(rootDir, tagValue(line), video, utils.IsVideoFile, nil)
 			if ok {
 				rewrite(i, "#VIDEO", v)
 			}
@@ -870,10 +871,10 @@ func headerLen(lines []string) int {
 	return len(lines)
 }
 
-// sameFileName reports whether a tag value names the on-disk file name (case-insensitive,
-// as utils.ResolveFileName matches).
+// sameFileName reports whether a tag value names the on-disk file name (case- and
+// Unicode-normalization-insensitive, as utils.ResolveFileName matches).
 func sameFileName(onDisk, tagValue string) bool {
-	return tagValue != "" && strings.EqualFold(onDisk, strings.TrimSpace(tagValue))
+	return tagValue != "" && sameName(onDisk, strings.TrimSpace(tagValue))
 }
 
 // checkDimensionsOfImagesTagged checks the images referenced by #COVER and #BACKGROUND.

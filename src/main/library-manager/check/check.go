@@ -316,7 +316,7 @@ func (i *Inspector) observeFile(path string, kind refKind) fileObs {
 // The mediacache kinds of the results check stores. Bump the version when the way a
 // result is computed changes (fromProbe, measureDuration, toolMessage, decodeCheck).
 const (
-	kindMedia  = "check.media/1"
+	kindMedia  = "check.media/2"
 	kindDecode = "check.decode/1"
 )
 

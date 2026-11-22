@@ -78,7 +78,7 @@ func newSubcommand(name string, output io.Writer) *subcommand {
 
 // undoFlag defines -undo of the commands that write the organize journal.
 func (c *subcommand) undoFlag() *bool {
-	return c.Bool("undo", false, "Undo the most recent organize, dedupe, add or remove run recorded in the journal (needs -o or -l)")
+	return c.Bool("undo", false, "Undo the most recent organize, dedupe, add, remove or restore (UI) run recorded in the journal (needs -o or -l)")
 }
 
 // usageError prints the error and the usage of the subcommand and returns exitUsage.
@@ -131,7 +131,10 @@ func journaledRun(name string, undo bool, library, outDir string, dryRun bool,
 		return exitUsage
 	}
 	ops := fsops.New(cfg.DryRun)
-	if cfg.DryRun {
+	switch {
+	case cfg.DryRun && undo: // Undo writes no report
+		log.Infof("Dry run: nothing will be moved back (the planned moves are only logged)")
+	case cfg.DryRun:
 		log.Infof("Dry run: nothing will be moved (the plan report is written to the output dir)")
 	}
 	log.Infof("Output dir: %s", cfg.OutDir)

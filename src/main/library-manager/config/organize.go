@@ -20,7 +20,7 @@ type Source struct {
 	// Path is absolute, cleaned and symlink-free.
 	Path string
 	// Label names the source in reports and below <out>/invalid and <out>/duplicates:
-	// the base name of Path, with " (2)", " (3)", ... appended to names that are already
+	// the base name of Path (for a drive or share root its name, see sourceLabel), with " (2)", " (3)", ... appended to names that are already
 	// taken (compared case- and normalization-insensitively) by an earlier source.
 	Label string
 	// Tier is the index of the -s flag the source was given with (0 = highest priority).
@@ -85,7 +85,7 @@ func newOrganize(tiers [][]string, library, outDir string, dryRun bool, goos str
 					return OrganizeConfig{}, fmt.Errorf("source dir %q must not be inside the source dir %q", prev.Path, src)
 				}
 			}
-			cfg.Sources = append(cfg.Sources, Source{Path: src, Label: uniqueLabel(filepath.Base(src), labels), Tier: tier, Index: len(cfg.Sources)})
+			cfg.Sources = append(cfg.Sources, Source{Path: src, Label: uniqueLabel(sourceLabel(src, goos), labels), Tier: tier, Index: len(cfg.Sources)})
 		}
 	}
 
@@ -165,6 +165,31 @@ func resolveSource(p string) (string, error) {
 		return "", fmt.Errorf("resolving source dir %q: %w", p, err)
 	}
 	return abs, nil
+}
+
+// sourceLabel returns the label name of the source folder src on goos: its last path
+// element. A filesystem, drive or share root has none (filepath.Base gives a separator,
+// which filepath.Join would swallow, so the source's songs would land unlabelled in
+// duplicates/ and invalid/): a drive "E:\" gives "E", a share "\\server\share" gives
+// "share", and "/" gives "root". The label never holds a separator. The path is parsed by
+// hand with goos as a parameter, so the Windows rules are tested on every platform.
+func sourceLabel(src, goos string) string {
+	seps := "/"
+	if goos == "windows" {
+		seps = `/\`
+	}
+	trimmed := strings.TrimRight(src, seps)
+	name := trimmed[strings.LastIndexAny(trimmed, seps)+1:]
+	if goos == "windows" {
+		name = strings.TrimSuffix(name, ":") // a drive "E:" (also "\\?\E:\")
+		if name == "?" {
+			name = "" // the "\\?\" prefix of a long path
+		}
+	}
+	if name == "" || name == "." {
+		return "root"
+	}
+	return name
 }
 
 // uniqueLabel returns name, or name with the first free " (n)" suffix, and marks it as

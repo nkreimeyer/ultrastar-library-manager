@@ -493,4 +493,25 @@ func TestUsageNamesSubcommands(t *testing.T) {
 			t.Errorf("usage does not name %q:\n%s", cmd, buf.String())
 		}
 	}
+	// The ui line lists its flags one by one: every flag ui -h shows.
+	var uiLine string
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(l, "library-manager ui ") {
+			uiLine = l
+		}
+	}
+	_, help, _ := runCaptured(t, "ui", "-h")
+	flags := 0
+	for _, l := range strings.Split(help, "\n") {
+		if name, ok := strings.CutPrefix(l, "  -"); ok {
+			name, _, _ = strings.Cut(name, " ")
+			flags++
+			if !strings.Contains(uiLine, "[-"+name) {
+				t.Errorf("the usage's ui line %q lacks -%s", uiLine, name)
+			}
+		}
+	}
+	if flags < 4 {
+		t.Errorf("ui -h lists %d flags:\n%s", flags, help)
+	}
 }

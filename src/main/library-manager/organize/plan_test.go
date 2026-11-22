@@ -320,6 +320,35 @@ func TestMakePlanTargets(t *testing.T) {
 	}
 }
 
+// A numbered name never goes to the path of a library song that already stays (here an
+// encoding problem): the keeper gets the next free number instead of being left outside.
+func TestMakePlanNumberSkipsStayingLibrarySong(t *testing.T) {
+	staying := song(lib, "A/A - Rock - Roll (2)", "Q", "Z", Quality{})
+	staying.EncodingProblem = true
+	cands := []Candidate{
+		staying,
+		song(hq, "a", "A - Rock", "Roll", Quality{}), // key arock|roll, name A - Rock - Roll
+		song(hq, "b", "A", "Rock - Roll", Quality{}), // key a|rockroll, same name
+	}
+	occupied := func(rel string) (string, string, bool) {
+		if NameKey(rel) == NameKey("A/A - Rock - Roll (2)") {
+			return "A/A - Rock - Roll (2)", "", true
+		}
+		return "", "", false
+	}
+	want := []string{
+		"library:A/A - Rock - Roll (2): left (" + reasonEncoding + ")",
+		"hq:a: library A/A - Rock - Roll",
+		"hq:b: library A/A - Rock - Roll (3)",
+	}
+	for _, inPlace := range []bool{false, true} {
+		got := summary(cands, MakePlan(cands, PlanOptions{Occupied: occupied, LibraryInPlace: inPlace}))
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("LibraryInPlace=%v: plan:\n%s\nwant:\n%s", inPlace, strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	}
+}
+
 func TestMakePlanDeterministic(t *testing.T) {
 	cands := []Candidate{
 		song(low1, "b", "X", "Y", Quality{}),

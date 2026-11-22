@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nkreimeyer/library-manager/config"
@@ -262,5 +263,110 @@ func TestRestoreBlockedWhenSourceFolderGone(t *testing.T) {
 	}
 	if st := ops.Stats(); st.Moved != 1 || !testutil.Exists(filepath.Join(src, "ABBA - SOS", "song.txt")) {
 		t.Errorf("stats = %+v, song not put back", st)
+	}
+}
+
+func TestOriginLabels(t *testing.T) {
+	base := t.TempDir()
+	cfg := config.OrganizeConfig{Library: filepath.Join(base, "lib"), OutDir: filepath.Join(base, "out")}
+	testutil.WriteFile(t, filepath.Join(cfg.DuplicatesDir(), "Dup", "A", "X", "song.txt"), "x")
+	testutil.WriteFile(t, filepath.Join(cfg.DuplicatesDir(), ".hidden", "x"), "x")
+	testutil.WriteFile(t, filepath.Join(cfg.DuplicatesDir(), "file.txt"), "x")
+	journal := map[string]string{
+		filepath.Join(cfg.InvalidDir(), "Usb", "X - Y"):    "/usb/X - Y",
+		filepath.Join(cfg.DuplicatesDir(), "Ünï", "X - Y"): "/u/X - Y",
+		filepath.Join(cfg.InvalidDir(), "Top"):             "/top",         // no label below it
+		filepath.Join(cfg.RemovedDir(), "R", "X - Y"):      "/lib/R/X - Y", // not a labelled section
+		filepath.Join(cfg.Library, "A", "X - Y"):           "/src/X - Y",   // a move into the library
+		filepath.Join(base, "out2", "invalid", "O", "X"):   "/elsewhere/X", // another output folder
+	}
+	got := originLabels(cfg, journal)
+	want := map[string]bool{"dup": true, "usb": true, labelKey("Ünï"): true}
+	if !maps.Equal(got, want) {
+		t.Errorf("originLabels = %v, want %v", got, want)
+	}
+	for _, tt := range []struct {
+		folder string
+		want   bool
+	}{{"Karaoke", true}, {"karaoke", true}, {"Karaoke (2)", true}, {"Karaoke (1)", false}, {"Karaoke (02)", false}, {"Karaoke (x)", false}, {"Other", false}} {
+		if got := isLabelOf(tt.folder, "Karaoke"); got != tt.want {
+			t.Errorf("isLabelOf(%q) = %v, want %v", tt.folder, got, tt.want)
+		}
+	}
+}
+
+// Without a journal entry, an item organize/dedupe/add set aside below a label folder of
+// invalid/ is not guessed to come from <library>/<label>/...: the library's own label is
+// dropped, and the label of another source gives no origin.
+func TestRestoreGuessForLabelledInvalid(t *testing.T) {
+	noFFprobe(t)
+	base := t.TempDir()
+	lib, src := filepath.Join(base, "Karaoke"), filepath.Join(base, "Songs")
+	brokenTxt := "#ARTIST:%s\n#TITLE:%s\n#MP3:song.mp3\n: 0 2 0 la\nE\n" // no #BPM
+	testutil.WriteFiles(t, lib, merge(songFiles("A/ABBA - SOS", "ABBA", "SOS", "video"), map[string]string{
+		"B/Blur - Song 2/song.txt": fmt.Sprintf(brokenTxt, "Blur", "Song 2"),
+		"B/Blur - Song 2/song.mp3": "x",
+	}))
+	testutil.WriteFiles(t, src, merge(songFiles("ABBA - SOS", "ABBA", "SOS"), map[string]string{
+		"Cher - Believe/song.txt": fmt.Sprintf(brokenTxt, "Cher", "Believe"),
+		"Cher - Believe/song.mp3": "x",
+	}))
+	cfg := prepared(t)(config.NewAdd([][]string{{src}}, lib, filepath.Join(base, "out"), false))
+	runOrganize(t, cfg, Options{Mode: ModeAdd, Broken: BrokenSetAside})
+	for _, p := range []string{"invalid/Karaoke/B/Blur - Song 2", "invalid/Songs/Cher - Believe", "duplicates/Songs/ABBA - SOS"} {
+		if !testutil.Exists(filepath.Join(cfg.OutDir, filepath.FromSlash(p), "song.txt")) {
+			t.Fatalf("%s was not set aside", p)
+		}
+	}
+	check := func(name string) {
+		t.Helper()
+		items, err := ListSetAside(cfg, fsops.New(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		by := map[string]SetAsideItem{}
+		for _, it := range items {
+			by[it.Section+"/"+it.Rel] = it
+		}
+		if it := by["invalid/Karaoke/B/Blur - Song 2"]; it.Exact || it.Blocked != "" || it.Origin != filepath.Join(lib, "B", "Blur - Song 2") {
+			t.Errorf("%s: library item = %+v, want the guess %s", name, it, filepath.Join(lib, "B", "Blur - Song 2"))
+		}
+		if it := by["invalid/Songs/Cher - Believe"]; it.Origin != "" || it.Blocked != blockedUnknown {
+			t.Errorf("%s: source item = %+v, want no origin", name, it)
+		}
+	}
+
+	// The journal lacks the invalid/ entries (an append that failed after the move): the
+	// labels still come from the journal's other moves.
+	var kept []string
+	for _, line := range strings.SplitAfter(testutil.ReadFile(t, cfg.JournalPath()), "\n") {
+		if !strings.Contains(line, cfg.InvalidDir()) {
+			kept = append(kept, line)
+		}
+	}
+	testutil.WriteFile(t, cfg.JournalPath(), strings.Join(kept, ""))
+	check("journal without the entries")
+
+	// No journal at all: duplicates/ names the source labels.
+	if err := os.Remove(cfg.JournalPath()); err != nil {
+		t.Fatal(err)
+	}
+	check("no journal")
+
+	ops := fsops.New(false)
+	refs := []RestoreRef{{SectionInvalid, "Karaoke/B/Blur - Song 2"}, {SectionInvalid, "Songs/Cher - Believe"}}
+	if err := Restore(cfg, ops, refs, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if st := ops.Stats(); st.Moved != 1 || st.Failed != 1 {
+		t.Errorf("stats = %+v", st)
+	}
+	if !testutil.Exists(filepath.Join(lib, "B", "Blur - Song 2", "song.txt")) {
+		t.Error("the library's song was not put back to its place")
+	}
+	for _, p := range []string{"Karaoke", "Songs"} {
+		if testutil.Exists(filepath.Join(lib, p)) {
+			t.Errorf("the restore created %s inside the library", p)
+		}
 	}
 }

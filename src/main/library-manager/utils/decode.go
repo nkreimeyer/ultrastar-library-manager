@@ -59,13 +59,15 @@ type DecodedTxt struct {
 //     - with an #ENCODING tag naming a single-byte codec, every non-ASCII character must be
 //     one that codec can produce (a converted file with a stale tag; U+FFFD, a character
 //     lost before, is damage and does not count); otherwise Problem;
-//     - without a tag, CP1252 text that is valid UTF-8 only by accident is read as CP1252
-//     if that is certain (an isolated "ß…" = 0xDF 0x85 reads as an NKo character) and is a
-//     Problem if it is merely likely (only isolated non-Latin characters amid ASCII).
+//     - without a tag, single-byte text that is valid UTF-8 only by accident is read as
+//     CP1252 (CP1250 if #LANGUAGE names a Central European language, as in step 3) if that
+//     is certain (an isolated "ß…" = 0xDF 0x85 reads as an NKo character) and is a Problem
+//     if it is merely likely (only isolated non-Latin characters amid ASCII).
 //  3. Otherwise the single-byte codec named by #ENCODING is used, else CP1250 if #LANGUAGE
 //     names a Central European language, else CP1252. It fails (Problem) on bytes the codec
 //     leaves undefined, on real UTF-8 sequences in the file (mixed encodings, mojibake such
-//     as "Ã¤"), and when CP1252 text looks like CP1250 ("Za¿ó³æ").
+//     as "Ã¤", a literal U+FFFD left by an earlier conversion), and when CP1252 text looks
+//     like CP1250 ("Za¿ó³æ"; also for text step 2 reads as CP1252).
 //  4. An unknown #ENCODING codec is always a Problem, and so is a file with NUL bytes (in
 //     UTF-16: a decoded U+0000). BOM-less UTF-16 is decoded as such, so that its header can
 //     still be read; any other file with NUL bytes is decoded by steps 2 and 3 (a valid
@@ -121,7 +123,9 @@ func DecodeTxt(raw []byte) DecodedTxt {
 				// Real UTF-8 (or ASCII).
 			case evidence == 0 && hasAccidentalUTF8(d.Text):
 				// Syriac/Thaana/NKo amid Latin text: CP1252 "ß…" and similar.
-				d = decodeWith(charmap.Windows1252, EncCP1252, raw)
+				cm, name := fallbackCodec(raw)
+				d = decodeWith(cm, name, raw)
+				keepReplacementChars(&d, raw)
 			case evidence == 0:
 				d.Problem = "is valid UTF-8, but its only non-ASCII characters are isolated ones that are more likely CP1252 (e.g. \"é »\" read as \"頻\"); check manually"
 			default:
@@ -132,20 +136,18 @@ func DecodeTxt(raw []byte) DecodedTxt {
 		}
 	default:
 		raw = bytes.TrimPrefix(raw, utf8BOM)
-		cm, name := charmap.Windows1252, EncCP1252
-		switch {
-		case hint.cm != nil:
-			cm, name = hint.cm, hint.name
-		case centralEuropeanFile(raw):
-			cm, name = charmap.Windows1250, EncCP1250
+		cm, name := hint.cm, hint.name
+		if cm == nil {
+			cm, name = fallbackCodec(raw)
 		}
 		d = decodeWith(cm, name, raw)
 		if d.Problem == "" && hasMixedUTF8(raw, hint) {
 			d.Problem = "mixes UTF-8 with another encoding (or contains mojibake such as \"Ã¤\")"
 		}
-		if d.Problem == "" && hint.cm == nil && name == EncCP1252 && looksLikeCP1250(d.Text) {
-			d.Problem = "looks like CP1250 (Central European) text read as CP1252; add #ENCODING:CP1250 or #LANGUAGE"
-		}
+		keepReplacementChars(&d, raw)
+	}
+	if d.Problem == "" && hint.cm == nil && d.Encoding == EncCP1252 && looksLikeCP1250(d.Text) {
+		d.Problem = "looks like CP1250 (Central European) text read as CP1252; add #ENCODING:CP1250 or #LANGUAGE"
 	}
 	// Every decoding keeps a NUL byte (in UTF-16 a 0x0000 unit) as U+0000.
 	if d.Problem == "" && strings.IndexByte(d.Text, 0) >= 0 {
@@ -156,6 +158,25 @@ func DecodeTxt(raw []byte) DecodedTxt {
 	d.Text = strings.ReplaceAll(d.Text, "\r\n", "\n")
 	d.Text = strings.ReplaceAll(d.Text, "\r", "\n")
 	return d
+}
+
+// keepReplacementChars makes d, raw read with a single-byte codec, a Problem if raw holds
+// the UTF-8 bytes of U+FFFD. utf8Sequences leaves U+FFFD out (in a UTF-8 file it is
+// damage, not evidence), but read with a single-byte codec its bytes would become "ï¿½"
+// and the damage marker would be lost for good.
+func keepReplacementChars(d *DecodedTxt, raw []byte) {
+	if d.Problem == "" && bytes.Contains(raw, []byte(string(utf8.RuneError))) {
+		d.Problem = "contains UTF-8 replacement characters (U+FFFD, damage from an earlier conversion) mixed with another encoding; check manually"
+	}
+}
+
+// fallbackCodec returns the codec for a txt read with a single-byte codec but without a
+// usable #ENCODING tag: CP1250 if #LANGUAGE names a Central European language, else CP1252.
+func fallbackCodec(raw []byte) (*charmap.Charmap, string) {
+	if centralEuropeanFile(raw) {
+		return charmap.Windows1250, EncCP1250
+	}
+	return charmap.Windows1252, EncCP1252
 }
 
 // decodeWith decodes raw with a single-byte codec; bytes the codec leaves undefined (which
@@ -224,8 +245,10 @@ var singleByteCodecs = map[string]struct {
 
 // encodingHint reads the #ENCODING header tag. The header is ASCII in every supported
 // encoding, so it can be read from the raw bytes. Lines may end in "\n", "\r\n" or "\r".
-// The header ends at the first body line (songtxt.IsBodyLine), as in HeaderTags.
+// The header ends at the first body line (songtxt.IsBodyLine), as in HeaderTags, and a
+// repeated tag resolves to its last occurrence, as in HeaderTags and UltraStar.
 func encodingHint(raw []byte) hint {
+	var h hint
 	for _, line := range splitLines(string(raw)) {
 		line = strings.TrimSpace(strings.TrimPrefix(line, "\ufeff"))
 		if songtxt.IsBodyLine(line) {
@@ -240,16 +263,17 @@ func encodingHint(raw []byte) hint {
 		}
 		value = strings.TrimSpace(value)
 		key := strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToUpper(value))
-		switch key {
-		case "", "UTF8", "AUTO", "LOCALE":
-			return hint{}
+		c, known := singleByteCodecs[key]
+		switch {
+		case key == "", key == "UTF8", key == "AUTO", key == "LOCALE":
+			h = hint{}
+		case known:
+			h = hint{name: c.name, cm: c.cm}
+		default:
+			h = hint{unknown: value}
 		}
-		if c, ok := singleByteCodecs[key]; ok {
-			return hint{name: c.name, cm: c.cm}
-		}
-		return hint{unknown: value}
 	}
-	return hint{}
+	return h
 }
 
 // nonLatinCodecs are the canonical names of the single-byte codecs whose letters are all
@@ -266,8 +290,9 @@ var cp1250Languages = map[string]bool{
 	"pl": true, "cs": true, "sk": true, "hu": true, "hr": true, "sl": true, "ro": true, "bs": true,
 }
 
-// centralEuropeanFile reports whether the #LANGUAGE tag of raw (a file that is not valid
-// UTF-8) names a Central European language. The value is still in the file's encoding, so
+// centralEuropeanFile reports whether the #LANGUAGE tag of raw (a file read with a
+// single-byte codec: not valid UTF-8, or valid only by accident) names a Central European
+// language. The value is still in the file's encoding, so
 // it is tried as it is (if it is ASCII or UTF-8) and decoded as CP1250, the codec in
 // question ("ä" in "Rumänisch" is the same byte in CP1250 and CP1252).
 func centralEuropeanFile(raw []byte) bool {

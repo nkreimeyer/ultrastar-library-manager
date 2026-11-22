@@ -51,14 +51,18 @@ build:
     - OUT="library-manager-${GOOS}-${GOARCH}${EXT}"
     - VERSION="$CI_COMMIT_TAG"
     - go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$CI_PROJECT_DIR/dist/$OUT" .
+  # Only the release job of the same pipeline reads these: it copies them into the package registry.
   artifacts:
     name: library-manager-$GOOS-$GOARCH
     paths: [dist/]
     expire_in: 30 days
 
-# On a tag v*: a GitLab release whose assets link to the build job's artifacts. It goes through
-# the Releases API, not the release: keyword, so a re-run (or a tag pushed again) updates the
-# existing release instead of failing with "release for tag ... already exists".
+# On a tag v*: the binaries go into the project's generic package registry
+# (packages/generic/library-manager/<version>/<file>), and a GitLab release links to them. Job
+# artifacts expire (or vanish with the pipeline); the registry keeps the files, as a GitHub
+# release does. It goes through the Releases API, not the release: keyword, so a re-run (or a
+# tag pushed again) updates the existing release instead of failing with "release for tag ...
+# already exists": missing asset links are added, links to other URLs are pointed at the registry.
 release:
   stage: release
   image: alpine:3
@@ -83,12 +87,25 @@ release:
       set -eu
       api="$CI_API_V4_URL/projects/$CI_PROJECT_ID/releases"
       tag=$(jq -rn --arg t "$CI_COMMIT_TAG" '$t|@uri')
-      base="$CI_PROJECT_URL/-/jobs/artifacts/$CI_COMMIT_TAG/raw/dist"
-      links=$(jq -n --arg b "$base" '[
-        {name: "library-manager-linux-amd64", url: ($b + "/library-manager-linux-amd64?job=build:%20%5Blinux,%20amd64%5D")},
-        {name: "library-manager-windows-amd64.exe", url: ($b + "/library-manager-windows-amd64.exe?job=build:%20%5Bwindows,%20amd64%5D")},
-        {name: "library-manager-darwin-amd64", url: ($b + "/library-manager-darwin-amd64?job=build:%20%5Bdarwin,%20amd64%5D")},
-        {name: "library-manager-darwin-arm64", url: ($b + "/library-manager-darwin-arm64?job=build:%20%5Bdarwin,%20arm64%5D")}]')
+      pkg="$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/library-manager/$VERSION"
+      files="library-manager-linux-amd64 library-manager-windows-amd64.exe library-manager-darwin-amd64 library-manager-darwin-arm64"
+      for f in $files; do
+        test -s "dist/$f" || { echo "dist/$f is missing"; exit 1; }
+        echo "Uploading $f to the package registry"
+        code=$(curl -sS -o upload.json -w '%{http_code}' -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "dist/$f" "$pkg/$f")
+        case "$code" in
+        2??) ;;
+        *)
+          # A registry that refuses duplicate files answers a re-run with an error: keep the file it has.
+          if curl -sS -f -o /dev/null -H "JOB-TOKEN: $CI_JOB_TOKEN" "$pkg/$f"; then
+            echo "$f is in the registry already (upload: HTTP $code), keeping it"
+          else
+            echo "Uploading $f failed (HTTP $code):"; cat upload.json; exit 1
+          fi
+          ;;
+        esac
+      done
+      links=$(printf '%s\n' $files | jq -R . | jq -s --arg p "$pkg" 'map({name: ., url: ($p + "/" + .), link_type: "package"})')
       call() { curl -sS --fail-with-body -H "JOB-TOKEN: $CI_JOB_TOKEN" -H "Content-Type: application/json" "$@"; }
       code=$(curl -sS -o existing.json -w '%{http_code}' -H "JOB-TOKEN: $CI_JOB_TOKEN" "$api/$tag")
       case "$code" in
@@ -96,11 +113,20 @@ release:
         echo "Release $CI_COMMIT_TAG exists: updating its name and notes"
         jq -n --arg n "$CI_COMMIT_TAG" --rawfile d release_notes.md '{name: $n, description: $d}' |
           call -X PUT --data @- "$api/$tag" > /dev/null
-        echo "$links" | jq -c --slurpfile e existing.json '.[] | select(.name as $n | [$e[0].assets.links[].name] | index($n) | not)' |
-          while read -r link; do
-            echo "Adding the missing asset link $(echo "$link" | jq -r .name)"
+        # Add missing links; point links of an older release (job artifact URLs) at the registry.
+        echo "$links" | jq -c '.[]' | while read -r link; do
+          name=$(echo "$link" | jq -r .name)
+          url=$(echo "$link" | jq -r .url)
+          old=$(jq -c --arg n "$name" '[.assets.links[] | select(.name == $n)][0] // empty' existing.json)
+          if [ -z "$old" ]; then
+            echo "Adding the missing asset link $name"
             echo "$link" | call -X POST --data @- "$api/$tag/assets/links" > /dev/null
-          done
+          elif [ "$(echo "$old" | jq -r .url)" != "$url" ]; then
+            echo "Pointing the asset link $name at the package registry"
+            echo "$link" | jq -c '{url, link_type}' |
+              call -X PUT --data @- "$api/$tag/assets/links/$(echo "$old" | jq -r .id)" > /dev/null
+          fi
+        done
         ;;
       404)
         echo "Creating release $CI_COMMIT_TAG"

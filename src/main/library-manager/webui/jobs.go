@@ -85,11 +85,14 @@ type jobControl struct {
 	j *job
 }
 
-// Progress records the phase and the number of items done.
+// Progress records the phase and the number of items done. A smaller done of the same
+// phase is a late report of an earlier item and ignored, except 0: a pass that starts
+// again (remove's apply reads the songs once to compare the plan, then for the run;
+// the pool's reports start at 1, so only a pass's start reports 0).
 func (c jobControl) Progress(phase string, done, total int) {
 	c.r.mu.Lock()
 	defer c.r.mu.Unlock()
-	if c.j.Phase != phase || done > c.j.Done || total != c.j.Total {
+	if c.j.Phase != phase || done > c.j.Done || (done == 0 && c.j.Done != 0) || total != c.j.Total {
 		c.j.Phase, c.j.Done, c.j.Total = phase, done, total
 		c.j.version++
 	}

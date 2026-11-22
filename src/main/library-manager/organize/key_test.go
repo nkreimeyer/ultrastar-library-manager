@@ -115,6 +115,15 @@ func TestSongKeyEquivalent(t *testing.T) {
 		{"artist in the title, em dash", songID{"Queen", "Queen — Innuendo", false}, songID{"Queen", "Innuendo", false}},
 		{"only the artist and a dash", songID{"James Blunt", "James Blunt -", false}, songID{"James Blunt", "James Blunt", false}},
 		{"pv and mv are noise", songID{"Aimer", "Ref:rain (PV)", false}, songID{"Aimer", "Ref:rain [MV]", false}},
+		{"self-titled, dash noise", songID{"Black Sabbath", "Black Sabbath - 2009 Remaster", false}, songID{"Black Sabbath", "Black Sabbath", false}},
+		{"self-titled, dash live", songID{"Iron Maiden", "Iron Maiden - Live", false}, songID{"Iron Maiden", "Iron Maiden (Live)", false}},
+		{"self-titled, dash radio edit", songID{"Iron Maiden", "Iron Maiden - Radio Edit", false}, songID{"Iron Maiden", "Iron Maiden (Radio Edit)", false}},
+		{"self-titled, dash duet", songID{"Bad Company", "Bad Company - Duet", false}, songID{"Bad Company", "Bad Company [DUET]", false}},
+		{"artist in the title, title starts with a version word", songID{"Billy Joel", "Billy Joel - Piano Man", false}, songID{"Billy Joel", "Piano Man", false}},
+		{"artist in the title, radio in the title", songID{"Queen", "Queen - Radio Ga Ga", false}, songID{"Queen", "Radio Ga Ga", false}},
+		{"artist in the title, live in the title", songID{"Wings", "Wings - Live and Let Die", false}, songID{"Wings", "Live and Let Die", false}},
+		{"artist in the title, a year as the title", songID{"Prince", "Prince - 1999", false}, songID{"Prince", "1999", false}},
+		{"artist in the title, a year as the title, the", songID{"The Smashing Pumpkins", "The Smashing Pumpkins - 1979", false}, songID{"The Smashing Pumpkins", "1979", false}},
 	}
 	for _, tt := range tests {
 		ka := SongKey(tt.a.artist, tt.a.title, tt.a.duet)
@@ -180,6 +189,7 @@ func TestSongKeyDistinct(t *testing.T) {
 		{"duet acoustic vs duet", songID{"Artist", "Song [Duet - Acoustic]", false}, songID{"Artist", "Song [Duet]", false}},
 		{"duet remix vs duet", songID{"Artist", "Song (Duet Remix)", false}, songID{"Artist", "Song [Duet]", false}},
 		{"duet with names live vs duet", songID{"Artist", "Song (Duet with B, Live)", false}, songID{"Artist", "Song [Duet]", false}},
+		{"self-titled live vs studio", songID{"Iron Maiden", "Iron Maiden - Live", false}, songID{"Iron Maiden", "Iron Maiden", false}},
 	}
 	for _, tt := range tests {
 		ka := SongKey(tt.a.artist, tt.a.title, tt.a.duet)
@@ -261,6 +271,7 @@ func TestLooseKey(t *testing.T) {
 		{{"Artist", "Song (feat. X Live)", false}, {"Artist", "Song", false}},
 		{{"Artist", "Song [Duet - Acoustic]", false}, {"Artist", "Song", false}},
 		{{"Oasis", "Wonder\u00adwall", false}, {"Oasis", "Wonderwall", false}},
+		{{"Black Sabbath", "Black Sabbath - 2009 Remaster", false}, {"Black Sabbath", "Black Sabbath", false}},
 	}
 	for _, p := range equal {
 		ka, kb := LooseKey(p[0].artist, p[0].title), LooseKey(p[1].artist, p[1].title)

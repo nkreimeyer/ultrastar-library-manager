@@ -109,7 +109,9 @@ func detect(ctx context.Context, name string) Tool {
 	t.Path, t.Found = path, true
 	ctx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, path, "-version").Output()
+	cmd := exec.CommandContext(ctx, path, "-version")
+	cmd.WaitDelay = WaitDelay // a wrapper script's child may keep the pipe open
+	out, err := Detach(cmd).Output()
 	if err != nil {
 		t.Problem = fmt.Sprintf("%s -version failed: %v", name, err)
 		return t

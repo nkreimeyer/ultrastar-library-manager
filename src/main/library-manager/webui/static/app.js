@@ -151,7 +151,12 @@ const STEP_DONE = {
 };
 
 // The phases of a check (a dry run) where the real run's words would alarm.
-const DRY_PHASES = { text: "Checking song texts", cleanup: "Looking for leftovers" };
+// The check of organize, dedupe, add, a tidy-up or remove also goes through the moves,
+// planning them.
+const DRY_PHASES = { text: "Checking song texts", cleanup: "Looking for leftovers", move: "Planning the moves" };
+
+// phaseText is the progress line's text for the phase of job j.
+const phaseText = (j) => (j.dryRun && DRY_PHASES[j.phase]) || PHASES[j.phase] || "Getting started";
 
 // What undo covers in a tidy-up: only the song step journals its moves.
 const TIDY_UNDO = "Duplicates and broken songs can be put back with undo afterwards. Leftover files and folders without a song are not part of undo: they wait in the extra-files and invalid folders of the output folder. Fixed song texts, evened-out audio and converted videos stay as they are.";
@@ -532,7 +537,7 @@ function confirmDialog(title, text, okLabel) {
   return new Promise((resolve) => {
     dlg.replaceChildren(h("form", { method: "dialog", class: "dlg" },
       h("h2", null, title),
-      text.map((t) => h("p", null, t)),
+      text.filter(Boolean).map((t) => h("p", null, t)),
       h("div", { class: "actions" },
         h("button", { class: "btn primary", value: "ok" }, okLabel),
         h("button", { class: "btn", value: "cancel", autofocus: true }, "Cancel"),
@@ -601,7 +606,13 @@ async function validate() {
     if (seq !== validateSeq) return;
     S.resolved = res;
     S.resolveError = null;
-    if (advanced()) loadHistory();
+    if (S.history && S.history.library !== res.library) {
+      // The list of another library goes until this one's arrives.
+      S.history = null;
+      const box = document.getElementById("history");
+      if (box) box.replaceChildren(historyList());
+    }
+    if (advanced()) loadHistory(seq, res.library, res.outDir);
   } catch (e) {
     if (seq !== validateSeq) return;
     S.resolved = null;
@@ -611,12 +622,18 @@ async function validate() {
   updateResolved();
 }
 
-async function loadHistory() {
+// loadHistory lists the runs of the library the validate answer seq resolved. An answer
+// that comes after a newer validate is dropped: its list belongs to another library. The
+// list keeps its library, so "Undo this run" undoes a run of the list shown.
+async function loadHistory(seq, library, out) {
+  let list = null;
   try {
-    S.history = await post("/api/organize/history", { library: S.resolved.library, out: S.resolved.outDir });
+    list = await post("/api/organize/history", { library, out });
   } catch {
-    S.history = null;
+    // no list
   }
+  if (seq !== validateSeq) return;
+  S.history = list && { ...list, library };
   const box = document.getElementById("history");
   if (box) box.replaceChildren(historyList());
 }
@@ -654,6 +671,7 @@ function viewSetup() {
         S.notice = null;
         S.resolved = null;
         S.resolveError = null;
+        S.history = null;
         render();
         validate();
       } }),
@@ -741,7 +759,7 @@ function historyList() {
     h("span", null, r.time ? new Date(r.time).toLocaleString() : r.id),
     h("span", { class: "num" }, plural(r.moves, "move", "moves")),
     r.undone ? h("span", { class: "muted" }, "undone")
-      : r.next ? h("button", { class: "link", type: "button", onclick: () => undo(S.resolved.library, S.resolved.outDir) }, "Undo this run")
+      : r.next ? h("button", { class: "link", type: "button", onclick: () => undo(S.history.library, S.history.outDir) }, "Undo this run")
       : h("span", { class: "muted" }, "kept"),
   )));
 }
@@ -782,6 +800,12 @@ async function loadAside() {
   render();
   window.scrollTo(0, 0);
 }
+
+// joinPath joins a folder of the server's file system and a name with its separator.
+const joinPath = (dir, name) => {
+  const sep = S.sys?.os === "windows" ? "\\" : "/";
+  return dir.endsWith(sep) ? dir + name : dir + sep + name;
+};
 
 const bytesText = (n) => {
   const units = ["bytes", "KB", "MB", "GB", "TB"];
@@ -922,7 +946,7 @@ function viewReports() {
     add(frag, h("ul", { class: "history" }, r.files.map((f) => h("li", null,
       h("button", { class: "link", type: "button", "aria-pressed": String(r.shown?.name === f.name), onclick: () => showReport(f.name) }, f.name),
       h("span", { class: "muted small" }, new Date(f.modified).toLocaleString()),
-      h("span", { class: "num" }, `${fmt(Math.max(1, Math.round(f.size / 1024)))} KB`)))));
+      h("span", { class: "num" }, bytesText(f.size))))));
   }
   if (r.shown) {
     add(frag, h("h2", null, r.shown.name), h("pre", { class: "report-text", tabindex: "0" }, r.shown.text),
@@ -1074,7 +1098,7 @@ function updateRunning() {
   const lyric = document.getElementById("lyric");
   if (!j || !lyric) return;
   const pct = j.total > 0 ? Math.min(100, (j.done / j.total) * 100) : 0;
-  const text = (j.dryRun && DRY_PHASES[j.phase]) || PHASES[j.phase] || "Getting started";
+  const text = phaseText(j);
   lyric.querySelector(".base").textContent = text;
   const sung = lyric.querySelector(".sung");
   sung.textContent = text;
@@ -1093,6 +1117,9 @@ function updateRunning() {
   document.getElementById("counter").textContent = parts.join(", ");
 }
 
+// stopJob asks the server to stop the job. If the request fails, the job runs on: the
+// button can be used again and its hint says why. (An answer of cancelled: false means the
+// job has ended already; its job event takes over.)
 async function stopJob() {
   const btn = document.getElementById("stop");
   if (btn) {
@@ -1102,7 +1129,12 @@ async function stopJob() {
   try {
     await post("/api/job/cancel");
   } catch (e) {
-    S.notice = { kind: "bad", title: e.message };
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Stop";
+    }
+    const hint = document.getElementById("stop-hint");
+    if (hint) hint.textContent = `Could not stop: ${e.message}. Try again.`;
   }
 }
 
@@ -1174,7 +1206,7 @@ async function onJobEnd(j) {
           S.notice = failed("Not everything could be done");
         } else if (j.stats?.moved && resultFolders(j)) {
           // Some songs moved before it failed: offer the undo.
-          S.done = { kind: "organize", job: j, stopped: true, cfg: resultFolders(j) };
+          S.done = { kind: "organize", job: j, stopped: false, cfg: resultFolders(j) };
           S.view = "done";
           S.notice = failed("Moving did not finish");
         } else {
@@ -1216,7 +1248,7 @@ async function onJobEnd(j) {
         break;
       case "check-apply":
         if (j.state === "done" || j.state === "cancelled" || (j.stats?.moved && resultFolders(j))) {
-          S.done = { kind: "organize", check: true, job: j, stopped: j.state !== "done", cfg: resultFolders(j) || S.chk?.config };
+          S.done = { kind: "organize", check: true, job: j, stopped: j.state === "cancelled", cfg: resultFolders(j) || S.chk?.config };
           S.view = "done";
           if (j.state === "failed") S.notice = failed("Not everything could be done");
         } else {
@@ -1246,7 +1278,7 @@ async function onJobEnd(j) {
           S.view = "review";
           S.notice = { kind: "bad", title: "Something changed since you checked, so nothing was moved", text: "Here is the new plan. Look through it again before you remove anything.", details: advanced() ? j.details : null };
         } else if (j.stats?.moved && resultFolders(j)) {
-          S.done = { kind: "organize", remove: true, job: j, stopped: true, cfg: resultFolders(j) };
+          S.done = { kind: "organize", remove: true, job: j, stopped: false, cfg: resultFolders(j) };
           S.view = "done";
           S.notice = failed("Removing did not finish");
         } else {
@@ -1483,7 +1515,7 @@ function viewOrganizeReview() {
         h("button", { class: "link", type: "button", onclick: () => setJoined([...v.joined, [songs[p.a].ref, songs[p.b].ref]]) }, "Same song, keep only the better version"),
       ), "similar"))));
   if (v.joined.length) {
-    tally.append(tallyItem("joined", "move", v.joined.length, v.joined.length === 1 ? "pair you chose to treat as the same song" : "pairs you chose to treat as the same song",
+    tally.append(tallyItem("joined", "library", v.joined.length, v.joined.length === 1 ? "pair you chose to treat as the same song" : "pairs you chose to treat as the same song",
       () => h("ul", { class: "songs" }, v.joined.map((pair, k) => {
         const [a, b] = pair.map((ref) => songs.find((x) => x.ref === ref));
         return h("li", null,
@@ -1608,6 +1640,16 @@ function viewAside() {
   return frag;
 }
 
+// CHECK_STAYS_ENCODING is why setting aside broken songs leaves one in place (check's
+// notMovedEncoding).
+const CHECK_STAYS_ENCODING = "the txt has an encoding problem: its errors may only come from the guessed codepage";
+
+// checkStays says why setting aside the broken songs of a check report leaves song x in
+// place, or "" if it is moved. The check itself moves nothing, so its report has no
+// notMoved for a txt with an encoding problem: its "encoding" finding tells.
+const checkStays = (x) => x.status !== "broken" ? ""
+  : x.notMoved || (x.findings.some((f) => f.code === "encoding") ? CHECK_STAYS_ENCODING : "");
+
 function viewCheckReview() {
   const v = S.chk;
   const rep = v.report;
@@ -1620,11 +1662,11 @@ function viewCheckReview() {
   add(frag, h("p", null, `${plural(rep.checked, "song", "songs")} checked in `, h("span", { class: "path" }, v.config.library), `: ${fmt(ok)} fine, ${fmt(broken.length)} broken, ${fmt(warned.length)} with warnings.`));
   for (const n of rep.notes || []) add(frag, noticeBox({ kind: "", title: n }));
   const song = (x) => h("li", null, h("strong", null, x.path),
-    x.notMoved ? h("span", { class: "muted small" }, ` (stays: ${x.notMoved})`) : null,
+    checkStays(x) ? h("span", { class: "muted small" }, ` (stays: ${checkStays(x)})`) : null,
     h("ul", { class: "findings" }, x.findings.map((f) => h("li", { class: `sev-${f.severity}` },
       f.message, advanced() ? h("span", { class: "muted small" }, ` [${f.code}${f.line ? `, line ${f.line}` : ""}]`) : null))));
   const tally = h("ul", { class: "tally" });
-  tally.append(tallyItem("ck-broken", "move", broken.length, broken.length === 1 ? "song is broken (it has errors)" : "songs are broken (they have errors)",
+  tally.append(tallyItem("ck-broken", "bad", broken.length, broken.length === 1 ? "song is broken (it has errors)" : "songs are broken (they have errors)",
     () => cappedList(broken, song, "ck-broken")));
   tally.append(tallyItem("ck-warned", "stay", warned.length, warned.length === 1 ? "song has warnings only" : "songs have warnings only",
     () => cappedList(warned, song, "ck-warned")));
@@ -1638,12 +1680,14 @@ function viewCheckReview() {
     }
   }
   const out = v.config.outDir;
-  add(frag, h("p", { class: "muted" }, "The full report is in ", h("span", { class: "path" }, `${out}/check_report.txt`), " and check_report.json."));
-  const movable = broken.filter((x) => !x.notMoved && !x.moved);
+  add(frag, h("p", { class: "muted" }, "The full report is in ", h("span", { class: "path" }, joinPath(out, "check_report.txt")), " and check_report.json."));
+  const movable = broken.filter((x) => !checkStays(x) && !x.moved);
+  const stays = broken.filter((x) => checkStays(x)).length;
   add(frag, h("div", { class: "actions" },
     advanced() && movable.length ? h("button", { class: "btn primary", type: "button", disabled: v.applied, onclick: async () => {
       const go = await confirmDialog(`Set aside ${plural(movable.length, "broken song", "broken songs")}?`, [
-        `The check runs again, and every song with errors goes to ${out}/invalid. Nothing is deleted.`,
+        `The check runs again, and every song with errors goes to ${joinPath(out, "invalid")}. Nothing is deleted.`,
+        stays ? `${plural(stays, "broken song stays", "broken songs stay")}: the song text could not be decoded unambiguously, so its errors may only come from a wrong guess.` : "",
         "This is not part of undo: move a folder back by hand if you want it again.",
       ], "Set them aside");
       if (go) startJob("/api/check/apply", { analysis: v.id });
@@ -1686,7 +1730,7 @@ function viewRemoveReview() {
     } }),
     h("span", null, h("strong", null, e.name), " ", h("span", { class: "path" }, e.song),
       advanced() ? h("span", { class: "muted small" }, ` (${e.pattern})`) : null)));
-  tally.append(tallyItem("rm-removed", "move", n, n === 1 ? "song matches and is moved out of the library" : "songs match; the ticked ones are moved out of the library",
+  tally.append(tallyItem("rm-removed", "dup", n, n === 1 ? "song matches and is moved out of the library" : "songs match; the ticked ones are moved out of the library",
     () => h("div", null,
       h("p", { class: "muted small" }, "Untick a song to keep it in the library."),
       h("label", { class: "check" }, h("input", { type: "checkbox", id: "rm-all", checked: S.rmKeep.size === 0, onchange: (ev) => {
@@ -1707,11 +1751,11 @@ function viewRemoveReview() {
   }
   add(frag, tally);
   const out = v.config.outDir;
-  add(frag, h("p", { class: "muted" }, "Removed songs go to ", h("span", { class: "path" }, `${out}/removed`), ". Every move is recorded, so you can undo the whole run afterwards."));
+  add(frag, h("p", { class: "muted" }, "Removed songs go to ", h("span", { class: "path" }, joinPath(out, "removed")), ". Every move is recorded, so you can undo the whole run afterwards."));
   const go = h("button", { class: "btn primary", type: "button", disabled: true, onclick: async () => {
     const k = removing();
     const ok = await confirmDialog(`Remove ${plural(k, "song", "songs")}?`, [
-      `${plural(k, "song folder goes", "song folders go")} to ${out}/removed. Nothing is deleted.`,
+      `${plural(k, "song folder goes", "song folders go")} to ${joinPath(out, "removed")}. Nothing is deleted.`,
       S.rmKeep.size ? `${plural(S.rmKeep.size, "song stays", "songs stay")} in the library, as you chose.` : "",
       "If any song changed since the check, nothing is moved and you see the new plan first.",
     ].filter(Boolean), `Remove ${plural(k, "song", "songs")}`);
@@ -1787,6 +1831,18 @@ function organizeTable(v) {
 
 // ---------------------------------------------------------------- done
 
+// doneTitle is the heading of the done page of an organize, remove or check apply: a job
+// that failed was not stopped by the user.
+const doneTitle = (d) => d.stopped ? "Stopped part-way" : d.job.state === "done" ? "Done" : "Not everything could be done";
+
+// movedText says what an organize or remove apply moved.
+function movedText(d) {
+  const st = d.job.stats || {};
+  if (d.stopped) return `${plural(st.moved, "song folder was", "song folders were")} moved before you stopped. Undo puts them back.`;
+  if (d.job.state !== "done") return `${plural(st.moved, "song folder was", "song folders were")} ${d.remove ? "removed" : "moved"} before the run broke off. Undo puts them back.`;
+  return d.remove ? `${plural(st.moved, "song folder", "song folders")} removed from the library.` : `${plural(st.moved, "song folder", "song folders")} moved.`;
+}
+
 function viewDone() {
   const d = S.done;
   const j = d.job;
@@ -1840,21 +1896,18 @@ function viewDone() {
       } }, "Back to the list"),
       reports, again));
   } else if (d.check) {
-    add(frag, h("h1", null, d.stopped ? "Stopped part-way" : "Done"));
+    add(frag, h("h1", null, doneTitle(d)));
     add(frag, noticeBox(S.notice));
     add(frag, h("p", null, `${plural(st.moved, "broken song folder", "broken song folders")} moved to invalid.`));
     if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "move", "moves")} failed`, text: advanced() ? "The log below says why." : "Switch to Advanced to see the log." }));
-    if (d.cfg) add(frag, h("p", null, "They are in ", h("span", { class: "path" }, `${d.cfg.outDir}/invalid`), ". This cannot be undone with one click: move a folder back by hand if you want it again."));
+    if (d.cfg) add(frag, h("p", null, "They are in ", h("span", { class: "path" }, joinPath(d.cfg.outDir, "invalid")), ". This cannot be undone with one click: move a folder back by hand if you want it again."));
     add(frag, h("div", { class: "actions" }, reports, again));
   } else if (d.kind === "organize") {
-    add(frag, h("h1", null, d.stopped ? "Stopped part-way" : "Done"));
+    add(frag, h("h1", null, doneTitle(d)));
     add(frag, noticeBox(S.notice));
-    add(frag, h("p", null, d.stopped
-      ? `${plural(st.moved, "song folder was", "song folders were")} moved before you stopped. Undo puts them back.`
-      : d.remove ? `${plural(st.moved, "song folder", "song folders")} removed from the library.`
-      : `${plural(st.moved, "song folder", "song folders")} moved.`));
+    add(frag, h("p", null, movedText(d)));
     if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "move", "moves")} failed`, text: advanced() ? "The log below says why." : "Switch to Advanced to see the log." }));
-    if (d.cfg) add(frag, h("p", null, d.remove ? "Removed songs are in " : "Set-aside songs are in ", h("span", { class: "path" }, d.remove ? `${d.cfg.outDir}/removed` : d.cfg.outDir), ". Look through them before you delete anything."));
+    if (d.cfg) add(frag, h("p", null, d.remove ? "Removed songs are in " : "Set-aside songs are in ", h("span", { class: "path" }, d.remove ? joinPath(d.cfg.outDir, "removed") : d.cfg.outDir), ". Look through them before you delete anything."));
     add(frag, h("div", { class: "actions" },
       st.moved && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Undo this run") : null,
       reports, again));

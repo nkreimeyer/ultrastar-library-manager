@@ -219,7 +219,8 @@ type mediaInfo struct {
 	// unknown.
 	AudioBitrate int64 `json:"audioBitrate,omitempty"`
 	// VideoWidth and VideoHeight of the first video stream that is not an attached
-	// picture; 0 if there is none.
+	// picture with a known size; 0 if there is none (also for a moving video stream whose
+	// size ffprobe does not report: HasVideo is still set).
 	VideoWidth  int `json:"videoWidth,omitempty"`
 	VideoHeight int `json:"videoHeight,omitempty"`
 	// VideoBitrate in bit/s of that stream, by mediatools.VideoBitrate: its bit_rate, else

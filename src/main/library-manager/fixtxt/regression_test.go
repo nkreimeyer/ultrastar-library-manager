@@ -480,7 +480,7 @@ func TestResolveFileTag(t *testing.T) {
 		{"\xc4.mp3", "\xc4.mp3", false, false, choice},
 	}
 	for _, tc := range tests {
-		v, rewrite, unresolved := resolveFileTag(dir, tc.value, tc.choice, func(string) bool { return true })
+		v, rewrite, unresolved := resolveFileTag(dir, tc.value, tc.choice, func(string) bool { return true }, nil)
 		if v != tc.want || rewrite != tc.rewrite || unresolved != tc.wantUnresolved {
 			t.Errorf("resolveFileTag(%q) = %q, %v, %v, want %q, %v, %v", tc.value, v, rewrite, unresolved, tc.want, tc.rewrite, tc.wantUnresolved)
 		}

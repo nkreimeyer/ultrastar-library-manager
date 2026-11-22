@@ -58,7 +58,8 @@ func TestOverview(t *testing.T) {
 }
 
 // An unreadable folder is counted as unreadable, never as a folder without a song txt: one
-// the discovery cannot list, and one that becomes unreadable after the discovery found it.
+// the discovery cannot list, one that becomes unreadable after the discovery found it, and a
+// song folder with a second txt that cannot be read (the discovery stops at the song txt).
 func TestOverviewUnreadable(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("needs a folder the user cannot read")
@@ -77,6 +78,10 @@ func TestOverviewUnreadable(t *testing.T) {
 		t.Cleanup(func() { os.Chmod(dir, 0o755) })
 	}
 	lock(before)
+	notes := filepath.Join(lib, "Q", "Queen - Notes")
+	writeSong(t, notes, "Queen", "Notes", nil)
+	testutil.WriteFile(t, filepath.Join(notes, "zz-notes.txt"), "#TITLE:notes")
+	lock(filepath.Join(notes, "zz-notes.txt"))
 	overviewAfterDiscoveryHook = func(folders []string) {
 		if !slices.Contains(folders, after) {
 			t.Errorf("discovery did not find %s: %v", after, folders)
@@ -94,10 +99,10 @@ func TestOverviewUnreadable(t *testing.T) {
 	}
 	var res overviewResult
 	s.do("GET", "/api/job", nil, &struct{ Result *overviewResult }{&res})
-	if res.Unreadable != 2 || res.NoSong != 1 || res.Songs != 3 || res.NoAudio != 0 {
+	if res.Unreadable != 3 || res.NoSong != 1 || res.Songs != 3 || res.NoAudio != 0 {
 		t.Errorf("counts = %+v", res)
 	}
-	if j.Stats.Failed != 2 {
-		t.Errorf("failed = %d, want 2", j.Stats.Failed)
+	if j.Stats.Failed != 3 {
+		t.Errorf("failed = %d, want 3", j.Stats.Failed)
 	}
 }

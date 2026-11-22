@@ -231,7 +231,8 @@ func lastUndoable(runs []*journalRun) *journalRun {
 	return nil
 }
 
-// RunInfo describes one run of the journal (organize, dedupe, add or remove).
+// RunInfo describes one run of the journal (organize, dedupe, add, remove, or a Restore of
+// set-aside items).
 type RunInfo struct {
 	ID     string `json:"id"`
 	Time   string `json:"time,omitempty"` // RFC 3339, UTC; empty if the run line is lost

@@ -413,20 +413,53 @@ func artistNames(words []string) []string {
 
 // cutArtistPrefix drops the artist from the start of a title, where it is followed by a
 // dash or colon ("James Blunt-Wise Men", "Die Ärzte - Männer sind Schweine" by Die Ärzte).
-// The title must keep words after it.
+// The title must keep words after it, and they must be more than a qualifier: in a
+// self-titled song ("Iron Maiden - Live" by Iron Maiden) the artist is the song name and
+// the rest is its qualifier ("Live" == "(Live)", "2009 Remaster" is noise).
 func cutArtistPrefix(artist, title string) string {
 	aw := strings.Join(normWords(artist), " ")
 	for i, r := range title {
 		if r != '-' && r != '–' && r != '—' && r != ':' {
 			continue
 		}
-		if strings.Join(normWords(title[:i]), " ") == aw {
-			if rest := title[i+len(string(r)):]; len(normWords(rest)) > 0 {
-				return rest
-			}
+		if strings.Join(normWords(title[:i]), " ") != aw {
+			continue
 		}
+		rest := title[i+len(string(r)):]
+		rw := normWords(rest)
+		if len(rw) == 0 {
+			continue
+		}
+		if onlyYears(rw) {
+			return rest // a title that is a year ("Prince - 1999"), not a remaster year
+		}
+		if k := classifyQualifier(rw); k == qualNoise || k == qualDuet || k == qualFeat || onlyVersionWords(rw) {
+			continue // a self-titled song: the part after the dash is its qualifier
+		}
+		return rest
 	}
 	return title
+}
+
+// onlyYears reports whether every word is a year ("1999", "1979").
+func onlyYears(words []string) bool {
+	for _, w := range words {
+		if !isYear(w) {
+			return false
+		}
+	}
+	return true
+}
+
+// onlyVersionWords reports whether every word is a version word, a year or "edition"
+// ("Live", "Radio Edit", "2011 Version"). "Piano Man" or "Live and Let Die" are titles.
+func onlyVersionWords(words []string) bool {
+	for _, w := range words {
+		if !versionWords[w] && !isYear(w) && w != "edition" {
+			return false
+		}
+	}
+	return true
 }
 
 // keyInput prepares a tag value for the keys: HTML entities ("&amp;", also without the

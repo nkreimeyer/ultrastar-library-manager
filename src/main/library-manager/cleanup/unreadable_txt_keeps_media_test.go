@@ -53,7 +53,7 @@ func TestHandleFileCleanupNeverMovesMediaOfUnreadableTxt(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		handleFileCleanup(cfg, ops, dir, e)
+		handleFileCleanup(cfg, ops, dir, e, nil)
 	}
 	for _, name := range []string{"song.mp3", "clip.mp4", "cover.jpg"} {
 		if !testutil.Exists(filepath.Join(dir, name)) {

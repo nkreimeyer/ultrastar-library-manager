@@ -116,6 +116,21 @@ func TestDetect(t *testing.T) {
 			t.Errorf("took %v, the timeout did not stop the tool", time.Since(start))
 		}
 	})
+	t.Run("timeout with a child holding the pipe", func(t *testing.T) {
+		old := Timeout
+		Timeout = 100 * time.Millisecond
+		t.Cleanup(func() { Timeout = old })
+		// No exec: the sleep is a grandchild that keeps stdout open after the shell is killed.
+		testutil.FakeTools(t, map[string]string{"ffmpeg": "#!/bin/sh\nPATH=/usr/bin:/bin\nsleep 10\n"})
+		start := time.Now()
+		f := Detect(context.Background())[0]
+		if f.OK || !strings.Contains(f.Problem, "-version failed") {
+			t.Errorf("%+v, want failed", f)
+		}
+		if took := time.Since(start); took > WaitDelay+3*time.Second {
+			t.Errorf("took %v, the timeout did not stop the tool", took)
+		}
+	})
 }
 
 func TestInstallHint(t *testing.T) {

@@ -209,13 +209,18 @@ func (s *Server) useToken(token string) error {
 	return nil
 }
 
-// hostOK accepts the listening address and its "localhost" spelling.
+// hostOK accepts the listening address and its "localhost" spelling. A Host without a
+// port is port 80: browsers leave out the default port.
 func (s *Server) hostOK(host string) bool {
-	if host == s.addr {
-		return true
+	lh, lp, err := net.SplitHostPort(s.addr)
+	if err != nil {
+		return false
 	}
-	_, port, _ := net.SplitHostPort(s.addr)
-	return host == "localhost:"+port
+	h, p, err := net.SplitHostPort(host)
+	if err != nil { // no port
+		h, p = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"), "80"
+	}
+	return p == lp && (h == lh || h == "localhost")
 }
 
 // apiError is the JSON body of a failed API call.

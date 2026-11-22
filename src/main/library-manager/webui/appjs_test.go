@@ -2,7 +2,10 @@ package webui
 
 import (
 	"net/http"
+	"os"
 	"os/exec"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +69,40 @@ func TestAppJSFieldNames(t *testing.T) {
 	}
 	if run["moves"] != 1.0 || run["next"] != true || run["undone"] != false {
 		t.Errorf("run = %v", run)
+	}
+}
+
+// TestAppJSFixes runs testdata/appjs_check_fixes.js against static/app.js (needs node):
+// the phase texts, the run history of the current library, Stop's error, the done titles
+// and the check counts.
+func TestAppJSFixes(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not on PATH")
+	}
+	out, err := exec.Command(node, "testdata/appjs_check_fixes.js", "static/app.js").CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "ok" {
+		t.Errorf("app.js checks: %v\n%s", err, out)
+	}
+}
+
+// Every kind a tally item is given has a color in style.css.
+func TestTallyKindsHaveStyles(t *testing.T) {
+	js, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css, err := os.ReadFile("static/style.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := regexp.MustCompile(`tallyItem\([^,]+, "([a-z]+)"`).FindAllStringSubmatch(string(js), -1)
+	if len(kinds) < 10 {
+		t.Fatalf("found only %d tally items", len(kinds))
+	}
+	for _, k := range kinds {
+		if !regexp.MustCompile(`\.kind-` + k[1] + `\b[^{]*\{[^}]*color`).Match(css) {
+			t.Errorf("tally kind %q has no color in style.css", k[1])
+		}
 	}
 }

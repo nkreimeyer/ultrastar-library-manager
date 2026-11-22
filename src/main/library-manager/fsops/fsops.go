@@ -1,4 +1,4 @@
-// Package fsops is the single place where the sanitizer modifies the file system.
+// Package fsops is the single place where library-manager modifies the file system.
 //
 // Every mutating operation goes through an *Ops value so that dry-run mode, atomic writes,
 // cross-device moves, collision-free target names and the end-of-run statistics are
@@ -263,14 +263,14 @@ func (o *Ops) WriteReport(path string, data []byte) error {
 // not change the result of a run.
 //
 // Temp files of earlier writes that were interrupted (killed between creating and renaming
-// the temp file) and are older than StaleCacheTemp are removed first: they lie in the
+// the temp file) and are older than StaleTempAge are removed first: they lie in the
 // library root, outside every song folder, so no cleanup run would ever collect them.
 func (o *Ops) WriteCacheFile(path string, data []byte) error {
 	mode := os.FileMode(0o644)
 	if st, err := os.Stat(path); err == nil {
 		mode = st.Mode().Perm()
 	}
-	removeCacheTemps(path, time.Now().Add(-StaleCacheTemp))
+	removeCacheTemps(path, time.Now().Add(-StaleTempAge))
 	prefix, suffix := cacheTempAffixes(path)
 	tmp, err := os.CreateTemp(filepath.Dir(path), prefix+"*"+suffix)
 	if err != nil {
@@ -289,10 +289,11 @@ func (o *Ops) WriteCacheFile(path string, data []byte) error {
 	return nil
 }
 
-// StaleCacheTemp is how old a temp file of WriteCacheFile must be to count as the leftover
-// of an interrupted write: a younger one may belong to a write of another process running
-// on the same library right now.
-const StaleCacheTemp = time.Hour
+// StaleTempAge is how old a temp file of WriteCacheFile (in the library root) or of
+// WriteReport (in the output folder, see RemoveStaleReportTemps) must be to count as the
+// leftover of an interrupted write: a younger one may belong to a write another process is
+// doing right now.
+const StaleTempAge = time.Hour
 
 // cacheTempAffixes returns the prefix and suffix of the temp file names WriteCacheFile uses
 // for path: "." + name + "." … ".tmp".
@@ -330,13 +331,13 @@ func removeCacheTemps(path string, before time.Time) {
 // RemoveStaleReportTemps removes, directly in the output folder dir, the temp files that
 // WriteReport (and so WriteJSONReport and the media journal's Save) leaves behind when a
 // run is killed between creating and renaming them: "." + name + "." + <digits> + ".tmp",
-// the names os.CreateTemp gives them, last modified more than StaleCacheTemp ago (a younger
+// the names os.CreateTemp gives them, last modified more than StaleTempAge ago (a younger
 // one may belong to a report another process is writing into the same folder right now).
 // Nothing else is touched: a user's ".notes.tmp" or a temp file in a subfolder stays.
 // It runs in a dry run too, like the report writes it cleans up after. Each removal is
 // logged; errors are only logged, because a leftover temp file is clutter, not a failure.
 func RemoveStaleReportTemps(dir string) {
-	removeReportTemps(dir, time.Now().Add(-StaleCacheTemp))
+	removeReportTemps(dir, time.Now().Add(-StaleTempAge))
 }
 
 // removeReportTemps is RemoveStaleReportTemps with the cut-off time as a parameter.
@@ -752,7 +753,8 @@ func (o *Ops) Rename(src, dst string) error {
 // Replace atomically replaces dst with the processed file tmp (which must be on the same
 // file system, i.e. created next to dst). Used after ffmpeg produced a new version. tmp is
 // fsynced before the rename (ffmpeg does not fsync its output, and the replaced video is
-// not kept), and the folder after it.
+// not kept), and the folder after it. tmp gets the permissions of dst first (TempFileNear
+// keeps the temp file writable while ffmpeg writes it), so a read-only file stays read-only.
 func (o *Ops) Replace(tmp, dst string) error {
 	if o.DryRun {
 		// Nothing is touched in dry-run mode, not even tmp; callers do not create temp
@@ -764,6 +766,13 @@ func (o *Ops) Replace(tmp, dst string) error {
 	if err := syncFile(tmp); err != nil {
 		os.Remove(tmp)
 		return o.fail(fmt.Errorf("replacing %s: syncing %s: %w", dst, tmp, err))
+	}
+	// After syncFile: on Windows it opens tmp for writing, which a read-only mode forbids.
+	if st, err := os.Stat(dst); err == nil {
+		if err := os.Chmod(tmp, st.Mode().Perm()); err != nil {
+			os.Remove(tmp)
+			return o.fail(fmt.Errorf("replacing %s: setting the mode of %s: %w", dst, tmp, err))
+		}
 	}
 	if err := os.Rename(tmp, dst); err != nil {
 		os.Remove(tmp)
@@ -839,8 +848,8 @@ func (o *Ops) CopyInto(src, dstDir, relPath string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return "", o.fail(fmt.Errorf("creating %s: %w", filepath.Dir(dst), err))
 	}
-	if err := copyFile(src, dst, info); err != nil {
-		os.Remove(dst)
+	if err := copyOne(src, dst, info); err != nil {
+		// copyFile removes a partial copy itself; a dst it did not create stays.
 		return "", o.fail(fmt.Errorf("copying %s -> %s: %w", src, dst, err))
 	}
 	log.Infof("Copied %s -> %s", src, dst)
@@ -909,9 +918,11 @@ func dirIsEmpty(dir string) (bool, error) {
 	return false, err
 }
 
-// mergeInto moves every entry of the folder src into dstDir/relPath (recursively merging
-// subfolders that exist there too; files that exist get a " (2)" suffix) and then removes
-// the emptied src.
+// mergeInto moves every entry of the folder src to dstDir/relPath/<name> through MoveInto,
+// so a subfolder is merged only under MoveInto's rules (this run already moved something
+// below it, or it is empty and the target folder exists); any other existing file or
+// folder gets a " (2)" suffix. Then it removes the emptied src (in a dry run: records it
+// as planned).
 func (o *Ops) mergeInto(src, dstDir, relPath string) error {
 	entries, err := os.ReadDir(src)
 	if err != nil {
@@ -1002,9 +1013,11 @@ func (o *Ops) Remove(path string) error {
 
 // TempFileNear creates an empty temporary file next to target with the given extension
 // (ffmpeg picks the output format from the extension). The temp file gets the permissions
-// of target (0644 if target does not exist), so the processed file that replaces target
-// keeps them. ffmpeg keeps the mode of an existing output file. The caller must pass ffmpeg
-// "-y" because the file already exists, and must remove it on failure.
+// of target (0644 if target does not exist), plus write access for the owner: ffmpeg opens
+// the existing output for writing, so a read-only target's mode would make every encode
+// fail. ffmpeg keeps the mode of an existing output file, and Replace gives the result the
+// exact mode of the file it replaces. The caller must pass ffmpeg "-y" because the file
+// already exists, and must remove it on failure.
 func TempFileNear(target, ext string) (string, error) {
 	stem := strings.TrimSuffix(filepath.Base(target), filepath.Ext(target))
 	f, err := os.CreateTemp(filepath.Dir(target), "."+tempBase(stem)+".sanitizer-*"+ext)
@@ -1016,7 +1029,7 @@ func TempFileNear(target, ext string) (string, error) {
 	if st, err := os.Stat(target); err == nil {
 		mode = st.Mode().Perm()
 	}
-	if err := f.Chmod(mode); err != nil {
+	if err := f.Chmod(mode | 0o200); err != nil {
 		f.Close()
 		os.Remove(name)
 		return "", err
@@ -1097,6 +1110,9 @@ var rename = os.Rename
 // copyAcross is copyTree; tests wrap it to look at the source while it is copied.
 var copyAcross = copyTree
 
+// copyOne is copyFile, the copy of CopyInto; tests wrap it to take its target first.
+var copyOne = copyFile
+
 // move renames src to dst, falling back to copy + delete across file systems.
 func move(src, dst string) error {
 	err := rename(src, dst)
@@ -1148,8 +1164,10 @@ func moveAcross(src, dst string) error {
 	if err := os.Rename(parked, src); err != nil {
 		return fmt.Errorf("preparing the copy across file systems: moving %s back to %s: %w", parked, src, err)
 	}
-	if err := copyAcross(src, dst); err != nil {
-		os.RemoveAll(dst) // do not leave a partial copy behind; src is untouched
+	if created, err := copyAcross(src, dst); err != nil {
+		if created {
+			os.RemoveAll(dst) // do not leave a partial copy behind; src is untouched
+		}
 		return fmt.Errorf("copy across file systems: %w", err)
 	}
 	if err := os.Rename(src, parked); err != nil {
@@ -1184,14 +1202,17 @@ func parkName(path string) (string, error) {
 }
 
 // copyTree copies a file or directory tree, preserving permissions and modification times
-// and verifying sizes.
-func copyTree(src, dst string) error {
+// and verifying sizes. The root dst is created exclusively: if it exists (something else
+// created it after the caller checked that it was free), the copy fails before anything is
+// written. created reports whether this call created dst, so the caller removes only a
+// partial copy of its own after a failure, never a target someone else put there.
+func copyTree(src, dst string) (created bool, err error) {
 	type dirMeta struct {
 		path string
 		info os.FileInfo
 	}
 	var dirs []dirMeta
-	err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -1200,42 +1221,61 @@ func copyTree(src, dst string) error {
 			return err
 		}
 		target := filepath.Join(dst, rel)
+		root := rel == "."
 		switch {
 		case info.IsDir():
 			// Keep the directory writable while its contents are copied; the final mode
 			// and mtime are applied afterwards.
 			dirs = append(dirs, dirMeta{target, info})
+			if root {
+				if err := os.Mkdir(target, info.Mode().Perm()|0o700); err != nil {
+					return err
+				}
+				created = true
+				return nil
+			}
+			// Below a root this call created.
 			return os.MkdirAll(target, info.Mode().Perm()|0o700)
 		case info.Mode().IsRegular():
-			return copyFile(path, target, info)
+			// copyFile opens target exclusively and removes it again if it fails.
+			err := copyFile(path, target, info)
+			created = created || (root && err == nil)
+			return err
 		case info.Mode()&os.ModeSymlink != 0:
 			link, err := os.Readlink(path)
 			if err != nil {
 				return err
 			}
-			return os.Symlink(link, target)
+			if err := os.Symlink(link, target); err != nil {
+				return err
+			}
+			created = created || root
+			return nil
 		default:
 			return fmt.Errorf("unsupported file type: %s", path)
 		}
 	})
 	if err != nil {
-		return err
+		return created, err
 	}
 	// Deepest directories first, so setting a parent's mtime is not undone by later
 	// changes inside it.
 	for i := len(dirs) - 1; i >= 0; i-- {
 		d := dirs[i]
 		if err := os.Chmod(d.path, d.info.Mode().Perm()); err != nil {
-			return err
+			return created, err
 		}
 		if err := os.Chtimes(d.path, d.info.ModTime(), d.info.ModTime()); err != nil {
-			return err
+			return created, err
 		}
 	}
-	return nil
+	return created, nil
 }
 
-func copyFile(src, dst string, info os.FileInfo) error {
+// copyFile copies the regular file src to dst, which it creates exclusively (it fails if
+// dst exists). If the copy fails after dst was created, dst is removed again; a dst this
+// call did not create is never touched.
+func copyFile(src, dst string, info os.FileInfo) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -1245,6 +1285,11 @@ func copyFile(src, dst string, info os.FileInfo) error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err != nil {
+			os.Remove(dst) // a partial copy of this call
+		}
+	}()
 	n, err := io.Copy(out, in)
 	if err != nil {
 		out.Close()

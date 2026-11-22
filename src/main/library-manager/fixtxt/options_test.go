@@ -331,7 +331,7 @@ func TestPreferTaggedAudioKeepsStems(t *testing.T) {
 	if got.name != "take1.mp3" || got.isMainAudio("vocals.mp3") || !got.isMainAudio("take2.mp3") {
 		t.Errorf("preferTaggedAudio = %+v; want take1.mp3 with vocals.mp3 still a stem", got)
 	}
-	if v, ok, _ := resolveFileTag(dir, "vocals.mp3", got, got.isMainAudio); !ok || v != "take1.mp3" {
+	if v, ok, _ := resolveFileTag(dir, "vocals.mp3", got, got.isMainAudio, nil); !ok || v != "take1.mp3" {
 		t.Errorf("resolveFileTag(#MP3:vocals.mp3) = %q, %v; want take1.mp3", v, ok)
 	}
 }

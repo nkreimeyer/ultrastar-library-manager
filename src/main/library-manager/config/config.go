@@ -112,31 +112,21 @@ func resolveExisting(p string) (string, error) {
 	}
 }
 
-// OutsideSongDir returns p made absolute, with the symlinks of its existing part resolved
-// (as for the output dir), and refuses a path inside the song dir: the tool's own files
-// there (a cache) would change the library, also in dry runs.
-func (c Config) OutsideSongDir(p string) (string, error) {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", fmt.Errorf("invalid path %q: %w", p, err)
-	}
-	if abs, err = resolveExisting(abs); err != nil {
-		return "", fmt.Errorf("resolving %q: %w", p, err)
-	}
-	if IsWithin(abs, c.SongDir) {
-		return "", fmt.Errorf("%q must not be inside the song dir %q", abs, c.SongDir)
-	}
-	return abs, nil
-}
-
 // PrepareOutDir creates the output dir and its OutputMarker file. This happens in dry-run
 // mode too, because reports are written there.
 func (c Config) PrepareOutDir() error {
+	// Checked before MkdirAll and the marker write: only a folder that already was an
+	// output folder can hold temp files of ours. A new folder holds none, and a foreign
+	// folder given as -o may hold another program's ".<name>.<digits>.tmp" files.
+	// When in doubt (an error), nothing is removed.
+	ours, err := IsOutputDir(c.OutDir)
 	if err := os.MkdirAll(c.OutDir, 0o755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
-	// Remove temp files of reports/the journal left behind by an interrupted run.
-	fsops.RemoveStaleReportTemps(c.OutDir)
+	if err == nil && ours {
+		// Remove temp files of reports and the media journal left behind by an interrupted run.
+		fsops.RemoveStaleReportTemps(c.OutDir)
+	}
 	marker := filepath.Join(c.OutDir, OutputMarker)
 	if err := os.WriteFile(marker, []byte("Output folder of library-manager. Song folder discovery skips folders containing this file.\n"), 0o644); err != nil {
 		return fmt.Errorf("creating %s: %w", marker, err)

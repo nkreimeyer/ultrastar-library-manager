@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -131,6 +132,71 @@ func TestRemoveApplyPlanChanged(t *testing.T) {
 	s.do("POST", "/api/remove/apply", map[string]any{"analysis": id}, &j)
 	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 3 {
 		t.Fatalf("second apply: %+v", j)
+	}
+}
+
+// The apply reads the songs twice (the plan comparison, then the run): the job's progress
+// starts again with the run's reading instead of staying at "n of n".
+func TestRemoveApplyProgressStartsAgain(t *testing.T) {
+	s := newTestServer(t)
+	lib, out := removeLibrary(t)
+	var j Job
+	s.do("POST", "/api/remove/analyse", removeRequest{Library: lib, Out: out, Patterns: "ABBA"}, &j)
+	j = s.wait()
+	id := j.Result.(map[string]any)["analysis"].(string)
+
+	var seen []int
+	removeProgressHook = func(phase string, _ int) {
+		if phase == organize.PhaseInspect {
+			s.srv.jobs.mu.Lock()
+			seen = append(seen, s.srv.jobs.cur.Done)
+			s.srv.jobs.mu.Unlock()
+		}
+	}
+	t.Cleanup(func() { removeProgressHook = nil })
+	s.do("POST", "/api/remove/apply", map[string]any{"analysis": id}, &j)
+	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 2 {
+		t.Fatalf("apply: %+v", j)
+	}
+	if len(seen) != 4 || seen[0] != 0 || seen[3] != 3 || !slices.IsSorted(seen) {
+		t.Errorf("job progress during the run's reading = %v, want 0 up to 3", seen)
+	}
+}
+
+// A remove stopped before anything moved (while the run reads the songs) can be applied
+// again: nothing of the reviewed plan was carried out.
+func TestRemoveApplyStoppedBeforeMoves(t *testing.T) {
+	s := newTestServer(t)
+	lib, out := removeLibrary(t)
+	before := testutil.Tree(t, lib)
+	var j Job
+	s.do("POST", "/api/remove/analyse", removeRequest{Library: lib, Out: out, Patterns: "ABBA"}, &j)
+	j = s.wait()
+	id := j.Result.(map[string]any)["analysis"].(string)
+
+	removeProgressHook = func(phase string, done int) {
+		if phase == organize.PhaseInspect && done == 1 {
+			s.srv.jobs.cancelRunning()
+		}
+	}
+	s.do("POST", "/api/remove/apply", map[string]any{"analysis": id}, &j)
+	j = s.wait()
+	removeProgressHook = nil
+	if j.State != stateCancelled || j.Stats.Moved != 0 {
+		t.Fatalf("stopped apply: %+v", j)
+	}
+	if !maps.Equal(testutil.Tree(t, lib), before) {
+		t.Fatal("the stopped apply changed the library")
+	}
+	if got := s.do("POST", "/api/remove/apply", map[string]any{"analysis": id}, &j); got != http.StatusAccepted {
+		t.Fatalf("second apply: %d", got)
+	}
+	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 2 {
+		t.Fatalf("second apply: %+v", j)
+	}
+	var e apiError
+	if got := s.do("POST", "/api/remove/apply", map[string]any{"analysis": id}, &e); got != http.StatusConflict {
+		t.Errorf("third apply: %d", got)
 	}
 }
 

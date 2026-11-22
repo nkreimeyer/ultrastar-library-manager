@@ -20,7 +20,8 @@ nor tested. What is here:
 To bring it back, move the files to their old places, put the `repair` dispatch and usage
 line back into main.go, put the `repair` field and the `/api/repair/*` routes back into
 webui/server.go, put the JS and CSS fragments back, and restore `utils.KnownLanguageCode`
-(git history of the commit that archived it). `utils.LanguageCodes` stayed in the module,
+(git history of the commit that archived it) and `config.Config.OutsideSongDir` (used by
+`repairtxt.LyricsCacheDir`; removed later, restore it from the commit that deleted it). `utils.LanguageCodes` stayed in the module,
 because `utils.DecodeTxt` uses it.
 
 ## Architecture notes (from CLAUDE.md)

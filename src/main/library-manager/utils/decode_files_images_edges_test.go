@@ -38,7 +38,20 @@ func TestDecodeTxtEdgeCases(t *testing.T) {
 		{"bom before the tag", "\xef\xbb\xbf#ENCODING:CP1251\n#TITLE:\xca\xe0\n", "#ENCODING:CP1251\n#TITLE:Ка\n", "CP1251", false},
 		{"line without colon before the tag", "#NOCOLON\n\n#ENCODING:CP1251\n#TITLE:\xca\xe0\n", "#NOCOLON\n\n#ENCODING:CP1251\n#TITLE:Ка\n", "CP1251", false},
 		{"tag after the first note line is ignored", ": 0 1 2 x\n#ENCODING:CP1251\n\xca\xe0\n", ": 0 1 2 x\n#ENCODING:CP1251\nÊà\n", EncCP1252, false},
-		{"only the first tag counts", "#ENCODING:CP1251\n#ENCODING:CP1250\n#TITLE:\xca\xe0\n", "#ENCODING:CP1251\n#ENCODING:CP1250\n#TITLE:Ка\n", "CP1251", false},
+		// A repeated tag resolves to its last occurrence, as in HeaderTags and UltraStar.
+		{"the last tag counts", "#ENCODING:CP1251\n#ENCODING:CP1250\n#TITLE:\xca\xe0\n", "#ENCODING:CP1251\n#ENCODING:CP1250\n#TITLE:Ęŕ\n", EncCP1250, false},
+		{"a codec after utf8 counts", "#ENCODING:UTF8\n#ENCODING:CP1251\n#TITLE:\xca\xe0\n", "#ENCODING:UTF8\n#ENCODING:CP1251\n#TITLE:Ка\n", "CP1251", false},
+		{"utf8 after a codec resets it", "#ENCODING:CP1251\n#ENCODING:UTF8\n#TITLE:\xca\xe0\n", "#ENCODING:CP1251\n#ENCODING:UTF8\n#TITLE:Êà\n", EncCP1252, false},
+		// A literal U+FFFD (UTF-8 EF BF BD) in a single-byte file is damage that a rewrite
+		// would turn into "ï¿½".
+		{"replacement character in cp1252 file", "#TITLE:M\xe4dchen\nF\xef\xbf\xbdr\n", "#TITLE:Mädchen\nFï¿½r\n", EncCP1252, true},
+		{"replacement character under a cp1252 tag", "#ENCODING:CP1252\n#TITLE:M\xe4dchen\nF\xef\xbf\xbdr\n", "#ENCODING:CP1252\n#TITLE:Mädchen\nFï¿½r\n", EncCP1252, true},
+		{"replacement character under a cp1251 tag", "#ENCODING:CP1251\n#TITLE:\xca\xe0\nF\xef\xbf\xbdr\n", "#ENCODING:CP1251\n#TITLE:Ка\nFпїЅr\n", "CP1251", true},
+		// Accidental UTF-8 follows #LANGUAGE and the CP1250 artefact check like step 3.
+		{"accidental utf8 in a cp1250 language", "#LANGUAGE:Romanian\n#TITLE:A \xde\xba B\n", "#LANGUAGE:Romanian\n#TITLE:A Ţş B\n", EncCP1250, false},
+		{"accidental utf8 that looks like cp1250", "#TITLE:x\xdc\xb9x\n", "#TITLE:xÜ¹x\n", EncCP1252, true},
+		{"accidental utf8 stays cp1252", "#TITLE:Stra\xdf\x85\n", "#TITLE:Straß…\n", EncCP1252, false},
+		{"replacement character in accidental utf8", "#TITLE:Stra\xdf\x85\nF\xef\xbf\xbdr\n", "#TITLE:Straß…\nFï¿½r\n", EncCP1252, true},
 		// An unknown codec is a Problem even for valid UTF-8.
 		{"unknown codec on valid utf8", "#ENCODING:EBCDIC\n#TITLE:Mädchen\n", "#ENCODING:EBCDIC\n#TITLE:MÃ¤dchen\n", EncLatin1, true},
 		// Valid UTF-8 with accidental and real sequences, but no Syriac/Thaana/NKo.
@@ -338,6 +351,41 @@ func TestGetAllSongFoldersEdges(t *testing.T) {
 		got, err := GetAllSongFolders(nil, lib)
 		if err != nil || len(got) != 0 {
 			t.Errorf("GetAllSongFolders = %q, %v; want no songs (the output folder must not make Cat a broken song)", got, err)
+		}
+	})
+	// Symlinks to folders are not followed, and a category holding only such links is no
+	// broken song (cleanup would move it to invalid/).
+	t.Run("category with only symlinked song folders", func(t *testing.T) {
+		root := t.TempDir()
+		lib := filepath.Join(root, "lib")
+		testutil.WriteFile(t, filepath.Join(root, "store", "A - B", "song.txt"), songTxt)
+		testutil.WriteFile(t, filepath.Join(lib, "Real - Song", "song.txt"), songTxt)
+		if err := os.MkdirAll(filepath.Join(lib, "Favourites"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(root, "store", "A - B"), filepath.Join(lib, "Favourites", "A - B")); err != nil {
+			t.Fatal(err)
+		}
+		// A top-level link is skipped too.
+		if err := os.Symlink(filepath.Join(root, "store", "A - B"), filepath.Join(lib, "Linked")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := GetAllSongFolders(nil, lib)
+		if want := []string{filepath.Join(lib, "Real - Song")}; err != nil || !slices.Equal(got, want) {
+			t.Errorf("GetAllSongFolders = %q, %v; want %q", got, err, want)
+		}
+	})
+	t.Run("symlinked folder next to a broken song's media", func(t *testing.T) {
+		root := t.TempDir()
+		lib := filepath.Join(root, "lib")
+		testutil.WriteFile(t, filepath.Join(root, "store", "A - B", "song.txt"), songTxt)
+		testutil.WriteFile(t, filepath.Join(lib, "Cat", "Broken", "a.mp3"), "x")
+		if err := os.Symlink(filepath.Join(root, "store", "A - B"), filepath.Join(lib, "Cat", "A - B")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := GetAllSongFolders(nil, lib)
+		if want := []string{filepath.Join(lib, "Cat", "Broken")}; err != nil || !slices.Equal(got, want) {
+			t.Errorf("GetAllSongFolders = %q, %v; want %q", got, err, want)
 		}
 	})
 }

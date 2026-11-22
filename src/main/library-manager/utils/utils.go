@@ -1,4 +1,4 @@
-// Package utils contains helpers shared by the sanitizer modules: song txt decoding and
+// Package utils contains helpers shared by the modules and subcommands: song txt decoding and
 // lookup (txt.go), song folder discovery (folders.go), image headers and cover/background
 // choice (image.go) and media file helpers (this file).
 package utils

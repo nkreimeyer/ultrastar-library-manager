@@ -316,6 +316,47 @@ func TestRacyRule(t *testing.T) {
 	}
 }
 
+// The age of the mtime counts when Lookup took the Stamp, not when Store runs: a same-size
+// write in the same timestamp tick after the stat (FAT: 2 s) is invisible to the re-stat,
+// so a result of a scan that merely took longer than RacyWindow must not be stored.
+func TestRacyRuleAtLookupTime(t *testing.T) {
+	root, clk := t.TempDir(), newClock()
+	f := filepath.Join(root, "s", "song.mp3")
+	writeOld(t, clk, f, "audio")
+	tick := clk.now().Truncate(RacyWindow)
+	setMtime(t, f, tick)
+	clk.mu.Lock()
+	clk.t = tick.Add(100 * time.Millisecond)
+	clk.mu.Unlock()
+	c := openTest(t, root, clk)
+	var r result
+	st, _ := c.Lookup(f, "test/1", &r)
+	// Rewritten in the same tick: same size, same mtime.
+	if err := os.WriteFile(f, []byte("AUDIO"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setMtime(t, f, tick)
+	clk.mu.Lock()
+	clk.t = tick.Add(2300 * time.Millisecond) // the scan took 2.2 s
+	clk.mu.Unlock()
+	c.Store(st, "test/1", result{N: 1})
+	if n := c.Stats().Stored; n != 0 {
+		t.Errorf("stored %d results of a file stat'ed within RacyWindow of its mtime, want 0", n)
+	}
+}
+
+// A Stamp that does not come from Lookup has no time and is never stored.
+func TestStoreRefusesStampWithoutTime(t *testing.T) {
+	root, clk := t.TempDir(), newClock()
+	f := filepath.Join(root, "s", "song.mp3")
+	writeOld(t, clk, f, "audio")
+	c := openTest(t, root, clk)
+	c.Store(stampOf(f), "test/1", result{N: 1})
+	if n := c.Stats().Stored; n != 0 {
+		t.Errorf("stored %d, want 0", n)
+	}
+}
+
 func TestStoreRefusedWhenFileChangedDuringScan(t *testing.T) {
 	root, clk := t.TempDir(), newClock()
 	f := filepath.Join(root, "s", "song.mp3")
@@ -744,7 +785,9 @@ func TestPruneDropsCaseAlias(t *testing.T) {
 	lower, upper := caseAlias(t, clk, root)
 	c := openTest(t, root, clk)
 	for _, p := range []string{lower, upper} {
-		c.Store(stampOf(p), "test/1", result{N: 1})
+		st := stampOf(p)
+		st.at = clk.now()
+		c.Store(st, "test/1", result{N: 1})
 	}
 	save(t, c)
 	c2 := openTest(t, root, clk)

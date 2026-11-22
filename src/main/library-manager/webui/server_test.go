@@ -434,3 +434,34 @@ func writeSong(t *testing.T, dir, artist, title string, extra map[string]string)
 		}
 	}
 }
+
+// On port 80 a browser leaves the port out of the Host header: the UI still answers, and
+// other hosts and ports are still refused.
+func TestHostOK(t *testing.T) {
+	tests := []struct {
+		addr, host string
+		want       bool
+	}{
+		{"127.0.0.1:8080", "127.0.0.1:8080", true},
+		{"127.0.0.1:8080", "localhost:8080", true},
+		{"127.0.0.1:8080", "127.0.0.1", false},
+		{"127.0.0.1:8080", "localhost", false},
+		{"127.0.0.1:8080", "127.0.0.1:8081", false},
+		{"127.0.0.1:8080", "evil.example:8080", false},
+		{"127.0.0.1:80", "127.0.0.1", true},
+		{"127.0.0.1:80", "localhost", true},
+		{"127.0.0.1:80", "127.0.0.1:80", true},
+		{"127.0.0.1:80", "127.0.0.1:8080", false},
+		{"127.0.0.1:80", "evil.example", false},
+		{"127.0.0.1:80", "", false},
+		{"[::1]:80", "[::1]", true},
+		{"[::1]:80", "[::1]:80", true},
+		{"[::1]:80", "127.0.0.1", false},
+	}
+	for _, tt := range tests {
+		s := &Server{addr: tt.addr}
+		if got := s.hostOK(tt.host); got != tt.want {
+			t.Errorf("%s: hostOK(%q) = %v, want %v", tt.addr, tt.host, got, tt.want)
+		}
+	}
+}

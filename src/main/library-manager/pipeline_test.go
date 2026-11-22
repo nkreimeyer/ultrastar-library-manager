@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -444,5 +445,56 @@ func TestPipelineKeepsAudioOfWrongKindTags(t *testing.T) {
 	}
 	if txt := testutil.ReadFile(t, filepath.Join(lib, "B - V", "song.txt")); !strings.Contains(txt, "#MP3:full.mp3\n") {
 		t.Errorf("B - V/song.txt = %q, want #MP3:full.mp3", txt)
+	}
+}
+
+// A stale #MP3 that fixtxt cannot fix (two audio candidates, none preferred) must not make
+// cleanup move every audio file away; neither in a real nor in a dry run. With -t=false
+// the same holds for a misspelled #MP3 next to the only audio file.
+func TestStaleAudioTagKeepsAudio(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	tests := []struct {
+		name  string
+		files map[string]string
+		args  []string
+		want  []string // files left in the song folder
+	}{
+		{"ambiguous audio", map[string]string{
+			"song.txt":  "#ARTIST:Artist\n#TITLE:Song\n#MP3:old.mp3\n#BPM:300\n: 0 1 0 la\nE\n",
+			"take1.mp3": "a", "take2.mp3": "b",
+		}, nil, []string{"song.txt", "take1.mp3", "take2.mp3"}},
+		{"misspelled #MP3 with -t=false", map[string]string{
+			"song.txt": "#ARTIST:Artist\n#TITLE:Song\n#MP3:Sogn.mp3\n#BPM:300\n: 0 1 0 la\nE\n",
+			"song.mp3": "a", "junk.nfo": "x",
+		}, []string{"-t=false"}, []string{"song.mp3", "song.txt"}},
+	}
+	for _, tt := range tests {
+		for _, dry := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s dry=%v", tt.name, dry), func(t *testing.T) {
+				lib, out := t.TempDir(), t.TempDir()
+				song := filepath.Join(lib, "Artist - Song")
+				testutil.WriteFiles(t, song, tt.files)
+				before := fileNames(t, song)
+				args := append([]string{"-s", lib, "-o", out}, tt.args...)
+				if dry {
+					args = append(args, "-n")
+				}
+				if code := runWithArgs(t, args...); code != exitOK {
+					t.Errorf("exit code %d", code)
+				}
+				want := tt.want
+				if dry {
+					want = before
+				}
+				if got := fileNames(t, song); !reflect.DeepEqual(got, want) {
+					t.Errorf("song folder = %q, want %q", got, want)
+				}
+				for _, n := range []string{"take1.mp3", "take2.mp3", "song.mp3"} {
+					if _, err := os.Stat(filepath.Join(out, "extra-files", "Artist - Song", n)); err == nil {
+						t.Errorf("%s moved to extra-files", n)
+					}
+				}
+			})
+		}
 	}
 }

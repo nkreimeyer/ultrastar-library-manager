@@ -17,10 +17,12 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               os.Args[1] == "organize"/"dedupe"/"add"/"remove"/"ui" dispatches to the subcommand;
                               no arguments at all starts the UI (double-click); main.version is set with -ldflags -X
   ui_cmd.go                   the ui subcommand: -addr (loopback only), -no-browser, -keep-running, -v; opens the browser, stops on a
-                              signal or when the last browser page is gone (browserGrace, webui.Server.WatchClients)
+                              signal or when the last browser page is gone (browserGrace, webui.Server.WatchClients); the browser
+                              opener starts its own session (browser_unix.go: Setsid); closeServer is a test seam
   terminal.go                 no-argument start outside a terminal: opens a terminal window that runs the program again
                               (needsTerminal, terminalCommand; `env LIBRARY_MANAGER_IN_TERMINAL=1` marks the child;
-                              never on Windows; tests stub launchTerminal in ui_cmd_test's init)
+                              never on Windows; tests stub launchTerminal in ui_cmd_test's init; startLauncher: a launcher that
+                              fails within launcherGrace (2 s) is logged and the UI starts in this process)
   organize_cmd.go             the organize, dedupe and add subcommands (organize.Mode): own FlagSet, -s tier lists, -undo, validation
   remove_cmd.go               the remove subcommand: -artist/-song/-from patterns, -undo
   cmd_common.go               the steps all commands share: usageError/leftoverError, setLogLevel (-v), subcommand
@@ -28,13 +30,18 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               config or undo config, organize.Undo or PrepareOutDir + run, "<name> failed", summary line)
   main_test.go                flag validation (-deep/-move-broken need -k), module order, organize usage
   pipeline_test.go            fixtxt → cleanup (→ check) integration tests (real run, dry-run = real-run plan, idempotence)
+  other *_test.go             CLI runs and exit codes (cli_test, cmd_common_test, organize_cmd_test, remove_cmd_test), dry-run
+                              cache notices and add help (cli_notices_test), the binary with a version set by ldflags
+                              (binary_test), the media cache (cache_cli_test), tool detection (tools_cli_test), terminal
+                              launch (terminal_test), the UI command, its server and its signals (ui_cmd_test,
+                              ui_signal_unix_test)
   config/                     Config{SongDir, OutDir, DryRun}: path validation, output layout, marker file;
                               organize.go: OrganizeConfig{Sources (tier, label), Library, OutDir}; NewDedupe, NewAdd
   fsops/                      the ONLY place that modifies files: dry-run (planned writes/moves visible via ReadFile), atomic writes, moves, stats;
                               planned.go: Stats.Sub, PlannedWrites/PlannedMoves (a dry run's list, for the UI review);
                               MoveTo (exact target, ordered dry-run moves), AppendJournal, RemoveEmptyDir (undo),
-                              RemoveStaleReportTemps (PrepareOutDir: own .<name>.<digits>.tmp report/journal temps in the
-                              out dir, older than StaleCacheTemp, logged),
+                              RemoveStaleReportTemps (PrepareOutDir, only in a folder that already holds the output marker: own
+                              .<name>.<digits>.tmp report/journal temps in the out dir, older than StaleTempAge, logged),
                               RemoveEmptyDirWithCache (undo of a created library root),
                               WriteJSONReport/MarshalReport (the one JSON report encoding), WriteCacheFile (the media
                               cache: atomic, also in a dry run, not in Stats, sweeps stale own temps), FailUnreadable (the
@@ -78,14 +85,17 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               output.go: OutputCap/CombinedOutput (head 16 KiB + tail 48 KiB of ffmpeg output);
                               failure.go: FileFailure/SystemError (may a tool result be cached? paths given are cut
                               out, indented lines skipped), ReadError (is a result of an exit 0 incomplete? read/I/O
-                              messages only), UnreadableFile (a probe error about the file itself)
+                              messages only), UnreadableFile (a probe error about the file itself);
+                              detach.go: SetDetachChildren/Detach (while ui runs, ffmpeg/ffprobe start in a process group of
+                              their own: Setpgid on unix, CREATE_NEW_PROCESS_GROUP on Windows; every exec site calls Detach)
   webui/                      browser UI: presence.go (open pages = open /api/job/events streams; WatchClients), server.go (single-use token -> session cookie lm_session_<port>, CheckAddr,
                               Host/Origin/JSON checks, CSP, routes),
                               jobs.go (one job at a time, logrus hook, SSE /api/job/events), system.go (tools, folder lister),
                               organize.go (validate/analyse/exclude/apply/history/undo),
                               check.go (the Check task: a dry-run check.Run shown as a report; "set aside broken songs" re-runs it
-                              with MoveBroken, not journaled so not covered by undo; the analysis counts as applied
-                              only once the apply job changed something or finished: a stop before any change can be retried),
+                              with MoveBroken, not journaled so not covered by undo; every apply (check, organize/dedupe/add/tidy,
+                              remove) counts as applied only once its job changed something or finished (claimApply at the
+                              start, markApplied at the end): a stop or failure before any change can be retried),
                               overview.go (the overview job: songs, size, video/picture counts, songs per top folder, what is set aside; names and sizes, and whether a song txt is there;
                               what could not be read is counted as unreadable, never as a folder without a song txt),
                               originals.go (size of <out>/originals/ and its deletion: the one place the UI deletes files that
@@ -93,7 +103,9 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               (`config.IsOutputDir`), library never touched),
                               reports.go (the report viewer: the .txt/.json files of the output folder, read-only, cut off at 2 MiB; journals excluded),
                               setaside.go (the restore browser: list/restore over organize.ListSetAside/Restore; the origin is the
-                              journal's src, else the mirrored path for extra-files/ and invalid/; a restore is one journal run, so undo covers it; only items of
+                              journal's src, else the mirrored path for extra-files/ and invalid/ (in invalid/, a top folder that is no
+                              folder of the library is dropped if it is the library's label and gives no origin if it is a
+                              known source label, originLabels); a restore is one journal run, so undo covers it; only items of
                               the listing are restored; an origin outside the library whose folder is gone is Blocked;
                               a request's dryRun only plans: ops follows cfg.DryRun),
                               remove.go (the Remove task: validate/analyse/apply over organize.Remove, patterns as text; apply
@@ -101,7 +113,10 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               organize.RemoveOptions.Keep); undo is the shared organize undo;
                               the job's Ctx and Progress reach RemoveOptions, a stop ends the job cancelled),
                               tidy.go (the tidy-up options and stepRun: the steps of one job on one ops),
-                              static/ (index.html, style.css, app.js: embedded, no build step)
+                              static/ (index.html, style.css, app.js, icon.svg: embedded, no build step);
+                              appjs_test.go: TestAppJS and TestAppJSFixes run testdata/appjs_check.js and appjs_check_fixes.js
+                              with node (skipped without node: app.js in a vm with a fake DOM and fetch), TestAppJSFieldNames
+                              pins the JSON names app.js reads, TestTallyKindsHaveStyles a .kind-<k> color per tally kind
   organize/                   organize/dedupe/add: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey, StripCopySuffix),
                               content.go (ContentHash, union-find joining of groups by content),
                               remove.go (Pattern, ParsePatternFile, planRemove (pure), Remove, remove_plan.json/.txt),
@@ -128,7 +143,9 @@ and `go test -race` (with ffmpeg); only tags `v*` also cross-build linux/windows
 release (both with the tag's `CHANGELOG.md` section as notes, GitHub also with `SHA256SUMS`; untagged runs do
 not build). Both release jobs are idempotent: a re-run or a re-pushed tag updates the
 existing release (GitLab through the Releases API with the job token, not the `release:` keyword,
-which fails if the release exists; GitHub with `gh release upload --clobber`). The GitLab
+which fails if the release exists; its binaries go to the generic package registry,
+`packages/generic/library-manager/<version>/`, and the release links point there, so they do not expire
+with the job artifacts; GitHub with `gh release upload --clobber`). The GitLab
 jobs carry the runner tag `docker` (they need the Docker executor: `image:` is ignored by a shell runner). Keep the
 module free of cgo so this keeps working.
 Runtime needs `ffmpeg` ≥ 5.1 and `ffprobe` on PATH for `-m` and `-a` (enforced: `mediatools.Require`
@@ -159,7 +176,7 @@ source of the first tier, library keepers stay, new keepers go to their bucket),
 go to `<out>/removed/<rel>`; artist patterns match a subset of the collaboration names (`artistNames`), song
 patterns the SongKey with or without the duet marker; missing tags come from `utils.TagsFromFolderName`;
 encoding problems stay), and `<cmd> -undo [-o <out> | -l <library>] [-n]`
-(one journal for all four). Each `-s` is one priority tier (folders in
+(one journal for all four and the UI's restore of set-aside items). Each `-s` is one priority tier (folders in
 it split with `filepath.SplitList`); `-o` defaults to `organize-output/` next to the library.
 Same exit codes and leftover-argument rule.
 
@@ -242,6 +259,8 @@ Same exit codes and leftover-argument rule.
     its parent is never returned as a broken song.
   - Symlinks to regular txt files are song txts (`ListTxtFiles`/`FindSongTxt` and discovery
     agree). fixtxt never rewrites a symlinked txt; it lists it in `missing_files.txt` instead.
+  - Symlinks to folders are not followed (no loops, no songs from outside the library); they
+    are logged and count as content, so their parent is never returned as a broken song.
 - Header tags (`utils.HeaderTags`, `songtxt.Parse`, fixtxt's `headerLen`,
   `ReplaceFileReference`, the `#ENCODING` hint) are read up to the first body line
   (`songtxt.IsBodyLine`: note, `-`, `B`, `P`, `E`); junk lines inside the header are
@@ -256,14 +275,22 @@ Same exit codes and leftover-argument rule.
   A non-UTF-8 txt without `#ENCODING` is read as CP1250 when `utils.LanguageCodes` of its
   `#LANGUAGE` names pl, cs, sk, hu, hr, sl, ro or bs (`cp1250Languages`); the value is tried
   as it is (if valid UTF-8) and decoded as CP1250, and is split on `/ , & + ; | ( )` and
-  blanks (`Polish & English`, `Polski (PL)` count). Names that only start like one of those
+  blanks (`Polish & English`, `Polski (PL)` count). A valid UTF-8 txt that is UTF-8 only by
+  accident uses the same codec choice (`fallbackCodec`), and the CP1250 artefact check
+  (`looksLikeCP1250`) applies to every untagged CP1252 reading. A literal U+FFFD (EF BF BD) in a
+  txt read with a single-byte codec is a Problem (`keepReplacementChars`: a rewrite would turn it
+  into "ï¿½"). A repeated `#ENCODING` resolves to its last occurrence. Names that only start like one of those
   languages have stop entries and keep CP1252 (Romani, Romansh, Romaji, Roma, Polka, Polari,
   Polynesian, Hunsrik, Rumba, …).
 - fsops: a move across file systems (`isCrossDevice`: EXDEV, on Windows also
   ERROR_NOT_SAME_DEVICE; GOOS is a parameter so the Windows rule is tested on Linux) first
   checks that src can be renamed (fails cleanly if
   not), copies, then parks src under a hidden `.fsops-move-<pid>-<n>` name and deletes it.
-  If that delete fails, the move still counts as done and the leftover is logged.
+  If that delete fails, the move still counts as done and the leftover is logged. The copy
+  creates its root exclusively (a target someone else created meanwhile fails the move
+  untouched), and a failed copy or `CopyInto` removes only what it created. `TempFileNear` keeps
+  the temp file owner-writable (ffmpeg `-y` must open it); `Replace` gives it dst's mode before
+  the rename (fixvideos' extension-changing `Rename` does not: its result is owner-writable).
   `Replace` and `Rename` fsync the (ffmpeg-written) file before the rename and keep the
   original if that fails; the folder fsync after it is best effort (none on Windows).
   `MoveTo` fails when src or dst cannot be checked (`taken`'s error; a dst that may exist is
@@ -306,8 +333,9 @@ Same exit codes and leftover-argument rule.
   `MakePlan` (pure, table-tested): encoding problems and unreadable folders stay, broken songs
   go to invalid/, working songs are grouped by `SongKey` (duet flag from `songtxt.IsDuet`, notes of two singers, or a `[DUET]`
   title), groups sharing a `contentKey` (`ContentHash` + duet flag) are joined by union-find
-  (group key = smallest SongKey; a loser whose SongKey differs from the keeper's gets
-  `joinedByContent` appended to its reason; a broken song without a SongKey match finds its
+  (group key = smallest SongKey; a loser whose SongKey differs from the keeper's gets how its
+  key was joined appended to its reason (`joinedByContent`/`joinedBySimilar`/`joinedByUser`, the
+  first mechanism wins; a same-tag copy of a joined song gets the matching `joinedViaGroup*`); a broken song without a SongKey match finds its
   replacement by content), then pairs from `findSimilar` that pass `similarJoin` are joined
   too (`joinedBySimilar`; the other pairs become `Plan.Similar` review entries with
   evidence), and the keeper is chosen by `chooseKeeper`: the criteria (not a `_dupl<n>` copy, tier
@@ -322,12 +350,15 @@ Same exit codes and leftover-argument rule.
   …). Keys ignore spaces (words joined without them), treat a collaboration as a sorted
   set (`artistKey`: `&`/`and`/`+`/`x`/`with`/`vs`, not at the start or end of the name),
   drop a trailing `(The)`/`, The`, a title prefix equal to the artist before a dash
-  (`cutArtistPrefix`) and HTML entities. Because the key ignores every non-letter, two
+  (`cutArtistPrefix`; unless the rest is only a qualifier: noise, duet, feat or version words,
+  as in the self-titled `Iron Maiden - Live`; a rest of only years, `Prince - 1999`, is cut)
+  and HTML entities. Because the key ignores every non-letter, two
   different songs share a folder name only by truncation or by a dash split differently
   between artist and title (`A - Rock` / `Roll` vs `A` / `Rock - Roll`, used by the
   collision tests). `LooseKey` groups for "possible duplicates" are split by the duet flag: a duet and a
   solo version are both kept (the duet as `… [DUET]`) and never listed together. Target `<Bucket>/<FolderName>`; NameKey collisions of different songs get ` (2)`,
-  ` (3)` from one run-wide claimed set (a number never takes another song's plain name;
+  ` (3)` from one run-wide claimed set (it also holds the paths of library songs already left
+  in place before targets are assigned; a number never takes another song's plain name;
   keepers already in place keep their number). A target taken by a non-candidate or a
   staying song, or a bucket that is a file, a song folder (song txt or media directly in
   it) or unreadable (`ops.FailOnce`), leaves the keeper in place. Apply: out-dir moves
@@ -361,7 +392,10 @@ Same exit codes and leftover-argument rule.
   exit code. Repeated tags resolve like UltraStar does (the last header occurrence wins;
   fixtxt's `removeDuplicateTags` also keeps the last and only looks at the header). For the
   seven file tags check (and so organize's `MediaSummary`) uses the last occurrence whose file
-  exists, else the last (`fileRefs`); cleanup and fixtxt use the plain last occurrence. An
+  exists, else the last (`fileRefs`); cleanup and fixtxt use the plain last occurrence (cleanup
+  keeps a file any song txt of the folder references, `utils.IsNameReferencedIn`, and counts the
+  folder's entries again after its leftover pass; fixtxt's `#MP3`/`#AUDIO` keeps a file of
+  another kind only if it is a video and there is no audio file). An
   `#MP3`/`#AUDIO` counts as set only if it names main audio (not a `#VOCALS`/`#INSTRUMENTAL`
   stem), `#VIDEO` only if it names a video (fixtxt's `resolveFileTag` with
   `fileChoice.isMainAudio`, cleanup's `isUntaggedMedia`); fixtxt replaces a value of the
@@ -385,7 +419,8 @@ Same exit codes and leftover-argument rule.
   `mediatools.WaitDelay`), `Probe` then returns `ctx.Err()`, and the inspection records no
   media result and no failure. Captured
   ffmpeg output that is only logged or searched keeps its first 16 KiB and last 48 KiB
-  (`mediatools.CombinedOutput`; check quotes the first 64 KiB).
+  (`mediatools.CombinedOutput`; check quotes the first 64 KiB and keeps a 48 KiB tail for the
+  system-error test).
 - webui: one job at a time, because the modules log through the global logrus logger and the
   job's log is what a hook collects while it runs (never log while holding `jobRunner.mu`). The
   analysis keeps `organize.Review` (candidates, plan, `Replan`); exclusions replan with
@@ -394,7 +429,10 @@ Same exit codes and leftover-argument rule.
   compares the new plan with the reviewed one (`organize.PlanDiff`: action, target, keeper per
   `Ref`) and stops before the first move if they differ (the analysis then holds the new plan). An apply sets the analysis'
   `applying` flag before its job starts and the job clears it when it ends (also when it never
-  starts); exclusions and joins answer 409 while `applying` or `applied` is set, checked before
+  starts); the Review hook only notes that the plan was accepted, `markApplied` after the run
+  marks the analysis applied. `jobControl.Progress` ignores a smaller done of the same phase (a
+  late report), except 0, which starts the phase again (remove's apply reads the songs twice).
+  The Host check treats a Host without a port as port 80; exclusions and joins answer 409 while `applying` or `applied` is set, checked before
   and after their `ReplanWith`.
   `organize.Options` has `Ctx` (checked before each inspection and move; a run stopped during the moves is journaled, a parked song is moved
   out of its temporary name) and `Progress`; so has `organize.RemoveOptions` (a stop while the tags
@@ -406,8 +444,13 @@ Same exit codes and leftover-argument rule.
   still handled during shutdown starts nothing); a dedupe ignores the request's
   priority/ignoreThe (the dedupe CLI has no such flags). Event streams send `id: <job>/<next line>`
   with each log event and resume from `Last-Event-ID`; `Server.Close` ends them (before
-  `http.Server.Shutdown`; each sends the final job state first). `ui` stops on SIGINT, SIGTERM
-  and SIGHUP, unless the signal was ignored at the start (`nohup`; `stopSignals`); `-addr` is checked
+  `http.Server.Shutdown`; each sends the final job state first). `ui` always stops on SIGTERM,
+  and on SIGINT and SIGHUP unless that signal was ignored at the start (`nohup`; `stopSignals`);
+  after the first stop signal SIGINT and SIGTERM get their default action back, so a second one
+  quits at once, while SIGHUP stays caught (closing a terminal sends two within a millisecond).
+  While ui runs, `mediatools.SetDetachChildren` is on: every ffmpeg/ffprobe goes through
+  `mediatools.Detach` (new exec sites must too), so a terminal Ctrl-C reaches only the UI; the
+  CLI leaves it off, so Ctrl-C still ends the tools with it; `-addr` is checked
   before listening (exit 2), a listen failure exits 1. Tests: `webui/*_test.go` run the real server with `httptest` against temp libraries;
   `ui_cmd_test.go` stubs `openBrowser` in `init` (no test may open a browser); `stopSignals`
   reads `signal.Ignored` through `signalIgnored`, because a test's `signal.Ignore` stays
@@ -423,13 +466,14 @@ Same exit codes and leftover-argument rule.
   ones; a path miss (or a stale entry) looks up the secondary index (base name, size, mtime
   ns): a hit is re-keyed to the new path (copied if the old file is still there), so
   organize's moves into buckets keep their results. Store needs a fresh stat equal to the
-  Stamp taken before the work and an mtime at least `RacyWindow` (2 s) old (git's racy-clean
-  rule; FAT has 2 s); tests age media with `os.Chtimes`. The header holds the ffprobe and
+  Stamp taken before the work and an mtime that was at least `RacyWindow` (2 s) old when Lookup
+  took the Stamp (`Stamp.at`, the clock read before the stat; git's racy-clean rule; FAT has 2 s;
+  a Stamp not from Lookup is never stored); tests age media with `os.Chtimes`. The header holds the ffprobe and
   ffmpeg version strings; other versions drop every entry (and a run that then stores
   nothing does not overwrite the file, so a run without ffprobe on PATH keeps it; a done ctx
   at Open disables the cache for the same reason, and so does a tool that is found but whose
   `-version` run fails, with a warning; a missing tool still counts as version ""). Kinds carry a version (`probe/1`,
-  `check.media/1` (probe result incl. measured duration, or the error message),
+  `check.media/2` (probe result incl. measured duration, or the error message),
   `check.decode/1` (`-deep`), `fixaudio.peak/2` (with the decoded length), `fixvideos.packets/2` (`V:0`)): a change in how a
   result is computed bumps the kind. `mediacache.Probe` caches successes (with `Log`) and
   `*mediatools.ProbeError` (rebuilt with a plain `Err` of the same message); never
@@ -451,7 +495,7 @@ Same exit codes and leftover-argument rule.
   resolves on NTFS/APFS) is a move, not a copy: Lookup and prune compare the paths
   case/NFC-insensitively plus `os.SameFile` (tested with hard links on Linux). The file is
   rewritten on every Save (it records when the library was last seen).
-  `ops.WriteCacheFile` first removes its own temp files older than `fsops.StaleCacheTemp`
+  `ops.WriteCacheFile` first removes its own temp files older than `fsops.StaleTempAge`
   (1 h; left by a kill during the write, also in a dry run: they are in the root, which
   no cleanup visits). organize's undo removes a folder its run created that holds only
   the cache file (`ops.RemoveEmptyDirWithCache`: the library root a run created and saved
@@ -533,8 +577,10 @@ stripped from the only audio source, and the README.
 - fixvideos re-encodes always output 8-bit yuv420p with even dimensions. A conversion
   whose `.mp4` target already exists is skipped before encoding, and so is one whose txt
   cannot follow it (`utils.FileReferenceReplacement`: no reference, a decode Problem, not
-  UTF-8). `utils.ReplaceFileReference` refuses txts with a decode Problem (`ErrTxtProblem`)
-  and writes the new name NFC. A result whose first
+  UTF-8), and so is one whose video another song txt of the folder names too
+  (`otherTxtReferencing`: only the newest txt would follow). fixvideos updates the txt with
+  `utils.FileReferenceReplacement` + `ops.WriteFileAtomic` (`updateTxtReference`), which
+  refuses txts with a decode Problem (`ErrTxtProblem`) and writes the new name NFC. A result whose first
   video stream is more than 0.5 s shorter or longer than the original's
   (`sameVideoDuration`: stream duration, else Matroska `DURATION` tag, else the container
   if the audio is kept) is discarded and the original listed in
@@ -566,7 +612,8 @@ Still open (roadmap items):
   next cleanup run, the original untouched); during organize a song may stay parked under
   `.organize-tmp-*` until `-undo`. Even with a ctx, encodes, tagging remuxes and packet
   measurements use `exec.Command` and run to the end (only probes and check's decodes use
-  `exec.CommandContext`).
+  `exec.CommandContext`). The ui subcommand runs the tools in their own process group; the CLI
+  does not, on purpose.
 - **Dry-run simulates txts and moves, not media.** Later modules see planned txt writes
   (`ops.ReadFile`) and planned moves away (`ops.WouldBeMoved`, planned merge targets), so
   the fixtxt → cleanup → check plan matches a real run (`TestPipelineDryRunMatchesRealRun`).
@@ -602,7 +649,7 @@ Still open (roadmap items):
 - fixaudio drops cover attachments of `.mka` files (kept in `originals/`). Codecs it cannot
   re-encode as themselves (DTS, TrueHD, and HE-AAC/HE-AACv2, since ffmpeg's native aac
   encoder only writes AAC-LC) are skipped with a warning, so such files are not downmixed.
-- `fsops.WriteFileAtomic` (and so `utils.ReplaceFileReference`, used by fixvideos) replaces
+- `fsops.WriteFileAtomic` (and so fixvideos' txt update) replaces
   a symlinked txt with a regular file; only fixtxt guards against it.
 - fixvideos: in a dry run, a re-encode that would come out larger is still planned as
   "re-encode + strip audio" (the real run falls back to a strip-only stream copy).

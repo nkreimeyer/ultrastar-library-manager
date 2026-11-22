@@ -86,8 +86,9 @@ func (c *OutputCap) String() string {
 
 // CombinedOutput runs cmd like cmd.CombinedOutput, but keeps only the start and the end
 // of its output (see CapOutput). Use it where the output is only logged or searched for
-// error messages.
+// error messages. cmd goes through Detach.
 func CombinedOutput(cmd *exec.Cmd) ([]byte, error) {
+	Detach(cmd)
 	out := CapOutput()
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()

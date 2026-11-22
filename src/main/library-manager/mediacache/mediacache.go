@@ -7,8 +7,9 @@
 // ones. A file found at a new path with the same base name, size and mtime (a folder moved
 // with preserved mtimes, as organize, mv or rsync -a do) keeps its results: they are
 // re-keyed to the new path. A result is only stored if the file did not change while it was
-// obtained and its mtime is at least RacyWindow old (like git's racy-clean rule: a file
-// changed again within the same timestamp tick would look unchanged). All results are
+// obtained and its mtime was at least RacyWindow old when it was stat'ed before the work
+// (like git's racy-clean rule: a file changed again within the same timestamp tick would
+// look unchanged). All results are
 // dropped when the ffprobe or ffmpeg version changes; each result kind carries a version
 // ("probe/1"), so a change in how a result is computed only needs a new kind.
 //
@@ -47,8 +48,8 @@ const FileName = ".library-manager-cache.json.gz"
 // formatVersion is the version of the file layout.
 const formatVersion = 1
 
-// RacyWindow is how old a file's mtime must be (at the time its result is obtained) for the
-// result to be stored. FAT has a 2 s mtime resolution.
+// RacyWindow is how old a file's mtime must be (at the time the Stamp is taken, by Lookup)
+// for the result to be stored. FAT has a 2 s mtime resolution.
 const RacyWindow = 2 * time.Second
 
 // Stats counts what the cache did in this run.
@@ -110,6 +111,10 @@ type Stamp struct {
 	size    int64
 	mtimeNs int64
 	ok      bool
+	// at is the cache's clock read just before the stat (Lookup sets it): the racy-clean
+	// rule measures the mtime's age at that moment. Zero for a Stamp not from Lookup, which
+	// Store then never stores.
+	at time.Time
 }
 
 // Valid reports whether the stat succeeded (on a regular file).
@@ -344,7 +349,9 @@ func (c *Cache) Lookup(path, kind string, v any) (Stamp, bool) {
 	if c == nil {
 		return Stamp{}, false
 	}
+	at := c.now() // before the stat: a write between the two must not pass the racy rule
 	st := stampOf(absPath(path))
+	st.at = at
 	if !st.ok {
 		c.count(false)
 		return st, false
@@ -425,14 +432,15 @@ func (c *Cache) count(hit bool) {
 }
 
 // Store stores v (as JSON) as the result of the kind for the file st was taken of, if the
-// file still has that stat (it did not change while v was computed) and its mtime is at
-// least RacyWindow older than now (else it might change again unnoticed within the same
-// timestamp tick). An invalid Stamp is ignored.
+// file still has that stat (it did not change while v was computed) and its mtime was at
+// least RacyWindow old when Lookup took the Stamp (else it might have changed again
+// unnoticed within the same timestamp tick, after the stat). An invalid Stamp is ignored.
 func (c *Cache) Store(st Stamp, kind string, v any) {
 	if c == nil || !st.ok {
 		return
 	}
-	if c.now().Sub(time.Unix(0, st.mtimeNs)) < RacyWindow { // also an mtime in the future
+	// Also an mtime in the future, and a Stamp without a time (not from Lookup).
+	if st.at.Sub(time.Unix(0, st.mtimeNs)) < RacyWindow {
 		return
 	}
 	if !stampOf(st.path).same(st) {

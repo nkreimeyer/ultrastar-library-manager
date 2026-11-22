@@ -118,3 +118,46 @@ func TestTidyApplyWithoutSongStepStoppedCanRetry(t *testing.T) {
 		t.Errorf("apply after the run: %d", got)
 	}
 }
+
+// An organize apply that accepted the reviewed plan but failed before its first move (the
+// pending report cannot be written) is not applied: the plan can be applied again.
+func TestOrganizeApplyFailedBeforeMovesCanRetry(t *testing.T) {
+	s := newTestServer(t)
+	v, _, _ := raceFixture(t, s)
+	lib, out := v.Config.Library, v.Config.OutDir
+	report := filepath.Join(out, "organize_plan.json")
+	if err := os.Remove(report); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(report, 0o755); err != nil { // in the way of the report
+		t.Fatal(err)
+	}
+	before := libTree(t, lib)
+	var j Job
+	if got := s.do("POST", "/api/organize/apply", map[string]any{"analysis": v.ID}, &j); got != http.StatusAccepted {
+		t.Fatalf("apply: %d", got)
+	}
+	if j = s.wait(); j.State != stateFailed || j.Stats.Moved != 0 {
+		t.Fatalf("failed apply: %+v", j)
+	}
+	if !maps.Equal(libTree(t, lib), before) {
+		t.Fatal("the failed apply changed the library")
+	}
+	var after organizeView
+	if s.do("GET", "/api/organize/analysis?id="+v.ID, nil, &after); after.Applied {
+		t.Fatal("an apply that moved nothing marked the plan applied")
+	}
+
+	if err := os.Remove(report); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.do("POST", "/api/organize/apply", map[string]any{"analysis": v.ID}, &j); got != http.StatusAccepted {
+		t.Fatalf("retry: %d", got)
+	}
+	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 1 {
+		t.Fatalf("retried apply: %+v", j)
+	}
+	if got := s.do("POST", "/api/organize/apply", map[string]any{"analysis": v.ID}, nil); got != http.StatusConflict {
+		t.Errorf("apply after the run: %d", got)
+	}
+}

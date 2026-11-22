@@ -94,13 +94,13 @@ func TestWriteCacheFileFailure(t *testing.T) {
 	}
 }
 
-// Temp files of interrupted cache writes older than StaleCacheTemp are removed by the next
+// Temp files of interrupted cache writes older than StaleTempAge are removed by the next
 // write (also in a dry run); younger ones (a write of another process) and other files stay.
 func TestWriteCacheFileRemovesStaleTemps(t *testing.T) {
 	for _, dry := range []bool{true, false} {
 		dir := t.TempDir()
 		path := filepath.Join(dir, ".cache.json.gz")
-		old := time.Now().Add(-StaleCacheTemp - time.Minute)
+		old := time.Now().Add(-StaleTempAge - time.Minute)
 		files := map[string]bool{ // name -> kept
 			".cache.json.gz.123.tmp":   false,
 			".cache.json.gz.young.tmp": true,

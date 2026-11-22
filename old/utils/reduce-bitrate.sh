@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Usage: ./reduce_bitrate.sh /path/to/directory
+# Usage: ./reduce-bitrate.sh /path/to/directory
 set -e
 
 export TARGET_DIR=$1
-export BITRATE_THRESHOLD=3500000 # 1 Mbit/s
+export BITRATE_THRESHOLD=3500000 # 3.5 Mbit/s
 
 # Check if the target directory is provided
 if [ -z "$TARGET_DIR" ]; then

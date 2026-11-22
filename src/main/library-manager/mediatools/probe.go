@@ -91,6 +91,7 @@ func Probe(ctx context.Context, path string) (ProbeInfo, error) {
 	cmd := exec.CommandContext(ctx, "ffprobe", "-v", "warning", "-print_format", "json",
 		"-show_format", "-show_streams", "--", filepath.Clean(path))
 	cmd.WaitDelay = WaitDelay
+	Detach(cmd)
 	stderr := CapOutput()
 	cmd.Stderr = stderr
 	out, err := cmd.Output() // parsed as data: read in full

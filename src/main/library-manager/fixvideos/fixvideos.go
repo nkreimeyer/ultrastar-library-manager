@@ -497,6 +497,11 @@ func (p *processor) processVideoFile(dir, file string) {
 			log.Warnf("Not converting %s to %s: the song txt cannot be updated, keeping the original: %v", file, pl.outputExt(file), err)
 			return
 		}
+		// Only that one txt follows the new name, and the original is deleted.
+		if txt, found := otherTxtReferencing(p.ops, dir, file); found {
+			log.Warnf("Not converting %s to %s: another song txt (%s) references it too, keeping the original", file, pl.outputExt(file), txt)
+			return
+		}
 	}
 
 	// plan's packet-size measuring does not stop with the ctx; a stop during it must not
@@ -689,14 +694,10 @@ func (p *processor) replaceOriginal(dir, file, tmp string, pl encodePlan) {
 		return
 	}
 
-	replaced, err := utils.ReplaceFileReference(p.ops, dir, oldName, newName)
-	if err == nil && !replaced {
-		err = fmt.Errorf("no file tag of the song txt references %s", oldName)
-	}
-	if err != nil {
+	if err := updateTxtReference(p.ops, dir, oldName, newName); err != nil {
 		log.Errorf("Not converting %s: updating the song txt failed, keeping the original video: %v", file, err)
-		p.ops.Fail()
 		// Undo the conversion; the new file is our own output and nothing references it.
+		// A failing removal is a failure of its own (counted by ops).
 		if err := p.ops.Remove(newPath); err != nil {
 			log.Errorf("%v", err)
 		}
@@ -710,6 +711,56 @@ func (p *processor) replaceOriginal(dir, file, tmp string, pl encodePlan) {
 	if err := p.ops.Remove(file); err != nil {
 		log.Errorf("Deleting the original video: %v", err)
 	}
+}
+
+// updateTxtReference points the file tags of the song txt in dir that name oldName to
+// newName (utils.FileReferenceReplacement, then ops.WriteFileAtomic). Each error is counted
+// once: a failed write by ops, everything else (no song txt, not rewritable, no tag naming
+// oldName) here.
+func updateTxtReference(ops *fsops.Ops, dir, oldName, newName string) error {
+	txt, content, err := utils.FileReferenceReplacement(ops, dir, oldName, newName)
+	if err == nil && content == nil {
+		err = fmt.Errorf("no file tag of the song txt references %s", oldName)
+	}
+	if err != nil {
+		ops.Fail() // not an ops operation
+		return err
+	}
+	_, err = ops.WriteFileAtomic(txt, content) // a failure is counted by ops
+	return err
+}
+
+// otherTxtReferencing returns a song txt of dir other than the one utils.FindSongTxt picks
+// whose file tags name file (a folder whose extra txts fixtxt left in place, e.g. a
+// duet version next to the solo txt). Converting file to another name would only update
+// the picked txt and delete the file the others still use. A txt that cannot be read
+// counts as referencing it. found is false if there is no such txt.
+func otherTxtReferencing(ops *fsops.Ops, dir, file string) (txt string, found bool) {
+	picked, err := utils.FindSongTxt(ops, dir)
+	if err != nil {
+		return "", false // processVideoFile's own checks refuse the conversion
+	}
+	all, err := utils.SongTxtFiles(ops, dir)
+	if err != nil {
+		return dir, true
+	}
+	base := filepath.Base(file)
+	for _, f := range all {
+		if f == picked {
+			continue
+		}
+		data, err := ops.ReadFile(f)
+		if err != nil {
+			return f, true
+		}
+		tags := utils.HeaderTags(utils.DecodeTxt(data).Text)
+		for _, tag := range utils.FileTags() {
+			if onDisk, _, ok := utils.ResolveFileName(dir, tags[tag]); ok && onDisk == base {
+				return f, true
+			}
+		}
+	}
+	return "", false
 }
 
 // rememberProcessed records a video written by fixvideos in the media journal if its
@@ -1175,7 +1226,7 @@ func videoBitrate(c *mediacache.Cache, file string, probe mediatools.ProbeInfo) 
 	if ok && cached.Bitrate > 0 {
 		return cached.Bitrate, nil
 	}
-	cmd := exec.Command("ffprobe", "-v", "error", selectStreams, "V:0", showEntries, "packet=size", "-of", "csv=p=0", "--", filepath.Clean(file))
+	cmd := mediatools.Detach(exec.Command("ffprobe", "-v", "error", selectStreams, "V:0", showEntries, "packet=size", "-of", "csv=p=0", "--", filepath.Clean(file)))
 	stderr := mediatools.CapOutput()
 	cmd.Stderr = stderr
 	out, err := cmd.Output()

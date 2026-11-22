@@ -4,8 +4,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // inTerminalEnv marks a process the program started inside a terminal window, so it never
@@ -93,10 +97,52 @@ var launchTerminal = func() bool {
 	if !ok {
 		return false
 	}
-	cmd := exec.Command(argv[0], argv[1:]...)
+	return startLauncher(exec.Command(argv[0], argv[1:]...), launcherGrace)
+}
+
+// launcherGrace is how long startLauncher waits for a terminal launcher to fail.
+// gnome-terminal, konsole and osascript hand the window off and exit within it; xterm,
+// kitty and alacritty keep running as the window.
+const launcherGrace = 2 * time.Second
+
+// startLauncher starts the terminal launcher cmd and reports whether it opened a window: it
+// is still running after grace, or ended without an error by then. A launcher that fails
+// (osascript without the permission to control Terminal, a broken x-terminal-emulator)
+// is logged with its output, and the caller starts the UI in this process instead: a
+// launcher that failed started no second UI.
+func startLauncher(cmd *exec.Cmd, grace time.Duration) bool {
+	// The output goes to a temp file, not a pipe: a terminal server the launcher starts may
+	// keep it open, and would get SIGPIPE on its next write once this process has exited.
+	var output func() string
+	if f, err := os.CreateTemp("", "library-manager-terminal-*.log"); err == nil {
+		defer os.Remove(f.Name())
+		defer f.Close()
+		cmd.Stdout, cmd.Stderr = f, f
+		output = func() string {
+			data, _ := os.ReadFile(f.Name())
+			return strings.TrimSpace(string(data))
+		}
+	} else {
+		output = func() string { return "no output captured" }
+	}
 	if err := cmd.Start(); err != nil {
+		log.Warnf("Could not open a terminal window (%v); starting the UI here", err)
 		return false
 	}
-	go cmd.Wait() //nolint:errcheck // reap the process
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			msg := output()
+			if len(msg) > 2000 {
+				msg = msg[:2000] + " …"
+			}
+			log.Warnf("Could not open a terminal window (%s: %v: %q); starting the UI here",
+				filepath.Base(cmd.Path), err, msg)
+			return false
+		}
+	case <-time.After(grace): // still running: the window is open (the goroutine reaps it)
+	}
 	return true
 }

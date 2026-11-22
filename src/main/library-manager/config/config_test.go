@@ -61,34 +61,6 @@ func TestNewRejectsOutDirSymlinkedIntoSongDir(t *testing.T) {
 	}
 }
 
-func TestOutsideSongDir(t *testing.T) {
-	root := mkdirs(t, "songs/Cat", "other")
-	cfg, err := New(filepath.Join(root, "songs"), "", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range []string{filepath.Join(root, "songs"), filepath.Join(root, "songs", "Cat", "new", "cache")} {
-		if got, err := cfg.OutsideSongDir(p); err == nil {
-			t.Errorf("OutsideSongDir(%q) = %q, want an error", p, got)
-		}
-	}
-	other, err := filepath.EvalSymlinks(filepath.Join(root, "other"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(other, "cache")
-	if got, err := cfg.OutsideSongDir(want); err != nil || got != want {
-		t.Errorf("OutsideSongDir(%q) = %q, %v", want, got, err)
-	}
-	link := filepath.Join(root, "other", "link")
-	if err := os.Symlink(filepath.Join(root, "songs", "Cat"), link); err != nil {
-		t.Skipf("symlinks not supported: %v", err)
-	}
-	if got, err := cfg.OutsideSongDir(filepath.Join(link, "cache")); err == nil {
-		t.Errorf("a path linked into the song dir is accepted: %q", got)
-	}
-}
-
 func TestPrepareOutDir(t *testing.T) {
 	root := mkdirs(t, "songs")
 	cfg, err := New(filepath.Join(root, "songs"), "", false)
@@ -330,11 +302,15 @@ func TestNewRejectsDanglingSymlinkOutDir(t *testing.T) {
 }
 
 // PrepareOutDir removes only stale temp files of reports/the journal (named as WriteReport
-// names them, older than fsops.StaleCacheTemp), directly in the out dir.
+// names them, older than fsops.StaleTempAge), directly in an out dir that already holds the
+// output marker.
 func TestPrepareOutDirRemovesOnlyStaleTempFiles(t *testing.T) {
 	root := mkdirs(t, "songs", "out/sub")
 	cfg, err := New(filepath.Join(root, "songs"), filepath.Join(root, "out"), false)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.OutDir, OutputMarker), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	stale := filepath.Join(cfg.OutDir, ".report.txt.123.tmp")
@@ -348,7 +324,7 @@ func TestPrepareOutDirRemovesOnlyStaleTempFiles(t *testing.T) {
 		filepath.Join(cfg.OutDir, ".x.abc.tmp"), // the random part is digits only
 		filepath.Join(cfg.OutDir, "sub", ".x.123.tmp"),
 	}
-	old := time.Now().Add(-2 * fsops.StaleCacheTemp)
+	old := time.Now().Add(-2 * fsops.StaleTempAge)
 	for _, f := range append([]string{stale}, keep...) {
 		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
@@ -373,6 +349,45 @@ func TestPrepareOutDirRemovesOnlyStaleTempFiles(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(cfg.OutDir, OutputMarker))
 	if err != nil || len(data) == 0 {
 		t.Errorf("marker = %q, %v", data, err)
+	}
+}
+
+// A folder that is not an output folder yet (a general folder given as -o) can hold no
+// temp files of ours: another program's ".<name>.<digits>.tmp" there stays. In a folder
+// with the legacy marker of the old program name the stale temp files are ours.
+func TestPrepareOutDirSweepsOnlyOwnOutputFolder(t *testing.T) {
+	for _, tc := range []struct {
+		marker  string
+		removed bool
+	}{
+		{"", false},
+		{LegacyOutputMarker, true},
+		{OutputMarker, true},
+	} {
+		root := mkdirs(t, "songs", "home")
+		cfg, err := New(filepath.Join(root, "songs"), filepath.Join(root, "home"), true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.marker != "" {
+			if err := os.WriteFile(filepath.Join(cfg.OutDir, tc.marker), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		foreign := filepath.Join(cfg.OutDir, ".session.483920.tmp")
+		if err := os.WriteFile(foreign, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-2 * fsops.StaleTempAge)
+		if err := os.Chtimes(foreign, old, old); err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.PrepareOutDir(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(foreign); (err != nil) != tc.removed {
+			t.Errorf("marker %q: temp file removed = %v, want %v", tc.marker, err != nil, tc.removed)
+		}
 	}
 }
 

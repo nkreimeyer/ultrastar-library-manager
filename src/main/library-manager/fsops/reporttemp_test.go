@@ -14,7 +14,7 @@ func TestRemoveStaleReportTemps(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	old := time.Now().Add(-StaleCacheTemp - time.Minute)
+	old := time.Now().Add(-StaleTempAge - time.Minute)
 	files := map[string]struct {
 		old, removed bool
 	}{
