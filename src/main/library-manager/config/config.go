@@ -2,7 +2,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -31,6 +33,27 @@ const OutputMarker = ".library-manager-output"
 // LegacyOutputMarker is the marker of output folders written under the old program name
 // (songs-sanitizer). Discovery skips folders holding it as well.
 const LegacyOutputMarker = ".songs-sanitizer-output"
+
+// IsOutputMarker reports whether a file name is OutputMarker or LegacyOutputMarker.
+func IsOutputMarker(name string) bool {
+	return name == OutputMarker || name == LegacyOutputMarker
+}
+
+// IsOutputDir reports whether dir holds an output marker (OutputMarker or
+// LegacyOutputMarker), i.e. whether it is an output folder of this program. A missing dir
+// is no output folder; other errors are returned.
+func IsOutputDir(dir string) (bool, error) {
+	for _, name := range []string{OutputMarker, LegacyOutputMarker} {
+		_, err := os.Lstat(filepath.Join(dir, name))
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return false, err
+		}
+	}
+	return false, nil
+}
 
 // New validates and normalizes the given directories. An empty outDir defaults to
 // DefaultOutDirName next to songDir. Symlinks are resolved before checking that the output

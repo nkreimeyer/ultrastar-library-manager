@@ -82,7 +82,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               with MoveBroken, not journaled so not covered by undo),
                               overview.go (the overview job: songs, size, video/picture counts, songs per top folder, what is set aside; names and sizes, and whether a song txt is there),
                               originals.go (size of <out>/originals/ and its deletion: the one place the UI deletes files that
-                              are not a conversion's own original; confirmed in the page, whole folder only, library never touched),
+                              are not a conversion's own original; confirmed in the page, whole folder only, only in a folder with the output marker
+                              (`config.IsOutputDir`), library never touched),
                               reports.go (the report viewer: the .txt/.json files of the output folder, read-only, cut off at 2 MiB; journals excluded),
                               setaside.go (the restore browser: list/restore over organize.ListSetAside/Restore; the origin is the
                               journal's src, else the mirrored path for extra-files/ and invalid/; a restore is one journal run, so undo covers it),

@@ -3,6 +3,7 @@ package webui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
@@ -31,6 +32,20 @@ type originalsFile struct {
 }
 
 const maxOriginalsListed = 100
+
+// checkOutputDir refuses an output folder without the output marker: originals/ in any
+// other folder (the output field is free text in advanced mode) is not this program's, and
+// deleting it could not be undone.
+func checkOutputDir(outDir string) error {
+	ok, err := config.IsOutputDir(outDir)
+	if err != nil {
+		return fmt.Errorf("checking %s: %w", outDir, err)
+	}
+	if !ok {
+		return fmt.Errorf("%s is not an output folder of library-manager (it has no %s file), so its originals folder is not touched", outDir, config.OutputMarker)
+	}
+	return nil
+}
 
 // walkOriginals calls fn for every file below dir (symlinks are files, never followed).
 func walkOriginals(dir string, fn func(path string, size int64)) error {
@@ -67,6 +82,13 @@ func (s *Server) handleOriginalsList(w http.ResponseWriter, r *http.Request) {
 	}
 	dir := config.Config{OutDir: cfg.OutDir}.OriginalsDir()
 	v := originalsView{Config: viewConfig(cfg), Dir: dir, Largest: []originalsFile{}}
+	// Without originals/ there is nothing to list, marker or not (no output folder yet).
+	if _, err := os.Lstat(dir); err == nil {
+		if err := checkOutputDir(cfg.OutDir); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
 	var all []originalsFile
 	if err := walkOriginals(dir, func(p string, size int64) {
 		rel, _ := filepath.Rel(dir, p)
@@ -98,6 +120,10 @@ func (s *Server) handleOriginalsDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg, err := q.config()
 	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := checkOutputDir(cfg.OutDir); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}

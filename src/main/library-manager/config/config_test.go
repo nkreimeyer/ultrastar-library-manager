@@ -386,3 +386,35 @@ func TestPrepareOutDirErrors(t *testing.T) {
 		t.Errorf("PrepareOutDir into a read-only dir: %v", err)
 	}
 }
+
+func TestIsOutputDir(t *testing.T) {
+	root := t.TempDir()
+	for _, tc := range []struct {
+		marker string
+		want   bool
+	}{{"", false}, {OutputMarker, true}, {LegacyOutputMarker, true}, {".other-marker", false}} {
+		dir := filepath.Join(root, "d"+tc.marker)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if tc.marker != "" {
+			if err := os.WriteFile(filepath.Join(dir, tc.marker), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got, err := IsOutputDir(dir); got != tc.want || err != nil {
+			t.Errorf("marker %q: %v, %v; want %v", tc.marker, got, err, tc.want)
+		}
+	}
+	if got, err := IsOutputDir(filepath.Join(root, "missing")); got || err != nil {
+		t.Errorf("missing dir: %v, %v", got, err)
+	}
+	// PrepareOutDir makes an output folder.
+	c := Config{OutDir: filepath.Join(root, "out")}
+	if err := c.PrepareOutDir(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := IsOutputDir(c.OutDir); !got || err != nil {
+		t.Errorf("after PrepareOutDir: %v, %v", got, err)
+	}
+}

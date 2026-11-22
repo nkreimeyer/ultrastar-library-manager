@@ -58,7 +58,7 @@ func collectSongFolders(ops *fsops.Ops, dir string) collected {
 	for _, e := range entries {
 		name := e.Name()
 		switch {
-		case name == config.OutputMarker || name == config.LegacyOutputMarker:
+		case config.IsOutputMarker(name):
 			log.Debugf("Skipping sanitizer output folder %s", dir)
 			// Not content of a song, but never a reason to treat the parent as one song
 			// (which would move the output folder along with it).
