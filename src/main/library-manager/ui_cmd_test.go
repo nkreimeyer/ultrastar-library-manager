@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -13,7 +15,11 @@ import (
 )
 
 // No test opens a browser (run() without arguments starts the UI).
-func init() { openBrowser = func(string) error { return nil } }
+func init() {
+	openBrowser = func(string) error { return nil }
+	launchTerminal = func() bool { return false } // nor a terminal window
+	browserGrace = 300 * time.Millisecond
+}
 
 func TestUIUsage(t *testing.T) {
 	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(make(log.LevelHooks)) })
@@ -81,5 +87,64 @@ func TestUINoArgsOpensBrowser(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the UI did not stop")
+	}
+}
+
+// The UI stops by itself when its last browser page is closed, and not with -keep-running.
+func TestUIStopsWhenTheBrowserCloses(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		t.Run(fmt.Sprintf("keep-running=%v", keep), func(t *testing.T) {
+			t.Cleanup(func() { log.StandardLogger().ReplaceHooks(make(log.LevelHooks)) })
+			opened := make(chan string, 1)
+			oldOpen, oldStop := openBrowser, uiStop
+			t.Cleanup(func() { openBrowser, uiStop = oldOpen, oldStop })
+			openBrowser = func(url string) error { opened <- url; return nil }
+			uiStop = make(chan struct{})
+			args := []string{"ui"}
+			if keep {
+				args = append(args, "-keep-running")
+			}
+			done := make(chan int, 1)
+			go func() { done <- runWithArgs(t, args...) }()
+			url := <-opened
+			jar, _ := cookiejar.New(nil)
+			c := &http.Client{Jar: jar, Timeout: 10 * time.Second}
+			resp, err := c.Get(url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			// The page keeps its event stream open as long as the tab exists.
+			ctx, cancel := context.WithCancel(context.Background())
+			req, _ := http.NewRequestWithContext(ctx, "GET", strings.SplitN(url, "/?", 2)[0]+"/api/job/events", nil)
+			stream, err := c.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-done:
+				t.Fatal("stopped while the page is open")
+			case <-time.After(2 * browserGrace):
+			}
+			cancel() // the tab is closed
+			stream.Body.Close()
+			select {
+			case code := <-done:
+				if keep {
+					t.Fatalf("stopped although -keep-running (exit %d)", code)
+				}
+				if code != exitOK {
+					t.Errorf("exit code %d", code)
+				}
+			case <-time.After(4 * time.Second):
+				if !keep {
+					t.Fatal("still running after the page was closed")
+				}
+				close(uiStop)
+				if code := <-done; code != exitOK {
+					t.Errorf("exit code %d", code)
+				}
+			}
+		})
 	}
 }

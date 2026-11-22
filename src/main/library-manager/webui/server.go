@@ -54,6 +54,7 @@ type Server struct {
 	tokenUsed bool // the start URL signed a browser in already
 	organize  map[string]*organizeAnalysis
 	removal   *removeAnalysis // the newest remove check
+	presence  presence        // the open pages (WatchClients)
 	checkRes  *checkAnalysis  // the newest library check
 	nextID    int
 }

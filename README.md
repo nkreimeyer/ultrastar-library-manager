@@ -38,7 +38,7 @@ release with the three binaries attached.
 
 ```bash
 library-manager                                                   # without arguments: the browser UI, see "Browser UI"
-library-manager ui [-addr 127.0.0.1:0] [-no-browser] [-v level]
+library-manager ui [-addr 127.0.0.1:0] [-no-browser] [-keep-running] [-v level]
 library-manager -s <song-dir> [flags]
 library-manager organize -s <dir> [-s ...] -l <library> [flags]   # see "Organizing the library"
 library-manager dedupe -l <library> [flags]                       # see "Removing duplicates in place"
@@ -217,8 +217,14 @@ empty folders are merged into an existing target instead.
 ## Browser UI (`ui`)
 
 Start `library-manager` without arguments (on Windows: double-click the `.exe`), or run
-`library-manager ui`. It starts a small web server on `127.0.0.1` and opens the browser. Keep
-the terminal window open while you use it; closing it (or Ctrl-C) stops the UI and any
+`library-manager ui`. It starts a small web server on `127.0.0.1` and opens the browser. Started
+without arguments from a file manager (no terminal, but a desktop), the program opens a terminal
+window for itself (Linux: the first of x-terminal-emulator, gnome-terminal, konsole, xfce4-terminal,
+mate-terminal, kitty, alacritty, wezterm, xterm that is installed; macOS: Terminal; Windows
+gives a double-clicked program its console window anyway). Keep
+the terminal window open while you use it. The UI stops by itself about 15 seconds after the
+last browser tab is closed (a reload or a short network gap does not count) unless a job is
+still running; `-keep-running` turns that off. Closing the window (or Ctrl-C) stops the UI and any
 running job (a move or undo finishes the song it is on; on Windows closing the window
 leaves only a few seconds for that, so press Stop or Ctrl-C and wait instead). The printed address signs one
 browser in and then stops working, so a copy of it (browser history) lets no one else in;

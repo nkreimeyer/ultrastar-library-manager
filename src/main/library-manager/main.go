@@ -61,7 +61,11 @@ var version = "dev"
 
 func run() int {
 	if len(os.Args) == 1 {
-		// Started without arguments (e.g. by a double-click): open the UI.
+		// Started without arguments (e.g. by a double-click): open the UI, in a terminal
+		// window of its own if it was not started from one.
+		if launchTerminal() {
+			return exitOK
+		}
 		return runUI(nil, flag.CommandLine.Output(), true)
 	}
 	if os.Args[1] == "ui" {

@@ -16,7 +16,11 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
   main.go                     flags, validation, runs the modules in fixed order, summary + exit code;
                               os.Args[1] == "organize"/"dedupe"/"add"/"remove"/"ui" dispatches to the subcommand;
                               no arguments at all starts the UI (double-click); main.version is set with -ldflags -X
-  ui_cmd.go                   the ui subcommand: -addr (loopback only), -no-browser, -v; opens the browser, stops on a signal
+  ui_cmd.go                   the ui subcommand: -addr (loopback only), -no-browser, -keep-running, -v; opens the browser, stops on a
+                              signal or when the last browser page is gone (browserGrace, webui.Server.WatchClients)
+  terminal.go                 no-argument start outside a terminal: opens a terminal window that runs the program again
+                              (needsTerminal, terminalCommand; `env LIBRARY_MANAGER_IN_TERMINAL=1` marks the child;
+                              never on Windows; tests stub launchTerminal in ui_cmd_test's init)
   organize_cmd.go             the organize, dedupe and add subcommands (organize.Mode): own FlagSet, -s tier lists, -undo, validation
   remove_cmd.go               the remove subcommand: -artist/-song/-from patterns, -undo
   cmd_common.go               the steps all commands share: usageError/leftoverError, setLogLevel (-v), subcommand
@@ -70,7 +74,7 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               FirstStream/HasStream, HasTag (marker tags), VideoBitrate (the one bitrate rule);
                               output.go: OutputCap/CombinedOutput (head 16 KiB + tail 48 KiB of ffmpeg output);
                               failure.go: FileFailure/SystemError (may a tool result be cached?)
-  webui/                      browser UI: server.go (single-use token -> session cookie lm_session_<port>, CheckAddr,
+  webui/                      browser UI: presence.go (open pages = open /api/job/events streams; WatchClients), server.go (single-use token -> session cookie lm_session_<port>, CheckAddr,
                               Host/Origin/JSON checks, CSP, routes),
                               jobs.go (one job at a time, logrus hook, SSE /api/job/events), system.go (tools, folder lister),
                               organize.go (validate/analyse/exclude/apply/history/undo),

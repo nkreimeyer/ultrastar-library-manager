@@ -55,6 +55,11 @@ func stopSignals() []os.Signal {
 // signal.Ignored keeps reporting it even after signal.Reset.
 var signalIgnored = signal.Ignored
 
+// browserGrace is how long every browser page of the UI may be gone, with no job running,
+// before the UI stops by itself: long enough for a reload or a moment without network. A
+// variable so tests do not wait for it.
+var browserGrace = 15 * time.Second
+
 // uiStop is closed by tests to stop the UI; nil = wait for a signal.
 var uiStop chan struct{}
 
@@ -65,10 +70,13 @@ func runUI(args []string, output io.Writer, noArgs bool) int {
 	fs.SetOutput(output)
 	addr := fs.String("addr", "127.0.0.1:0", "Address to listen on (loopback only; port 0 = any free port)")
 	noBrowser := fs.Bool("no-browser", false, "Do not open the browser, only print the address")
+	keepRunning := fs.Bool("keep-running", false, "Do not stop when the last browser tab is closed (stop with Ctrl-C)")
 	logLevel := fs.String("v", "info", "Log level (debug, info, warn, error)")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: %s ui [-addr 127.0.0.1:0] [-no-browser] [-v level]\n\n"+
-			"Starts the browser UI. Running %s without any argument does the same.\n\n", os.Args[0], os.Args[0])
+		fmt.Fprintf(fs.Output(), "Usage: %s ui [-addr 127.0.0.1:0] [-no-browser] [-keep-running] [-v level]\n\n"+
+			"Starts the browser UI. Running %s without any argument does the same (started outside a terminal,\n"+
+			"for example by a double-click, it opens a terminal window for itself). The UI stops by itself when\n"+
+			"the last browser tab is closed, unless a job is running.\n\n", os.Args[0], os.Args[0])
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -112,10 +120,14 @@ func runUI(args []string, output io.Writer, noArgs bool) int {
 	url := srv.StartURL()
 	fmt.Fprintf(output, "library-manager %s: the UI runs at\n\n    %s\n\n", version, url)
 	if noArgs {
-		fmt.Fprintln(output, "Keep this window open while you use it; close it (or press Ctrl-C) to stop.")
+		fmt.Fprintln(output, "Keep this window open while you use it. It stops by itself when you close the browser tab;")
+		fmt.Fprintln(output, "you can also close this window (or press Ctrl-C) to stop.")
 		fmt.Fprintf(output, "Command-line use: %s -h\n", os.Args[0])
 	} else {
 		fmt.Fprintln(output, "Press Ctrl-C to stop.")
+	}
+	if *keepRunning {
+		fmt.Fprintln(output, "It keeps running when the browser tab is closed (-keep-running).")
 	}
 	if !*noBrowser {
 		if err := openBrowser(url); err != nil {
@@ -125,9 +137,15 @@ func runUI(args []string, output io.Writer, noArgs bool) int {
 
 	served := make(chan error, 1)
 	go func() { served <- hs.Serve(ln) }()
+	var gone <-chan struct{} // nil blocks: no watch with -keep-running
+	if !*keepRunning {
+		gone = srv.WatchClients(browserGrace)
+	}
 	select {
 	case <-ctx.Done():
 		log.Infof("Stopping the UI")
+	case <-gone:
+		log.Infof("The browser tab was closed: stopping the UI")
 	case <-uiStop:
 	case err := <-served:
 		log.Errorf("The UI server stopped: %v", err)
@@ -135,7 +153,10 @@ func runUI(args []string, output io.Writer, noArgs bool) int {
 		return exitFailures
 	}
 	srv.Close() // cancels a running job and waits for it
-	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// The event streams are closed already; what Shutdown still waits for is a request in
+	// flight, and a connection a browser opened ahead of time that Go counts as idle only after
+	// five seconds. A second is plenty for the former and keeps a closed tab from lingering.
+	shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := hs.Shutdown(shutdown); err != nil {
 		hs.Close()

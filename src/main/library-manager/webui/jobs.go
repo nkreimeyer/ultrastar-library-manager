@@ -263,6 +263,8 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
+	s.presence.opened() // a page is there as long as this stream is open
+	defer s.presence.closed()
 	next, _ := strconv.Atoi(r.URL.Query().Get("log"))
 	logJob := "" // the job next counts the lines of ("" = the current one)
 	if id, n, ok := strings.Cut(r.Header.Get("Last-Event-ID"), "/"); ok {
