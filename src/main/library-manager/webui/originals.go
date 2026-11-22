@@ -128,7 +128,7 @@ func (s *Server) handleOriginalsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dir := config.Config{OutDir: cfg.OutDir}.OriginalsDir()
-	ops := fsops.New(false)
+	ops := fsops.New(cfg.DryRun) // the request's dryRun (the page never sends it) only plans
 	s.startJob(w, s.newID("d"), "originals-delete", ops, func(ctx context.Context, c jobControl) (any, error) {
 		var files []string
 		if err := walkOriginals(dir, func(p string, _ int64) { files = append(files, p) }); err != nil {
@@ -157,7 +157,7 @@ func (s *Server) handleOriginalsDelete(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-		if _, err := os.Stat(dir); err == nil {
+		if _, err := os.Stat(dir); err == nil && !ops.DryRun {
 			log.Infof("%s is not empty: something was left in it", dir)
 		}
 		return map[string]any{"library": cfg.Library, "outDir": cfg.OutDir}, nil

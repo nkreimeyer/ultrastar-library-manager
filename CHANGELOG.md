@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - UI: "Delete the backups" only works in a library-manager output folder (one with its marker file); an `originals` folder in any other folder given as output is no longer listed or emptied.
+- UI: a set-aside restore or an originals delete requested as a dry run now only plans; before, it moved songs back without recording them for undo, or deleted the backups.
 
 ## [0.2.1] - 2026-11-22
 

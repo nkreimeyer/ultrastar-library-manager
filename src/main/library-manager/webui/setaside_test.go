@@ -65,3 +65,43 @@ func TestSetAsideBrowseAndRestore(t *testing.T) {
 		t.Errorf("after restore: %+v", list.Items)
 	}
 }
+
+// A restore request with dryRun only plans: nothing moves (a real move would not be
+// journaled, so undo could not take it back).
+func TestSetAsideRestoreDryRunMovesNothing(t *testing.T) {
+	s := newTestServer(t)
+	lib, out := removeLibrary(t)
+
+	var j Job
+	s.do("POST", "/api/remove/analyse", removeRequest{Library: lib, Out: out, Patterns: "ABBA"}, &j)
+	id := s.wait().Result.(map[string]any)["analysis"].(string)
+	s.do("POST", "/api/remove/apply", map[string]any{"analysis": id}, &j)
+	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 2 {
+		t.Fatalf("remove: %+v", j)
+	}
+	var list struct {
+		Items []organize.SetAsideItem `json:"items"`
+	}
+	s.do("POST", "/api/setaside/list", folderRequest{Library: lib, Out: out}, &list)
+	var refs []organize.RestoreRef
+	for _, it := range list.Items {
+		refs = append(refs, organize.RestoreRef{Section: it.Section, Rel: it.Rel})
+	}
+	if len(refs) != 2 {
+		t.Fatalf("set aside: %+v", list.Items)
+	}
+	libBefore, outBefore := testutil.Tree(t, lib), testutil.Tree(t, out)
+	body := map[string]any{"library": lib, "out": out, "dryRun": true, "items": refs}
+	if got := s.do("POST", "/api/setaside/restore", body, &j); got != http.StatusAccepted {
+		t.Fatalf("restore: %d", got)
+	}
+	if j = s.wait(); j.State != stateDone || !j.DryRun || j.Stats.Moved != 2 || j.Stats.Failed != 0 {
+		t.Fatalf("restore job: %+v", j)
+	}
+	if got := testutil.Tree(t, lib); !maps.Equal(got, libBefore) {
+		t.Errorf("a dry-run restore changed the library")
+	}
+	if got := testutil.Tree(t, out); !maps.Equal(got, outBefore) {
+		t.Errorf("a dry-run restore changed the output folder")
+	}
+}

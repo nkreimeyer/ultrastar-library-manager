@@ -48,7 +48,9 @@ func (s *Server) handleSetAsideList(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSetAsideRestore puts the chosen items back. One journal run, so the undo of the
-// output folder reverses it.
+// output folder reverses it. The request's dryRun (the page never sends it) only plans:
+// ops follows cfg.DryRun, because Restore journals only when cfg.DryRun is off, and real
+// moves without a journal could not be undone.
 func (s *Server) handleSetAsideRestore(w http.ResponseWriter, r *http.Request) {
 	var q struct {
 		folderRequest
@@ -66,7 +68,7 @@ func (s *Server) handleSetAsideRestore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errNothingChosen)
 		return
 	}
-	ops := fsops.New(false)
+	ops := fsops.New(cfg.DryRun)
 	s.startJob(w, s.newID("s"), "setaside-restore", ops, func(ctx context.Context, c jobControl) (any, error) {
 		if err := cfg.PrepareOutDir(); err != nil {
 			return nil, err

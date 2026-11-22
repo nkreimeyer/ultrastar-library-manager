@@ -95,3 +95,23 @@ func TestOriginalsNeedOutputMarker(t *testing.T) {
 		t.Errorf("delete job with the legacy marker: %+v", j)
 	}
 }
+
+// A delete request with dryRun only plans: the backups stay.
+func TestOriginalsDeleteDryRunKeepsFiles(t *testing.T) {
+	s := newTestServer(t)
+	lib, out := removeLibrary(t)
+	p := filepath.Join(out, "originals", "A", "ABBA - SOS", "song.mp3")
+	testutil.WriteFile(t, p, "audio")
+	testutil.WriteFile(t, filepath.Join(out, config.OutputMarker), "")
+
+	var j Job
+	if got := s.do("POST", "/api/originals/delete", map[string]any{"library": lib, "out": out, "dryRun": true}, &j); got != http.StatusAccepted {
+		t.Fatalf("delete: %d", got)
+	}
+	if j = s.wait(); j.State != stateDone || !j.DryRun || j.Stats.Removed != 1 || j.Stats.Failed != 0 {
+		t.Fatalf("delete job: %+v", j)
+	}
+	if !testutil.Exists(p) {
+		t.Error("a dry-run delete deleted a backup")
+	}
+}
