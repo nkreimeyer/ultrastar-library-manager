@@ -242,12 +242,14 @@ func TestJobEventsKeepAlive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", s.base+"/api/job/events", nil)
+	// Taken before the request: the server starts its keep-alive clock after flushing the
+	// headers, before Do returns, so a start taken after Do measures less than it waited.
+	start := time.Now()
 	resp, err := s.client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	start := time.Now()
 	sc := bufio.NewScanner(resp.Body)
 	for sc.Scan() {
 		if sc.Text() == ": keep-alive" {
