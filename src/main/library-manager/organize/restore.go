@@ -61,6 +61,14 @@ const (
 	blockedUnknown  = "it is not known where this came from"
 	blockedInTheWay = "something is already in its old place"
 	blockedOutside  = "its old place is inside the output folder"
+	// blockedNoFolder is for an origin outside the library (a source folder of organize
+	// or add) whose folder is gone, say an unplugged USB drive: putting it back would
+	// create a fresh tree there, on the wrong file system. Inside the library missing
+	// folders are created.
+	blockedNoFolder = "its old folder %s does not exist any more"
+	// notListed: a ref that is not an item ListSetAside shows (a category, a label folder,
+	// a file inside a song folder).
+	notListed = "it is not an item of the set-aside list (a whole song folder or a leftover file)"
 )
 
 // journalOrigins maps every path the journal moved something to (and that was not moved
@@ -117,6 +125,9 @@ func blocked(cfg config.OrganizeConfig, ops *fsops.Ops, origin string) string {
 	case ops.Exists(origin):
 		return blockedInTheWay
 	}
+	if parent := filepath.Dir(origin); !config.IsWithin(origin, cfg.Library) && !ops.Exists(parent) {
+		return fmt.Sprintf(blockedNoFolder, parent)
+	}
 	return ""
 }
 
@@ -137,8 +148,15 @@ func ListSetAside(cfg config.OrganizeConfig, ops *fsops.Ops) ([]SetAsideItem, er
 	if err != nil {
 		return nil, err
 	}
+	return listSetAside(cfg, ops, journal, Sections, true)
+}
+
+// listSetAside lists the items of the given sections. names = read the song tags for
+// SetAsideItem.Name (Restore only needs the paths).
+func listSetAside(cfg config.OrganizeConfig, ops *fsops.Ops, journal map[string]string, sections []string, names bool) ([]SetAsideItem, error) {
 	items := []SetAsideItem{}
-	for _, section := range Sections {
+	var err error
+	for _, section := range sections {
 		dir := filepath.Join(cfg.OutDir, section)
 		if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 			continue
@@ -164,7 +182,7 @@ func ListSetAside(cfg config.OrganizeConfig, ops *fsops.Ops) ([]SetAsideItem, er
 				return nil
 			})
 		} else {
-			got, err = listSongFolders(ops, section, dir)
+			got, err = listSongFolders(ops, section, dir, names)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("listing %s: %w", dir, err)
@@ -180,16 +198,22 @@ func ListSetAside(cfg config.OrganizeConfig, ops *fsops.Ops) ([]SetAsideItem, er
 	return items, nil
 }
 
-func listSongFolders(ops *fsops.Ops, section, dir string) ([]SetAsideItem, error) {
+func listSongFolders(ops *fsops.Ops, section, dir string, names bool) ([]SetAsideItem, error) {
 	folders, err := utils.GetAllSongFolders(ops, dir)
 	if err != nil {
 		return nil, err
 	}
 	songs := make([]removeSong, len(folders))
-	_ = utils.ForEachParallel(context.Background(), folders, utils.Parallel{
-		Workers: workers,
-		OnPanic: func(i int, _ any) { songs[i] = noTagsSong(dir, folders[i]) },
-	}, func(i int, folder string) { songs[i] = readRemoveSong(ops, dir, folder) })
+	if !names {
+		for i, f := range folders {
+			songs[i] = noTagsSong(dir, f)
+		}
+	} else {
+		_ = utils.ForEachParallel(context.Background(), folders, utils.Parallel{
+			Workers: workers,
+			OnPanic: func(i int, _ any) { songs[i] = noTagsSong(dir, folders[i]) },
+		}, func(i int, folder string) { songs[i] = readRemoveSong(ops, dir, folder) })
+	}
 	items := make([]SetAsideItem, len(songs))
 	for i, s := range songs {
 		items[i] = SetAsideItem{Section: section, Rel: s.Rel, Kind: KindSong}
@@ -207,16 +231,21 @@ type RestoreOptions struct {
 }
 
 // Restore moves the named items back to where they came from (see SetAsideItem.Origin).
-// An item without a known origin, or whose old place is taken, stays and is counted as a
-// failure (ops.Fail); nothing is overwritten or merged. The moves form one journal run,
+// A ref that is not an item of ListSetAside (same Section and Rel), an item without a
+// known origin, or one whose old place is taken stays and is counted as a failure
+// (ops.Fail); nothing is overwritten or merged. The moves form one journal run,
 // so the undo of the output folder moves them back again. It returns an error only if the
-// journal cannot be written or the run was stopped.
+// output folder cannot be listed, the journal cannot be written or the run was stopped.
 func Restore(cfg config.OrganizeConfig, ops *fsops.Ops, refs []RestoreRef, opts RestoreOptions) error {
 	ctx := opts.Ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	journal, err := journalOrigins(cfg)
+	if err != nil {
+		return err
+	}
+	listed, err := listedRefs(cfg, ops, journal, refs)
 	if err != nil {
 		return err
 	}
@@ -237,6 +266,11 @@ func Restore(cfg config.OrganizeConfig, ops *fsops.Ops, refs []RestoreRef, opts 
 			continue
 		}
 		path := filepath.Join(cfg.OutDir, ref.Section, rel)
+		if !listed[RestoreRef{ref.Section, filepath.ToSlash(rel)}] {
+			log.Errorf("Restore: %s stays: %s", path, notListed)
+			ops.Fail()
+			continue
+		}
 		if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
 			log.Errorf("Restore: %s is not there any more", path)
 			ops.Fail()
@@ -280,4 +314,27 @@ func Restore(cfg config.OrganizeConfig, ops *fsops.Ops, refs []RestoreRef, opts 
 	}
 	log.Infof("Restore: %d of %d item(s) put back", restored, len(refs))
 	return nil
+}
+
+// listedRefs lists the sections refs name once (the same discovery as ListSetAside, so
+// what Restore accepts cannot drift from what the list shows) and returns its items.
+func listedRefs(cfg config.OrganizeConfig, ops *fsops.Ops, journal map[string]string, refs []RestoreRef) (map[RestoreRef]bool, error) {
+	var sections []string
+	for _, s := range Sections {
+		for _, ref := range refs {
+			if ref.Section == s {
+				sections = append(sections, s)
+				break
+			}
+		}
+	}
+	items, err := listSetAside(cfg, ops, journal, sections, false)
+	if err != nil {
+		return nil, err
+	}
+	listed := make(map[RestoreRef]bool, len(items))
+	for _, it := range items {
+		listed[RestoreRef{it.Section, it.Rel}] = true
+	}
+	return listed, nil
 }

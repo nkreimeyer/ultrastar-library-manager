@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - UI: leaving a song alone or joining two songs while a plan is being applied (or just after) no longer changes the plan shown for the run that was already applied; the page is told to wait or check again.
 - UI: a request that arrives while the program is shutting down no longer starts a job that would be cut off midway; it is refused with an error.
 - A song txt in UTF-32, or in UTF-16 with NUL characters, is reported as an encoding problem and never rewritten; before, it could be rewritten as garbage (and a UTF-32 txt was not recognized as a song txt).
+- UI: putting back set-aside items refuses anything that is not a listed song or file (such as a whole category or part of a song), and a song whose old folder outside the library is gone, for example on an unplugged drive, is shown as blocked instead of being put back into a newly created folder.
 
 ## [0.2.1] - 2026-11-22
 

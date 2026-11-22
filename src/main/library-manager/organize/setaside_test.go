@@ -3,7 +3,9 @@ package organize
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -175,5 +177,90 @@ func TestRestoreDryRunAndStop(t *testing.T) {
 	}
 	if !maps.Equal(testutil.Tree(t, lib), before) {
 		t.Error("a stopped run moved something")
+	}
+}
+
+// Only what ListSetAside shows can be put back: a category folder, a label folder or a
+// file inside a song folder would restore a whole category or part of a song.
+func TestRestoreRefusesUnlistedRefs(t *testing.T) {
+	cfg, lib, out := restoreSetup(t)
+	testutil.WriteFiles(t, filepath.Join(out, "invalid", "K", "K - Song"), map[string]string{"song.txt": "#ARTIST:K\n#TITLE:Song\n"})
+	testutil.WriteFiles(t, filepath.Join(out, "invalid", "K", "K - Other"), map[string]string{"song.txt": "#ARTIST:K\n#TITLE:Other\n"})
+	testutil.WriteFile(t, filepath.Join(out, "extra-files", "N", "Nobody - X", "old.jpg"), "img")
+	before, outBefore := testutil.Tree(t, lib), testutil.Tree(t, out)
+
+	ops := fsops.New(false)
+	refs := []RestoreRef{
+		{SectionInvalid, "K"},                   // a category of two songs
+		{SectionInvalid, "K/K - Song/song.txt"}, // a file inside a song folder
+		{SectionExtraFiles, "N"},                // a folder of leftover files
+		{SectionExtraFiles, "N/Nobody - X"},
+	}
+	if err := Restore(cfg, ops, refs, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if st := ops.Stats(); st.Moved != 0 || st.Failed != int64(len(refs)) {
+		t.Errorf("stats = %+v, want every ref refused", st)
+	}
+	if !maps.Equal(testutil.Tree(t, lib), before) || !maps.Equal(testutil.Tree(t, out), outBefore) {
+		t.Error("an unlisted ref was moved")
+	}
+	// The listed items themselves still go back.
+	ops = fsops.New(false)
+	if err := Restore(cfg, ops, []RestoreRef{{SectionInvalid, "K/K - Song"}, {SectionExtraFiles, "N/Nobody - X/old.jpg"}}, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if st := ops.Stats(); st.Moved != 2 || st.Failed != 0 {
+		t.Errorf("stats = %+v", st)
+	}
+}
+
+// A song set aside from a source folder outside the library goes back only while that
+// folder is there: a gone source (an unplugged drive) is not created again.
+func TestRestoreBlockedWhenSourceFolderGone(t *testing.T) {
+	noFFprobe(t)
+	base := t.TempDir()
+	lib, usb := filepath.Join(base, "lib"), filepath.Join(base, "usb")
+	src := filepath.Join(usb, "songs")
+	testutil.WriteFiles(t, lib, songFiles("A/ABBA - SOS", "ABBA", "SOS", "video"))
+	testutil.WriteFiles(t, src, songFiles("ABBA - SOS", "ABBA", "SOS"))
+	cfg := prepared(t)(config.NewAdd([][]string{{src}}, lib, filepath.Join(base, "out"), false))
+	runOrganize(t, cfg, Options{Mode: ModeAdd})
+	if err := os.RemoveAll(usb); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := ListSetAside(cfg, fsops.New(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf(blockedNoFolder, src)
+	if len(items) != 1 || !items[0].Exact || items[0].Origin != filepath.Join(src, "ABBA - SOS") || items[0].Blocked != want {
+		t.Fatalf("items = %+v, want the duplicate blocked with %q", items, want)
+	}
+	ops := fsops.New(false)
+	if err := Restore(cfg, ops, []RestoreRef{{items[0].Section, items[0].Rel}}, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if st := ops.Stats(); st.Moved != 0 || st.Failed != 1 {
+		t.Errorf("stats = %+v", st)
+	}
+	if testutil.Exists(usb) {
+		t.Error("the restore created the gone source folder")
+	}
+
+	// With the source folder back, it can be put back.
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if items, _ = ListSetAside(cfg, fsops.New(true)); len(items) != 1 || items[0].Blocked != "" {
+		t.Fatalf("items = %+v", items)
+	}
+	ops = fsops.New(false)
+	if err := Restore(cfg, ops, []RestoreRef{{items[0].Section, items[0].Rel}}, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if st := ops.Stats(); st.Moved != 1 || !testutil.Exists(filepath.Join(src, "ABBA - SOS", "song.txt")) {
+		t.Errorf("stats = %+v, song not put back", st)
 	}
 }

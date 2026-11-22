@@ -3,6 +3,7 @@ package webui
 import (
 	"maps"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -47,6 +48,22 @@ func TestSetAsideBrowseAndRestore(t *testing.T) {
 	}
 	if got := s.do("POST", "/api/setaside/restore", map[string]any{"library": lib, "out": out, "items": []organize.RestoreRef{}}, &e); got != http.StatusBadRequest {
 		t.Errorf("nothing chosen: %d", got)
+	}
+	// A folder that is not an item of the list (here a folder of leftover files whose
+	// mirrored place is free) is refused, not moved wholesale.
+	testutil.WriteFile(t, filepath.Join(out, "extra-files", "N", "Nobody - X", "a.jpg"), "img")
+	unlisted := map[string]any{"library": lib, "out": out, "items": []organize.RestoreRef{{Section: organize.SectionExtraFiles, Rel: "N"}}}
+	if got := s.do("POST", "/api/setaside/restore", unlisted, &j); got != http.StatusAccepted {
+		t.Fatalf("restore unlisted: %d", got)
+	}
+	if j = s.wait(); j.State != stateDone || j.Stats.Moved != 0 || j.Stats.Failed != 1 {
+		t.Errorf("restore unlisted: %+v", j)
+	}
+	if testutil.Exists(filepath.Join(lib, "N")) {
+		t.Error("an unlisted folder was put back")
+	}
+	if err := os.RemoveAll(filepath.Join(out, "extra-files", "N")); err != nil {
+		t.Fatal(err)
 	}
 	body := map[string]any{"library": lib, "out": out, "items": refs}
 	if got := s.do("POST", "/api/setaside/restore", body, &j); got != http.StatusAccepted {

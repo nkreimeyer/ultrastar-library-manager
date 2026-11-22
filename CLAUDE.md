@@ -89,7 +89,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               (`config.IsOutputDir`), library never touched),
                               reports.go (the report viewer: the .txt/.json files of the output folder, read-only, cut off at 2 MiB; journals excluded),
                               setaside.go (the restore browser: list/restore over organize.ListSetAside/Restore; the origin is the
-                              journal's src, else the mirrored path for extra-files/ and invalid/; a restore is one journal run, so undo covers it;
+                              journal's src, else the mirrored path for extra-files/ and invalid/; a restore is one journal run, so undo covers it; only items of
+                              the listing are restored; an origin outside the library whose folder is gone is Blocked;
                               a request's dryRun only plans: ops follows cfg.DryRun),
                               remove.go (the Remove task: validate/analyse/apply over organize.Remove, patterns as text; apply
                               re-plans as a dry run and stops if the removed songs differ (less the reviewer's "keep" list,
