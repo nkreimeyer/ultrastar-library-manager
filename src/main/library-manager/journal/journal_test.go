@@ -523,3 +523,25 @@ func TestFingerprintDirectory(t *testing.T) {
 		t.Errorf("Fingerprint of a directory = %q, want an error", fp)
 	}
 }
+
+// Fingerprints are stable per content and differ between the sizes around the chunk
+// boundaries, where the first and last chunk start to overlap or leave a gap.
+func TestFingerprintBoundarySizesStableAndDistinct(t *testing.T) {
+	seen := map[string]int{}
+	for _, size := range []int{chunk, chunk + 1, 2 * chunk, 2*chunk + 1} {
+		data := bytes.Repeat([]byte("0123456789abcdef"), size/16+1)[:size]
+		path := filepath.Join(t.TempDir(), "v.avi")
+		writeFile(t, path, data)
+		fp1, err := Fingerprint(path)
+		if err != nil {
+			t.Fatalf("size %d: %v", size, err)
+		}
+		if fp2, err := Fingerprint(path); err != nil || fp2 != fp1 {
+			t.Errorf("size %d: fingerprint not stable: %q then %q, %v", size, fp1, fp2, err)
+		}
+		if other, dup := seen[fp1]; dup {
+			t.Errorf("sizes %d and %d share the fingerprint %q", other, size, fp1)
+		}
+		seen[fp1] = size
+	}
+}

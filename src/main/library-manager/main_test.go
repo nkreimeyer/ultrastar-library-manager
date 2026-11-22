@@ -37,6 +37,9 @@ func TestRunUsage(t *testing.T) {
 		{"leftover argument", []string{"-s", lib, "-t", "false"}, exitUsage},
 		{"-deep without -k", []string{"-s", lib, "-o", out, "-deep"}, exitUsage},
 		{"-move-broken without -k", []string{"-s", lib, "-o", out, "-move-broken"}, exitUsage},
+		{"-deep with -k=false", []string{"-s", lib, "-o", out, "-k=false", "-deep"}, exitUsage},
+		{"-move-broken with -k=false", []string{"-s", lib, "-o", out, "-k=false", "-move-broken"}, exitUsage},
+		{"-deep and -move-broken without -k", []string{"-s", lib, "-o", out, "-deep", "-move-broken"}, exitUsage},
 		{"check with its options", []string{"-s", lib, "-o", out, "-k", "-deep", "-move-broken", "-t=false", "-c=false"}, exitOK},
 	}
 	for _, tt := range tests {

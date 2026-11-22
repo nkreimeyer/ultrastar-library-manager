@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -146,5 +150,67 @@ func TestUIStopsWhenTheBrowserCloses(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// syncBuffer is a writer the test can read while runUI still writes to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// A browser that cannot be opened is no failure: the UI says so, prints the address and
+// keeps serving.
+func TestUIBrowserOpenFails(t *testing.T) {
+	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(make(log.LevelHooks)) })
+	oldOpen, oldStop := openBrowser, uiStop
+	t.Cleanup(func() { openBrowser, uiStop = oldOpen, oldStop })
+	openBrowser = func(string) error { return errors.New("no browser here") }
+	uiStop = make(chan struct{})
+
+	out := &syncBuffer{}
+	done := make(chan int, 1)
+	go func() { done <- runUI([]string{"-keep-running"}, out, false) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(out.String(), "Could not open the browser (no browser here)") {
+		if time.Now().After(deadline) {
+			t.Fatalf("no message about the browser; output:\n%s", out.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	m := regexp.MustCompile(`http://127\.0\.0\.1:\d+/\?token=\w+`).FindString(out.String())
+	if m == "" {
+		t.Fatalf("the address is not printed:\n%s", out.String())
+	}
+	jar, _ := cookiejar.New(nil)
+	c := &http.Client{Jar: jar, Timeout: 10 * time.Second}
+	resp, err := c.Get(m)
+	if err != nil {
+		t.Fatalf("the UI does not run: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("start page: %d", resp.StatusCode)
+	}
+	close(uiStop)
+	select {
+	case code := <-done:
+		if code != exitOK {
+			t.Errorf("exit code %d, want %d", code, exitOK)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the UI did not stop")
 	}
 }
