@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-23
+
 ### Changed
 
 - In the web UI, the buttons that return to the main menu at the end of a job say "Back to the Main Menu"; the ones on the pages in between say "Back" (they were "Start over", "Change folders" and "Change the list").
@@ -146,7 +148,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Modules fixtxt, cleanup, check (`-k`), fixvideos (`-m`) and fixaudio (`-a`) with dry run (`-n`), one output folder and nothing deleted.
 - Release builds for Linux, Windows and macOS.
 
-[Unreleased]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.2.0...v0.2.1
