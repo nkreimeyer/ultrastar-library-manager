@@ -223,6 +223,8 @@ const S = {
   originals: null, // the originals/ folder: { config, dir, files, bytes, largest }
   reports: null, // report viewer: { config, files, shown: { name, text, truncated } }
   aside: null, // set-aside browser: { config, items }
+  asideFrom: "setup", // the screen the set-aside browser was opened from ("setup" or "overview")
+  reportsFrom: "setup", // the screen the report viewer was opened from ("setup" or "done")
   pick: new Set(), // keys (section/rel) of the items chosen to put back
   open: new Set(), // open review sections
   notice: null,
@@ -782,6 +784,7 @@ async function startJob(path, body) {
 
 // loadAside lists what is set aside for the restore task and shows the browser.
 async function loadAside() {
+  if (S.view === "setup" || S.view === "overview") S.asideFrom = S.view;
   const btn = document.getElementById("start");
   if (btn) {
     btn.disabled = true;
@@ -872,7 +875,7 @@ function viewOverview() {
       S.notice = null;
       render();
       validate();
-    } }, "Back")));
+    } }, "Back to the Main Menu")));
   return frag;
 }
 
@@ -913,6 +916,7 @@ function viewOriginals() {
 // openReports lists the reports of the output folder of cfg ({ library, out } or a result's
 // { library, outDir }) and shows the viewer.
 async function openReports(cfg) {
+  if (S.view === "setup" || S.view === "done") S.reportsFrom = S.view;
   try {
     const res = await post("/api/reports/list", { library: cfg.library, out: cfg.out ?? cfg.outDir });
     S.reports = { ...res, shown: null };
@@ -953,10 +957,10 @@ function viewReports() {
       r.shown.truncated ? h("p", { class: "muted small" }, "Only the first part is shown. Open the file in the output folder to read all of it.") : null);
   }
   add(frag, h("div", { class: "actions" }, h("button", { class: "btn", type: "button", onclick: () => {
-    S.view = "setup";
+    S.view = S.reportsFrom === "done" && S.done ? "done" : "setup";
     S.notice = null;
     render();
-    validate();
+    if (S.view === "setup") validate();
   } }, "Back")));
   return frag;
 }
@@ -1551,17 +1555,12 @@ function viewOrganizeReview() {
       if (ok) startJob("/api/organize/apply", { analysis: v.id });
     } }, moveLabel),
     h("button", { class: "btn", type: "button", onclick: startAnalysis }, "Check again"),
-    t ? h("button", { class: "btn", type: "button", onclick: () => {
-      S.view = "options";
-      S.notice = null;
-      render();
-    } }, "Change what to do") : null,
     h("button", { class: "btn", type: "button", onclick: () => {
-      S.view = "setup";
+      S.view = t ? "options" : "setup";
       S.notice = null;
       render();
-      validate();
-    } }, "Change folders"),
+      if (!t) validate();
+    } }, "Back"),
   ));
   if (advanced() && songsShown) add(frag, organizeTable(v));
   return frag;
@@ -1631,11 +1630,11 @@ function viewAside() {
   add(frag, h("div", { class: "actions" }, go,
     h("button", { class: "btn", type: "button", onclick: loadAside }, "Look again"),
     h("button", { class: "btn", type: "button", onclick: () => {
-      S.view = "setup";
+      S.view = S.asideFrom === "overview" && S.overview ? "overview" : "setup";
       S.notice = null;
       render();
-      validate();
-    } }, "Change folders")));
+      if (S.view === "setup") validate();
+    } }, "Back")));
   queueMicrotask(update);
   return frag;
 }
@@ -1698,7 +1697,7 @@ function viewCheckReview() {
       S.notice = null;
       render();
       validate();
-    } }, "Change folders"),
+    } }, "Back"),
   ));
   return frag;
 }
@@ -1770,7 +1769,7 @@ function viewRemoveReview() {
       S.notice = null;
       render();
       validate();
-    } }, "Change the list"),
+    } }, "Back"),
   ));
   return frag;
 }
@@ -1853,7 +1852,7 @@ function viewDone() {
     S.notice = null;
     render();
     validate();
-  } }, "Start over");
+  } }, "Back to the Main Menu");
   const reports = d.cfg ? h("button", { class: "btn", type: "button", onclick: () => openReports(d.cfg) }, "Read the reports") : null;
   if (d.kind === "organize" && j.result?.tidy) {
     const steps = j.result.steps || [];

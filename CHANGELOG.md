@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- In the web UI, the buttons that return to the main menu at the end of a job say "Back to the Main Menu"; the ones on the pages in between say "Back" (they were "Start over", "Change folders" and "Change the list").
+- In the web UI, "Back" returns to the screen you came from: the tidy-up check goes back to the tidy-up options (the separate "Change what to do" button is gone), the reports go back to the done page when opened from there, and the set-aside list goes back to the overview when opened from there.
+
 ## [0.3.0] - 2026-11-22
 
 ### Added
