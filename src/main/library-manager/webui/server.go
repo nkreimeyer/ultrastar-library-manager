@@ -56,6 +56,7 @@ type Server struct {
 	removal   *removeAnalysis // the newest remove check
 	presence  presence        // the open pages (WatchClients)
 	checkRes  *checkAnalysis  // the newest library check
+	exportRes *exportFile     // the newest exported song list
 	nextID    int
 }
 
@@ -135,6 +136,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/check/analyse", s.handleCheckAnalyse)
 	s.mux.HandleFunc("GET /api/check/analysis", s.handleCheckAnalysis)
 	s.mux.HandleFunc("POST /api/check/apply", s.handleCheckApply)
+	s.mux.HandleFunc("POST /api/export", s.handleExport)
+	s.mux.HandleFunc("GET /api/export/download", s.handleExportDownload)
 	s.mux.HandleFunc("POST /api/remove/validate", s.handleRemoveValidate)
 	s.mux.HandleFunc("POST /api/remove/analyse", s.handleRemoveAnalyse)
 	s.mux.HandleFunc("GET /api/remove/analysis", s.handleRemoveAnalysis)

@@ -14,7 +14,7 @@ is superseded.
 ```
 src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (go 1.24)
   main.go                     flags, validation, runs the modules in fixed order, summary + exit code;
-                              os.Args[1] == "organize"/"dedupe"/"add"/"remove"/"ui" dispatches to the subcommand;
+                              os.Args[1] == "organize"/"dedupe"/"add"/"remove"/"export"/"ui" dispatches to the subcommand;
                               no arguments at all starts the UI (double-click); main.version is set with -ldflags -X
   ui_cmd.go                   the ui subcommand: -addr (loopback only), -no-browser, -keep-running, -v; opens the browser, stops on a
                               signal or when the last browser page is gone (browserGrace, webui.Server.WatchClients); the browser
@@ -25,6 +25,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               fails within launcherGrace (2 s) is logged and the UI starts in this process)
   organize_cmd.go             the organize, dedupe and add subcommands (organize.Mode): own FlagSet, -s tier lists, -undo, validation
   remove_cmd.go               the remove subcommand: -artist/-song/-from patterns, -undo
+  export_cmd.go               the export subcommand: -l, -o | -csv (not both, not inside the library), -bom; the CSV is a
+                              report written through a dry-run ops (the library is only read), exit 1 on failed operations
   cmd_common.go               the steps all commands share: usageError/leftoverError, setLogLevel (-v), subcommand
                               (FlagSet + -v: parse, undoFlag, checkUndoFolder), journaledRun (organize/dedupe/add/remove:
                               config or undo config, organize.Undo or PrepareOutDir + run, "<name> failed", summary line)
@@ -96,6 +98,8 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               with MoveBroken, not journaled so not covered by undo; every apply (check, organize/dedupe/add/tidy,
                               remove) counts as applied only once its job changed something or finished (claimApply at the
                               start, markApplied at the end): a stop or failure before any change can be retried),
+                              export.go (the Export task, advanced mode only: POST /api/export writes <out>/song_list.csv as a job;
+                              GET /api/export/download?id= serves the newest export's file, never a path from the request),
                               overview.go (the overview job: songs, size, video/picture counts, songs per top folder, what is set aside; names and sizes, and whether a song txt is there;
                               what could not be read is counted as unreadable, never as a folder without a song txt),
                               originals.go (size of <out>/originals/ and its deletion: the one place the UI deletes files that
@@ -117,6 +121,10 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               appjs_test.go: TestAppJS and TestAppJSFixes run testdata/appjs_check.js and appjs_check_fixes.js
                               with node (skipped without node: app.js in a vm with a fake DOM and fetch), TestAppJSFieldNames
                               pins the JSON names app.js reads, TestTallyKindsHaveStyles a .kind-<k> color per tally kind
+  export/                     the CSV song list (export.go): Collect (discovery, txt read through ops, sorted by FoldString of
+                              artist/title), FromTxt (a row from a parsed txt: tags, BPM with a dot, Length = end of the last
+                              note via BeatToMs in whole seconds, Duet = IsDuet), WriteCSV (encoding/csv = RFC 4180 quoting,
+                              optional UTF-8 BOM), Run (WriteReport). Txt only, no ffprobe, no cache
   organize/                   organize/dedupe/add: name.go (Bucket, FolderName, NameKey), key.go (SongKey, LooseKey, StripCopySuffix),
                               content.go (ContentHash, union-find joining of groups by content),
                               remove.go (Pattern, ParsePatternFile, planRemove (pure), Remove, remove_plan.json/.txt),

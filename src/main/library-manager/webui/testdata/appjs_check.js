@@ -170,7 +170,7 @@ test("organizeRequest other tasks", () => {
   S.f.deep = false;
   assert.equal(A.organizeRequest(false).deep, false);
 
-  for (const task of ["restore", "reports", "originals", "overview"]) {
+  for (const task of ["restore", "reports", "originals", "overview", "export"]) {
     setForm(task, "easy", { library: " /lib ", out: "/out" });
     assert.deepEqual(J(A.organizeRequest(true)), { library: "/lib", out: "" }, task);
     S.mode = "advanced";

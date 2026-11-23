@@ -46,6 +46,7 @@ library-manager organize -s <dir> [-s ...] -l <library> [flags]   # see "Organiz
 library-manager dedupe -l <library> [flags]                       # see "Removing duplicates in place"
 library-manager add -s <dir> [-s ...] -l <library> [flags]        # see "Adding songs to a library"
 library-manager remove -l <library> -artist <name> | -song "Artist - Title" | -from <file> [flags]   # see "Removing songs or artists"
+library-manager export -l <library> [-o <out> | -csv <file>] [flags]   # see "Exporting the song list"
 ```
 
 | Flag | Default | Description |
@@ -258,6 +259,8 @@ The start page lists these tasks:
 - **See what is in my library**: songs, size, video and picture counts, songs per folder, what is
   set aside.
 - **Read the reports of earlier runs**: the `.txt`/`.json` reports of the output folder, read-only.
+- **Export the song list (CSV)** (advanced mode only): the `export` subcommand; the file is saved in
+  the output folder and can be downloaded from the page.
 - **Free up space from audio backups**: the size of `originals/`, and deleting it after you
   confirm (the only thing the UI deletes; the library is never touched).
 
@@ -567,6 +570,34 @@ nothing (usually a typo); a real run writes them for what it removed.
 
 `remove` shares the journal with organize, dedupe and add, so `-undo` of any of them reverts
 the most recent of these runs.
+
+## Exporting the song list (`export`)
+
+```bash
+library-manager export -l <library> [-o <out> | -csv <file>] [-bom=false] [-v level]
+```
+
+Writes one row per song to `<out>/song_list.csv` (`-o` defaults to `organize-output/` next to the
+library) or to the file given with `-csv` (not inside the library). The library is only read, and
+only the song txts are opened, so ffmpeg is not needed and a library of 15,000 songs takes seconds.
+
+| Column | Value |
+|---|---|
+| Artist, Title | `#ARTIST` and `#TITLE`; a missing one is taken from an obvious `Artist - Title` folder name |
+| Year, Genre, Language | `#YEAR`, `#GENRE` and `#LANGUAGE` as written; empty if the song has none |
+| BPM | `#BPM` as in the file (UltraStar counts quarter beats, so the tempo of the music is a quarter of it); a decimal comma becomes a dot |
+| Length (s) | the end of the last note in whole seconds (`#GAP` and the tempo applied); the audio is usually a few seconds longer. Empty for a song without notes or `#BPM` |
+| Duet | `yes` if notes of two singers are in the txt, else `no` |
+
+The separator is a comma. Values that contain a comma are handled like RFC 4180 says, which Excel,
+LibreOffice and Google Sheets read correctly: a value with a comma, a double quote or a line break
+is wrapped in double quotes, and a double quote inside it is written twice
+(`"Crosby, Stills & Nash"`, `"He said ""Hi"""`). Values are never changed otherwise, so a value that
+starts with `=`, `+`, `-` or `@` stays as it is (a spreadsheet may take it for a formula). The rows are sorted by artist and
+title, ignoring case and accents. The file is UTF-8 with a byte order mark, which Excel needs to
+show umlauts right; use `-bom=false` for tools that do not expect it. In a spreadsheet with German
+(or other) regional settings, which expect a semicolon, import the file and choose the comma
+as separator instead of opening it with a double-click.
 
 ## Development
 

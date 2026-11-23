@@ -90,6 +90,11 @@ const TASKS = {
     title: "Remove songs from my library",
     desc: "Set aside every song of the artists or songs you name. Nothing is deleted: the songs are moved out of the library and can be put back.",
   },
+  export: {
+    title: "Export the song list (CSV)",
+    desc: "Save a table of all songs for a spreadsheet: artist, title, year, genre, BPM, language, length and whether it is a duet.",
+    advanced: true,
+  },
   organize: {
     title: "Build a new library from folders",
     desc: "Sort songs from one or more folders into a new library with a folder per first letter (A to Z, 0-9 and #).",
@@ -100,6 +105,7 @@ const PHASES = {
   text: "Fixing song texts",
   cleanup: "Clearing out leftovers",
   inspect: "Checking songs",
+  export: "Reading the songs",
   move: "Moving songs",
   video: "Converting videos",
   audio: "Evening out the volume",
@@ -170,6 +176,7 @@ const JOB_TITLES = {
   "setaside-restore": "Putting songs back",
   "originals-delete": "Deleting the backups",
   overview: "Counting the songs. Nothing is changed.",
+  export: "Listing the songs. Nothing in the library is changed.",
   "check-analyse": "Checking the songs. Nothing is changed.",
   "check-apply": "Checking and setting aside broken songs",
   "remove-analyse": "Checking first. Nothing is changed yet.",
@@ -208,7 +215,8 @@ function loadForm() {
 
 const S = {
   mode: localStorage.getItem("lm-mode") === "advanced" ? "advanced" : "easy",
-  task: TASKS[localStorage.getItem("lm-task")] ? localStorage.getItem("lm-task") : "dedupe",
+  // A task of the advanced mode is not offered, so not remembered, in the easy mode.
+  task: TASKS[localStorage.getItem("lm-task")] && (localStorage.getItem("lm-mode") === "advanced" || !TASKS[localStorage.getItem("lm-task")].advanced) ? localStorage.getItem("lm-task") : "dedupe",
   f: loadForm(),
   sys: null,
   view: "setup", // setup | options (tidy-up) | running | review | done
@@ -220,6 +228,7 @@ const S = {
   rmKeep: new Set(), // songs (paths) of the remove review the reviewer keeps
   chk: null, // check report view
   overview: null, // result of the overview job
+  exported: null, // result of the export job
   originals: null, // the originals/ folder: { config, dir, files, bytes, largest }
   reports: null, // report viewer: { config, files, shown: { name, text, truncated } }
   aside: null, // set-aside browser: { config, items }
@@ -270,6 +279,9 @@ function render() {
       break;
     case "overview":
       content = viewOverview();
+      break;
+    case "exported":
+      content = viewExported();
       break;
     default:
       content = viewSetup();
@@ -574,7 +586,7 @@ function organizeRequest(withTidy) {
   if (S.task === "check") {
     return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "", deep: advanced() && S.f.deep };
   }
-  if (S.task === "restore" || S.task === "reports" || S.task === "originals" || S.task === "overview") return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "" };
+  if (S.task === "restore" || S.task === "reports" || S.task === "originals" || S.task === "overview" || S.task === "export") return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "" };
   return {
     tidy: withTidy && S.task === "dedupe" ? tidyRequest() : undefined,
     mode: S.task,
@@ -604,7 +616,7 @@ async function validate() {
     return;
   }
   try {
-    const res = await post(`/api/${{ remove: "remove", check: "check", restore: "setaside", reports: "setaside", originals: "setaside", overview: "setaside" }[S.task] || "organize"}/validate`, organizeRequest());
+    const res = await post(`/api/${{ remove: "remove", check: "check", export: "check", restore: "setaside", reports: "setaside", originals: "setaside", overview: "setaside" }[S.task] || "organize"}/validate`, organizeRequest());
     if (seq !== validateSeq) return;
     S.resolved = res;
     S.resolveError = null;
@@ -650,7 +662,7 @@ function updateResolved() {
   } else if (S.resolved) {
     const out = S.resolved.outDir;
     el.replaceChildren(
-      S.task === "check" ? "The reports go to " : S.task === "restore" || S.task === "reports" || S.task === "originals" || S.task === "overview" ? "Looking in " : "Set-aside songs, reports and the record for undoing go to ",
+      S.task === "check" ? "The reports go to " : S.task === "export" ? "The list is saved as song_list.csv in " : S.task === "restore" || S.task === "reports" || S.task === "originals" || S.task === "overview" ? "Looking in " : "Set-aside songs, reports and the record for undoing go to ",
       h("span", { class: "path" }, out),
       ".",
     );
@@ -666,6 +678,7 @@ function viewSetup() {
   add(frag, noticeBox(S.notice), systemNotice() || "");
   const tasks = h("ul", { class: "tasks", role: "radiogroup", "aria-label": "Task" });
   for (const [key, t] of Object.entries(TASKS)) {
+    if (t.advanced && !advanced()) continue;
     tasks.append(h("li", null, h("label", null,
       h("input", { type: "radio", name: "task", value: key, checked: S.task === key, onchange: () => {
         S.task = key;
@@ -707,6 +720,9 @@ function viewSetup() {
     case "overview":
       fields.append(folderField("Your library", "library", "It is only read, never changed."));
       break;
+    case "export":
+      fields.append(folderField("Your library", "library", "It is only read, never changed. The list is saved in its output folder."));
+      break;
     case "remove":
       fields.append(folderField("Your library", "library", "The folder that holds your songs. The songs you name are moved out of it."));
       fields.append(patternsField());
@@ -737,13 +753,13 @@ function viewSetup() {
       render();
       window.scrollTo(0, 0);
     } }, "Next")
-    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: S.task === "restore" ? loadAside : S.task === "reports" ? () => openReports(organizeRequest()) : S.task === "originals" ? () => openOriginals(organizeRequest()) : S.task === "overview" ? () => startJob("/api/overview", organizeRequest()) : startAnalysis },
-      S.task === "check" ? "Check songs" : S.task === "restore" ? "Look" : S.task === "reports" ? "Show reports" : S.task === "originals" ? "Look" : S.task === "overview" ? "Count songs" : "Check first"),
+    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: S.task === "restore" ? loadAside : S.task === "reports" ? () => openReports(organizeRequest()) : S.task === "originals" ? () => openOriginals(organizeRequest()) : S.task === "overview" ? () => startJob("/api/overview", organizeRequest()) : S.task === "export" ? () => startJob("/api/export", organizeRequest()) : startAnalysis },
+      S.task === "export" ? "Export" : S.task === "check" ? "Check songs" : S.task === "restore" ? "Look" : S.task === "reports" ? "Show reports" : S.task === "originals" ? "Look" : S.task === "overview" ? "Count songs" : "Check first"),
   h("span", { class: "muted small" }, S.task === "dedupe" ? "Next you choose what to tidy up."
     : S.task === "check" ? "Nothing in the library is changed. It can take a while for a big library."
     : S.task === "restore" ? "You choose what to put back on the next page."
     : S.task === "reports" || S.task === "originals" ? "Nothing is changed yet."
-    : S.task === "overview" ? "Nothing in the library is changed. It can take a while for a big library."
+    : S.task === "overview" || S.task === "export" ? "Nothing in the library is changed. It can take a while for a big library."
     : "Nothing is changed yet. You see what would happen and decide then."),
   ));
   if (advanced()) {
@@ -870,6 +886,24 @@ function viewOverview() {
       loadAside();
     } }, "Look at what is set aside") : null,
     h("button", { class: "btn", type: "button", onclick: () => startJob("/api/overview", { library: o.library, out: o.outDir }) }, "Count again"),
+    h("button", { class: "btn", type: "button", onclick: () => {
+      S.view = "setup";
+      S.notice = null;
+      render();
+      validate();
+    } }, "Back to the Main Menu")));
+  return frag;
+}
+
+function viewExported() {
+  const x = S.exported;
+  const frag = h("div");
+  add(frag, h("h1", null, `${plural(x.songs, "song", "songs")} exported`));
+  add(frag, h("p", null, "Saved as ", h("span", { class: "path" }, x.file), "."));
+  add(frag, h("p", { class: "muted" }, "The columns are separated by commas. A value that holds a comma or a double quote is put in double quotes (Crosby, Stills & Nash becomes “Crosby, Stills & Nash”), and a double quote inside it is written twice. Spreadsheets read this correctly. The length is in seconds, up to the end of the last note. In a spreadsheet with German settings, use the import (not a double-click) and choose the comma as separator."));
+  add(frag, h("div", { class: "actions" },
+    h("a", { class: "btn primary", href: `/api/export/download?id=${encodeURIComponent(x.id)}`, download: "song_list.csv" }, "Download the CSV"),
+    h("button", { class: "btn", type: "button", onclick: () => startJob("/api/export", { library: x.library, out: x.outDir }) }, "Export again"),
     h("button", { class: "btn", type: "button", onclick: () => {
       S.view = "setup";
       S.notice = null;
@@ -1227,6 +1261,15 @@ async function onJobEnd(j) {
         } else {
           S.view = "setup";
           S.notice = j.state === "cancelled" ? { kind: "", title: "Stopped." } : failed("Counting did not finish");
+        }
+        break;
+      case "export":
+        if (j.state === "done") {
+          S.exported = j.result;
+          S.view = "exported";
+        } else {
+          S.view = "setup";
+          S.notice = j.state === "cancelled" ? { kind: "", title: "Stopped." } : failed("The export did not finish");
         }
         break;
       case "originals-delete":
@@ -1933,6 +1976,11 @@ for (const b of document.querySelectorAll(".switch button")) {
   b.addEventListener("click", () => {
     S.mode = b.dataset.mode;
     localStorage.setItem("lm-mode", S.mode);
+    if (!advanced() && TASKS[S.task]?.advanced) {
+      S.task = "dedupe";
+      localStorage.setItem("lm-task", S.task);
+      S.resolved = S.resolveError = S.history = null;
+    }
     render();
     if (S.view === "setup") validate();
   });

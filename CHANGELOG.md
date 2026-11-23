@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `export` subcommand and, in the web UI's advanced mode, the task "Export the song list (CSV)": one row per song with artist, title, year, genre, BPM, language, length and duet, comma separated (values with a comma or a double quote are quoted as in RFC 4180), as UTF-8 with a byte order mark for Excel. The library is only read.
+
 ## [0.3.1] - 2026-11-23
 
 ### Changed

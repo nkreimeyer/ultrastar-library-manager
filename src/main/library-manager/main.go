@@ -71,6 +71,9 @@ func run() int {
 	if os.Args[1] == "ui" {
 		return runUI(os.Args[2:], flag.CommandLine.Output(), false)
 	}
+	if os.Args[1] == "export" {
+		return runExport(os.Args[2:], flag.CommandLine.Output())
+	}
 	switch m := organize.Mode(os.Args[1]); m {
 	case organize.ModeOrganize, organize.ModeDedupe, organize.ModeAdd:
 		return runOrganize(m, os.Args[2:], flag.CommandLine.Output())
@@ -90,7 +93,7 @@ func run() int {
 	noCache := flag.Bool("no-cache", false, "Probe every media file again: neither read nor write the media cache ("+mediacache.FileName+" in -s)")
 	logLevel := flag.String("v", "info", "Log level (debug, info, warn, error)")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s -s <song-dir> [flags]\n       %s organize -s <dir>[%c<dir>...] [-s ...] -l <library> [flags]   (see %s organize -h)\n       %s dedupe -l <library> [flags]   (see %s dedupe -h)\n       %s add -s <dir>[%c<dir>...] [-s ...] -l <library> [flags]   (see %s add -h)\n       %s remove -l <library> [-artist <name>] [-song \"Artist - Title\"] [-from <file>] [flags]   (see %s remove -h)\n       %s ui [-addr 127.0.0.1:0] [-no-browser] [-keep-running] [-v level]   (browser UI; also started without any argument)\n\nModules run in this order: fixtxt (-t), cleanup (-c), check (-k), fixvideos (-m), fixaudio (-a).\n\nFlags:\n", os.Args[0], os.Args[0], filepath.ListSeparator, os.Args[0], os.Args[0], os.Args[0], os.Args[0], filepath.ListSeparator, os.Args[0], os.Args[0], os.Args[0], os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s -s <song-dir> [flags]\n       %s organize -s <dir>[%c<dir>...] [-s ...] -l <library> [flags]   (see %s organize -h)\n       %s dedupe -l <library> [flags]   (see %s dedupe -h)\n       %s add -s <dir>[%c<dir>...] [-s ...] -l <library> [flags]   (see %s add -h)\n       %s remove -l <library> [-artist <name>] [-song \"Artist - Title\"] [-from <file>] [flags]   (see %s remove -h)\n       %s export -l <library> [-o <out> | -csv <file>] [flags]   (song list as CSV; see %s export -h)\n       %s ui [-addr 127.0.0.1:0] [-no-browser] [-keep-running] [-v level]   (browser UI; also started without any argument)\n\nModules run in this order: fixtxt (-t), cleanup (-c), check (-k), fixvideos (-m), fixaudio (-a).\n\nFlags:\n", os.Args[0], os.Args[0], filepath.ListSeparator, os.Args[0], os.Args[0], os.Args[0], os.Args[0], filepath.ListSeparator, os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
