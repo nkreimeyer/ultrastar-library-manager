@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-23
+
 ### Added
 
 - `export` subcommand and, in the web UI's advanced mode, the task "Export the song list (CSV)": one row per song with artist, title, year, genre, BPM, language, length and duet, comma separated (values with a comma or a double quote are quoted as in RFC 4180), as UTF-8 with a byte order mark for Excel. The library is only read.
@@ -152,7 +154,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Modules fixtxt, cleanup, check (`-k`), fixvideos (`-m`) and fixaudio (`-a`) with dry run (`-n`), one output folder and nothing deleted.
 - Release builds for Linux, Windows and macOS.
 
-[Unreleased]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.2.1...v0.2.2
