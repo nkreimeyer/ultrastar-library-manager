@@ -577,16 +577,23 @@ function tidyRequest() {
 
 const anyTidy = (t) => Object.keys(TIDY_DEFAULTS).some((k) => t[k]);
 
-// organizeRequest is the request of a check; withTidy adds the tidy-up options (a dedupe
-// from the options page).
-function organizeRequest(withTidy) {
-  if (S.task === "remove") {
-    return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "", patterns: S.f.patterns };
-  }
-  if (S.task === "check") {
-    return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "", deep: advanced() && S.f.deep };
-  }
-  if (S.task === "restore" || S.task === "reports" || S.task === "originals" || S.task === "overview" || S.task === "export") return { library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "" };
+// The per-task parts of the setup page and of the requests built from it. TASKS holds the
+// texts of the task list; SETUP what each task asks for and does:
+//   fields()       the folder fields, in order;
+//   sorting, deep  which advanced checkboxes it shows (-priority/-ignore-the, -deep);
+//   request(withTidy) the request of its validate, check or job, built from the form;
+//   validateRoute  the /api/<route>/validate it is checked with;
+//   resolvedText   what precedes the output folder once the folders are checked;
+//   start          the start button: label, hint, and action (or next: the tidy-up options).
+const SETUP_DEFAULT_RESOLVED = "Set-aside songs, reports and the record for undoing go to ";
+const SETUP_READ_ONLY_HINT = "Nothing in the library is changed. It can take a while for a big library.";
+const SETUP_CHECK_FIRST = { label: "Check first", hint: "Nothing is changed yet. You see what would happen and decide then.", action: startAnalysis };
+
+const formFolders = () => ({ library: S.f.library.trim(), out: advanced() ? S.f.out.trim() : "" });
+
+// organizeFamilyRequest is the request of dedupe, add and organize; withTidy adds the
+// tidy-up options (a dedupe from the options page).
+function organizeFamilyRequest(withTidy) {
   return {
     tidy: withTidy && S.task === "dedupe" ? tidyRequest() : undefined,
     mode: S.task,
@@ -597,6 +604,75 @@ function organizeRequest(withTidy) {
     ignoreThe: advanced() && S.f.ignoreThe,
     deep: advanced() && S.f.deep,
   };
+}
+
+// readOnlyTask is a task that only looks at the library and its output folder.
+const readOnlyTask = (hint, start, validateRoute = "setaside", resolvedText = "Looking in ") => ({
+  fields: () => [folderField("Your library", "library", hint)],
+  request: formFolders,
+  validateRoute,
+  resolvedText,
+  start,
+});
+
+const SETUP = {
+  dedupe: {
+    fields: () => [folderField("Your library", "library", "The folder that holds your songs. What is set aside is moved out of it; the songs you keep stay where they are.")],
+    deep: true,
+    request: organizeFamilyRequest,
+    validateRoute: "organize",
+    resolvedText: SETUP_DEFAULT_RESOLVED,
+    start: { label: "Next", hint: "Next you choose what to tidy up.", next: true },
+  },
+  add: {
+    fields: () => [folderField("Your library", "library", "The songs end up here, sorted into a folder per first letter."), tiersField("Folders with new songs")],
+    sorting: true,
+    deep: true,
+    request: organizeFamilyRequest,
+    validateRoute: "organize",
+    resolvedText: SETUP_DEFAULT_RESOLVED,
+    start: SETUP_CHECK_FIRST,
+  },
+  overview: readOnlyTask("It is only read, never changed.", { label: "Count songs", hint: SETUP_READ_ONLY_HINT, action: () => startJob("/api/overview", organizeRequest()) }),
+  originals: readOnlyTask("The backups are in its output folder.", { label: "Look", hint: "Nothing is changed yet.", action: () => openOriginals(organizeRequest()) }),
+  reports: readOnlyTask("The reports are in its output folder.", { label: "Show reports", hint: "Nothing is changed yet.", action: () => openReports(organizeRequest()) }),
+  restore: readOnlyTask("The library the songs were set aside from. Its output folder is where they are now.", { label: "Look", hint: "You choose what to put back on the next page.", action: () => loadAside() }),
+  check: {
+    fields: () => [folderField("Your library", "library", "The folder that holds your songs. It is only read, never changed.")],
+    deep: true,
+    request: () => ({ ...formFolders(), deep: advanced() && S.f.deep }),
+    validateRoute: "check",
+    resolvedText: "The reports go to ",
+    start: { label: "Check songs", hint: SETUP_READ_ONLY_HINT, action: startAnalysis },
+  },
+  remove: {
+    fields: () => [folderField("Your library", "library", "The folder that holds your songs. The songs you name are moved out of it."), patternsField()],
+    request: () => ({ ...formFolders(), patterns: S.f.patterns }),
+    validateRoute: "remove",
+    resolvedText: SETUP_DEFAULT_RESOLVED,
+    start: SETUP_CHECK_FIRST,
+  },
+  export: readOnlyTask("It is only read, never changed. The list is saved in its output folder.",
+    { label: "Export", hint: SETUP_READ_ONLY_HINT, action: () => startJob("/api/export", organizeRequest()) },
+    "check", "The list is saved as song_list.csv in "),
+  organize: {
+    fields: () => [tiersField("Folders to take songs from", "The songs are moved out of these folders."), folderField("New library folder", "library", "Can be a new, empty folder.")],
+    sorting: true,
+    deep: true,
+    request: organizeFamilyRequest,
+    validateRoute: "organize",
+    resolvedText: SETUP_DEFAULT_RESOLVED,
+    start: SETUP_CHECK_FIRST,
+  },
+};
+
+// taskSetup is the SETUP entry of the chosen task (S.task is always one of TASKS' keys).
+const taskSetup = () => (Object.hasOwn(SETUP, S.task) ? SETUP[S.task] : SETUP.organize);
+
+// organizeRequest is the request of a check; withTidy adds the tidy-up options (a dedupe
+// from the options page).
+function organizeRequest(withTidy) {
+  return taskSetup().request(withTidy);
 }
 
 let validateTimer = 0;
@@ -616,7 +692,7 @@ async function validate() {
     return;
   }
   try {
-    const res = await post(`/api/${{ remove: "remove", check: "check", export: "check", restore: "setaside", reports: "setaside", originals: "setaside", overview: "setaside" }[S.task] || "organize"}/validate`, organizeRequest());
+    const res = await post(`/api/${taskSetup().validateRoute}/validate`, organizeRequest());
     if (seq !== validateSeq) return;
     S.resolved = res;
     S.resolveError = null;
@@ -660,22 +736,15 @@ function updateResolved() {
   if (S.resolveError) {
     el.replaceChildren(h("span", { class: "error-text" }, S.resolveError));
   } else if (S.resolved) {
-    const out = S.resolved.outDir;
-    el.replaceChildren(
-      S.task === "check" ? "The reports go to " : S.task === "export" ? "The list is saved as song_list.csv in " : S.task === "restore" || S.task === "reports" || S.task === "originals" || S.task === "overview" ? "Looking in " : "Set-aside songs, reports and the record for undoing go to ",
-      h("span", { class: "path" }, out),
-      ".",
-    );
+    el.replaceChildren(taskSetup().resolvedText, h("span", { class: "path" }, S.resolved.outDir), ".");
   } else {
     el.replaceChildren("Pick the library folder to go on.");
   }
   if (S.task === "remove" && S.resolved && !S.resolveError && !S.f.patterns.trim()) el.append(" Write who or what to remove to go on.");
 }
 
-function viewSetup() {
-  const frag = h("div");
-  add(frag, h("h1", null, "What do you want to do?"));
-  add(frag, noticeBox(S.notice), systemNotice() || "");
+// taskRadios is the list of tasks; choosing one starts its setup afresh.
+function taskRadios() {
   const tasks = h("ul", { class: "tasks", role: "radiogroup", "aria-label": "Task" });
   for (const [key, t] of Object.entries(TASKS)) {
     if (t.advanced && !advanced()) continue;
@@ -694,74 +763,51 @@ function viewSetup() {
       h("span", { class: "d" }, t.desc),
     )));
   }
-  add(frag, tasks);
+  return tasks;
+}
 
-  const fields = h("section", { "aria-label": "Folders and options" });
-  switch (S.task) {
-    case "dedupe":
-      fields.append(folderField("Your library", "library", "The folder that holds your songs. What is set aside is moved out of it; the songs you keep stay where they are."));
-      break;
-    case "add":
-      fields.append(folderField("Your library", "library", "The songs end up here, sorted into a folder per first letter."));
-      fields.append(tiersField("Folders with new songs"));
-      break;
-    case "check":
-      fields.append(folderField("Your library", "library", "The folder that holds your songs. It is only read, never changed."));
-      break;
-    case "restore":
-      fields.append(folderField("Your library", "library", "The library the songs were set aside from. Its output folder is where they are now."));
-      break;
-    case "reports":
-      fields.append(folderField("Your library", "library", "The reports are in its output folder."));
-      break;
-    case "originals":
-      fields.append(folderField("Your library", "library", "The backups are in its output folder."));
-      break;
-    case "overview":
-      fields.append(folderField("Your library", "library", "It is only read, never changed."));
-      break;
-    case "export":
-      fields.append(folderField("Your library", "library", "It is only read, never changed. The list is saved in its output folder."));
-      break;
-    case "remove":
-      fields.append(folderField("Your library", "library", "The folder that holds your songs. The songs you name are moved out of it."));
-      fields.append(patternsField());
-      break;
-    case "organize":
-      fields.append(tiersField("Folders to take songs from", "The songs are moved out of these folders."));
-      fields.append(folderField("New library folder", "library", "Can be a new, empty folder."));
-      break;
+// advancedOptions is the options section of the advanced mode for the task's setup.
+function advancedOptions(setup) {
+  const opts = h("section", { "aria-label": "Advanced options" }, h("h2", null, "Options"));
+  if (setup.sorting) {
+    opts.append(checkField("Priority decides first (-priority)", "priority", "A song from an earlier priority group always wins, before quality is compared."));
+    opts.append(checkField("Sort “The …” by the next word (-ignore-the)", "ignoreThe", "“The Beatles” goes into B instead of T."));
   }
-  if (advanced()) {
-    const opts = h("section", { "aria-label": "Advanced options" }, h("h2", null, "Options"));
-    if (S.task === "add" || S.task === "organize") {
-      opts.append(checkField("Priority decides first (-priority)", "priority", "A song from an earlier priority group always wins, before quality is compared."));
-      opts.append(checkField("Sort “The …” by the next word (-ignore-the)", "ignoreThe", "“The Beatles” goes into B instead of T."));
-    }
-    if (S.task === "dedupe" || S.task === "add" || S.task === "organize" || S.task === "check") opts.append(checkField("Decode every media file completely (-deep)", "deep", "Finds damaged audio and video, but is slow."));
-    opts.append(h("div", { class: "field" }, h("div", { class: "label" }, "Output folder (-o)"),
-      folderInput(S.f.out, (v) => setField("out", v), "Output folder"),
-      h("p", { class: "hint" }, "Empty: organize-output next to the library.")));
-    fields.append(opts);
-  }
-  add(frag, fields);
-  add(frag, h("p", { class: "resolved", id: "resolved", "aria-live": "polite" }));
-  add(frag, h("div", { class: "actions" }, S.task === "dedupe"
-    ? h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: () => {
+  if (setup.deep) opts.append(checkField("Decode every media file completely (-deep)", "deep", "Finds damaged audio and video, but is slow."));
+  opts.append(h("div", { class: "field" }, h("div", { class: "label" }, "Output folder (-o)"),
+    folderInput(S.f.out, (v) => setField("out", v), "Output folder"),
+    h("p", { class: "hint" }, "Empty: organize-output next to the library.")));
+  return opts;
+}
+
+// startActions is the start button of the task and its hint. The button stays disabled
+// until updateResolved has the folders checked.
+function startActions(setup) {
+  const start = setup.start;
+  const onclick = start.next
+    ? () => {
       S.view = "options";
       S.notice = null;
       render();
       window.scrollTo(0, 0);
-    } }, "Next")
-    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: S.task === "restore" ? () => loadAside() : S.task === "reports" ? () => openReports(organizeRequest()) : S.task === "originals" ? () => openOriginals(organizeRequest()) : S.task === "overview" ? () => startJob("/api/overview", organizeRequest()) : S.task === "export" ? () => startJob("/api/export", organizeRequest()) : startAnalysis },
-      S.task === "export" ? "Export" : S.task === "check" ? "Check songs" : S.task === "restore" ? "Look" : S.task === "reports" ? "Show reports" : S.task === "originals" ? "Look" : S.task === "overview" ? "Count songs" : "Check first"),
-  h("span", { class: "muted small" }, S.task === "dedupe" ? "Next you choose what to tidy up."
-    : S.task === "check" ? "Nothing in the library is changed. It can take a while for a big library."
-    : S.task === "restore" ? "You choose what to put back on the next page."
-    : S.task === "reports" || S.task === "originals" ? "Nothing is changed yet."
-    : S.task === "overview" || S.task === "export" ? "Nothing in the library is changed. It can take a while for a big library."
-    : "Nothing is changed yet. You see what would happen and decide then."),
-  ));
+    }
+    : start.action;
+  return h("div", { class: "actions" },
+    h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick }, start.label),
+    h("span", { class: "muted small" }, start.hint));
+}
+
+function viewSetup() {
+  const setup = taskSetup();
+  const frag = h("div");
+  add(frag, h("h1", null, "What do you want to do?"));
+  add(frag, noticeBox(S.notice), systemNotice() || "");
+  add(frag, taskRadios());
+  const fields = h("section", { "aria-label": "Folders and options" }, setup.fields());
+  if (advanced()) fields.append(advancedOptions(setup));
+  add(frag, fields);
+  add(frag, h("p", { class: "resolved", id: "resolved", "aria-live": "polite" }));
+  add(frag, startActions(setup));
   if (advanced()) {
     add(frag, h("h2", null, "Earlier runs"), h("div", { id: "history" }, historyList()));
   }
@@ -1275,7 +1321,7 @@ async function endOrganizeApply(j, c) {
 }
 
 // endResult shows the result of a job that only reads (overview, export) on its own page.
-function endResult(j, c, key, view, failedTitle) {
+async function endResult(j, c, key, view, failedTitle) {
   if (j.state === "done") {
     S[key] = j.result;
     S.view = view;
@@ -1285,13 +1331,13 @@ function endResult(j, c, key, view, failedTitle) {
   }
 }
 
-function endOriginalsDelete(j, c) {
+async function endOriginalsDelete(j, c) {
   S.done = flagDone("originals", j, S.originals?.config);
   S.view = "done";
   if (j.state === "failed") S.notice = c.failed("Not everything could be deleted");
 }
 
-function endRestore(j, c) {
+async function endRestore(j, c) {
   S.done = flagDone("restore", j, S.aside?.config);
   S.view = "done";
   if (j.state === "failed") S.notice = c.failed("Not everything could be put back");
@@ -1309,7 +1355,7 @@ async function endCheckAnalyse(j, c) {
   }
 }
 
-function endCheckApply(j, c) {
+async function endCheckApply(j, c) {
   if (j.state === "done" || j.state === "cancelled" || (j.stats?.moved && resultFolders(j))) {
     S.done = flagDone("check", j, S.chk?.config);
     S.view = "done";
@@ -1352,7 +1398,7 @@ async function endRemoveApply(j, c) {
   }
 }
 
-function endUndo(j, c) {
+async function endUndo(j, c) {
   // Never the folders of an earlier result: a retry must undo the same journal.
   S.done = { kind: "undo", job: j, cfg: resultFolders(j) };
   S.view = "done";
