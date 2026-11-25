@@ -14,6 +14,9 @@ import (
 	"github.com/nkreimeyer/library-manager/songtxt"
 )
 
+// bomText is utf8BOM as decoded text: dropped from the start of a txt.
+const bomText = "\ufeff"
+
 // Names of the encodings DecodeTxt can detect. Single-byte codecs named by an #ENCODING
 // tag are reported under their canonical name (e.g. "CP1251", "ISO-8859-2").
 const (
@@ -154,7 +157,7 @@ func DecodeTxt(raw []byte) DecodedTxt {
 		d.Problem = "contains NUL bytes"
 	}
 
-	d.Text = strings.TrimPrefix(d.Text, "\ufeff")
+	d.Text = strings.TrimPrefix(d.Text, bomText)
 	d.Text = strings.ReplaceAll(d.Text, "\r\n", "\n")
 	d.Text = strings.ReplaceAll(d.Text, "\r", "\n")
 	return d
@@ -250,7 +253,7 @@ var singleByteCodecs = map[string]struct {
 func encodingHint(raw []byte) hint {
 	var h hint
 	for _, line := range splitLines(string(raw)) {
-		line = strings.TrimSpace(strings.TrimPrefix(line, "\ufeff"))
+		line = strings.TrimSpace(strings.TrimPrefix(line, bomText))
 		if songtxt.IsBodyLine(line) {
 			break
 		}

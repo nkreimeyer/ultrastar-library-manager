@@ -161,8 +161,8 @@ func TestDedupeDryRunCacheServesRealRun(t *testing.T) {
 	if got := runWithArgs(t, "dedupe", "-l", lib, "-o", out); got != exitOK {
 		t.Fatalf("real run = %d", got)
 	}
-	if real := lastCacheStats(t, hook); real.scanned != 0 || real.reused != dry.scanned {
-		t.Errorf("real run: %+v, want %d reused and nothing scanned", real, dry.scanned)
+	if realStats := lastCacheStats(t, hook); realStats.scanned != 0 || realStats.reused != dry.scanned {
+		t.Errorf("real run: %+v, want %d reused and nothing scanned", realStats, dry.scanned)
 	}
 	if _, err := os.Stat(filepath.Join(out, "duplicates")); err != nil {
 		t.Errorf("the real run set no duplicate aside: %v", err)

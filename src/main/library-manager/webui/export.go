@@ -83,7 +83,7 @@ func (s *Server) handleExportDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("the song list is gone: %w", err))
 		return
 	}
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set(headerContentType, "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(f.path)+`"`)
 	_, _ = w.Write(data)
 }

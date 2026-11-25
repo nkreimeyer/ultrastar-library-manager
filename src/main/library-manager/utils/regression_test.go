@@ -83,11 +83,11 @@ func TestDecodeTxtNativeCentralEuropeanLanguage(t *testing.T) {
 func TestFindSongTxtAcceptsSymlinkedTxtLikeDiscovery(t *testing.T) {
 	lib := t.TempDir()
 	store := t.TempDir()
-	real := filepath.Join(store, "real.txt")
-	testutil.WriteFile(t, real, songTxt)
+	realFile := filepath.Join(store, "real.txt")
+	testutil.WriteFile(t, realFile, songTxt)
 	dir := filepath.Join(lib, "A - B")
 	testutil.WriteFile(t, filepath.Join(dir, "song.mp3"), "x")
-	if err := os.Symlink(real, filepath.Join(dir, "song.txt")); err != nil {
+	if err := os.Symlink(realFile, filepath.Join(dir, "song.txt")); err != nil {
 		t.Skipf("symlinks not supported: %v", err)
 	}
 	// Neither a dangling link nor a link to a directory is a txt.

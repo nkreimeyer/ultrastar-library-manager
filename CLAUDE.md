@@ -156,6 +156,11 @@ which fails if the release exists; its binaries go to the generic package regist
 with the job artifacts; GitHub with `gh release upload --clobber`). The GitLab
 jobs carry the runner tag `docker` (they need the Docker executor: `image:` is ignored by a shell runner). Keep the
 module free of cgo so this keeps working.
+SonarQube: `sonar-project.properties` (project `karaoke-scripts`, the module only, `old/` not analysed);
+run by hand with the `sonarsource/sonar-scanner-cli` image after writing `coverage.out` in the module
+(commands in the file), not in CI. `app.js` calls an async function it does not wait for with `void`;
+a global `unhandledrejection` listener shows what is still lost. Top-level `await` is not possible:
+the app.js tests run it as a classic script in a vm.
 Runtime needs `ffmpeg` ≥ 5.1 and `ffprobe` on PATH for `-m` and `-a` (enforced: `mediatools.Require`
 makes the module's `Run` fail, exit 1); `-k` and organize use what they find (an older version with a
 warning and a report note).

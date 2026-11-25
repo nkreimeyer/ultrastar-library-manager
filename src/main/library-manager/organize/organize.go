@@ -520,7 +520,7 @@ type applier struct {
 
 func newApplier(cfg config.OrganizeConfig, ops *fsops.Ops, cands []Candidate, outcomes map[int]moveOutcome) *applier {
 	return &applier{cfg: cfg, ops: ops, cands: cands, j: newJournal(ops, cfg.JournalPath(), cfg.Library), outcomes: outcomes, moveTo: ops.MoveTo, freeBuckets: map[string]bool{},
-		ctx: context.Background(), progress: func(string, int, int) {}}
+		ctx: context.Background(), progress: func(string, int, int) { /* no progress shown by default */ }}
 }
 
 // cancelled reports whether the moves are to stop, and logs it once.

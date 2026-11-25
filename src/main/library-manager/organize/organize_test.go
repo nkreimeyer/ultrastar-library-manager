@@ -325,8 +325,8 @@ func TestRunMovesIntoBucketsAndUndo(t *testing.T) {
 	}
 }
 
-// comparable strips what differs between a dry run and a real run from a report.
-func comparable(r planReport) planReport {
+// comparableReport strips what differs between a dry run and a real run from a report.
+func comparableReport(r planReport) planReport {
 	r.DryRun = false
 	r.ToLibrary = append([]libraryEntry(nil), r.ToLibrary...)
 	r.Duplicates = append([]duplicateEntry(nil), r.Duplicates...)
@@ -381,7 +381,7 @@ func TestRunDryRunMatchesRealRun(t *testing.T) {
 	if rst.Moved != dst.Moved || rst.Failed != 0 {
 		t.Errorf("real run moved %d (failed %d), dry run planned %d", rst.Moved, rst.Failed, dst.Moved)
 	}
-	if a, b := comparable(dryRep), comparable(realRep); !reflect.DeepEqual(a, b) {
+	if a, b := comparableReport(dryRep), comparableReport(realRep); !reflect.DeepEqual(a, b) {
 		da, _ := fsops.MarshalReport(a)
 		db, _ := fsops.MarshalReport(b)
 		t.Errorf("dry-run plan differs from the real run:\n%s\nreal:\n%s", da, db)
@@ -426,7 +426,7 @@ func TestRunLibraryAsSource(t *testing.T) {
 	if st.Failed != 0 {
 		t.Fatalf("failed operations: %+v", st)
 	}
-	if a, b := comparable(dryRep), comparable(rep); !reflect.DeepEqual(a, b) {
+	if a, b := comparableReport(dryRep), comparableReport(rep); !reflect.DeepEqual(a, b) {
 		t.Errorf("dry-run plan differs from the real run:\n%+v\n%+v", a, b)
 	}
 	want := map[string]string{
@@ -676,7 +676,7 @@ func TestRunExistingLibraryNotSource(t *testing.T) {
 	if st.Failed != 0 || st.Moved != 1 {
 		t.Errorf("stats = %+v, want only Elton moved", st)
 	}
-	if a, b := comparable(dryRep), comparable(rep); !reflect.DeepEqual(a, b) {
+	if a, b := comparableReport(dryRep), comparableReport(rep); !reflect.DeepEqual(a, b) {
 		t.Errorf("dry-run plan differs from the real run:\n%+v\n%+v", a, b)
 	}
 	addTo := "; add the library as a source (-s) to deduplicate against it"

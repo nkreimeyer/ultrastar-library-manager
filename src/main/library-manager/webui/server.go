@@ -28,6 +28,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// headerContentType is the name of the HTTP header the handlers set and the JSON check reads.
+const headerContentType = "Content-Type"
+
 //go:embed static
 var staticFiles embed.FS
 
@@ -169,7 +172,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.signedIn(r) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set(headerContentType, "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusForbidden)
 		io.WriteString(w, "Not signed in. Open the address library-manager printed when it started (it contains ?token=…). "+
 			"It works once: if this browser lost its sign-in, restart library-manager and open the new address.\n")
@@ -180,7 +183,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "cross-origin request", http.StatusForbidden)
 			return
 		}
-		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		if ct := r.Header.Get(headerContentType); !strings.HasPrefix(ct, "application/json") {
 			http.Error(w, "requests must be JSON", http.StatusUnsupportedMediaType)
 			return
 		}
@@ -234,7 +237,7 @@ type apiError struct {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set(headerContentType, "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		log.Debugf("webui: writing a response: %v", err)

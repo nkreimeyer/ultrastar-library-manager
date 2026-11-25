@@ -34,7 +34,7 @@ func runRemove(args []string, output io.Writer) int {
 	undo := fs.undoFlag()
 	fs.Usage = func() {
 		fmt.Fprintf(output, "Usage: %s -l <library> [-artist <name>]... [-song \"Artist - Title\"]... [-from <file>]... [-o <out>] [-n] [-v level]\n"+
-			"       %s -undo [-o <out> | -l <library>] [-n] [-v level]\n\n"+
+			undoUsageLine+
 			"Moves the songs that match to <out>/removed/<path in the library>; nothing is deleted, and\n"+
 			"-undo puts them back. Tags are compared like the duplicate detection does (case, accents,\n"+
 			"spaces, punctuation, a leading \"The\" and feat. parts do not matter). Review the plan with -n\n"+

@@ -67,14 +67,14 @@ func runOrganize(mode organize.Mode, args []string, output io.Writer) int {
 		switch mode {
 		case organize.ModeDedupe:
 			fmt.Fprintf(output, "Usage: %s -l <library> [-o <out>] [-deep] [-no-cache] [-n] [-v level]\n"+
-				"       %s -undo [-o <out> | -l <library>] [-n] [-v level]\n\n"+
+				undoUsageLine+
 				"Removes the duplicates of the library in place: the best version of every song stays where it\n"+
 				"is, other versions (and copies marked _dupl<n>) go to <out>/duplicates/, broken songs that\n"+
 				"have a working version to <out>/invalid/. Nothing is renamed or re-bucketed.\n\nFlags:\n",
 				name, name)
 		case organize.ModeAdd:
 			fmt.Fprintf(output, "Usage: %s -s <dir>[%c<dir>...] [-s ...] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-no-cache] [-n] [-v level]\n"+
-				"       %s -undo [-o <out> | -l <library>] [-n] [-v level]\n\n"+
+				undoUsageLine+
 				"Adds the songs of the sources to the library, deduplicated among themselves and against the\n"+
 				"library: new songs go to <library>/<A-Z|0-9|#>/<Artist - Title>/, a better version replaces the\n"+
 				"library's copy (on a tie the library's copy stays), other versions go to <out>/duplicates/,\n"+
@@ -82,7 +82,7 @@ func runOrganize(mode organize.Mode, args []string, output io.Writer) int {
 				name, filepath.ListSeparator, name)
 		default:
 			fmt.Fprintf(output, "Usage: %s -s <dir>[%c<dir>...] [-s ...] -l <library> [-o <out>] [-priority] [-ignore-the] [-deep] [-no-cache] [-n] [-v level]\n"+
-				"       %s -undo [-o <out> | -l <library>] [-n] [-v level]\n\n"+
+				undoUsageLine+
 				"Moves the songs of the sources into <library>/<A-Z|0-9|#>/<Artist - Title>/, keeping the best\n"+
 				"version of every song; other versions go to <out>/duplicates/, broken songs to <out>/invalid/.\n\nFlags:\n",
 				name, filepath.ListSeparator, name)

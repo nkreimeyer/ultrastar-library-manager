@@ -186,12 +186,12 @@ func TestRunReview(t *testing.T) {
 	}
 
 	// The real run with the exclusion moves what the replan said.
-	var real *Review
+	var realReview *Review
 	_, rep := runOrganize(t, cfg, Options{Exclude: map[string]bool{keeper: true}, Review: func(r *Review) error {
-		real = r
+		realReview = r
 		return nil
 	}})
-	if d := PlanDiff(got.Cands, re, real.Cands, real.Plan); len(d) != 0 {
+	if d := PlanDiff(got.Cands, re, realReview.Cands, realReview.Plan); len(d) != 0 {
 		t.Errorf("real run differs from the replan: %v", d)
 	}
 	if _, err := os.Stat(filepath.Join(a, "ABBA - SOS", "cover.png")); err != nil {

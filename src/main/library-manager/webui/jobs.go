@@ -304,7 +304,7 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 			logJob, next = id, v
 		}
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set(headerContentType, "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	fl.Flush()

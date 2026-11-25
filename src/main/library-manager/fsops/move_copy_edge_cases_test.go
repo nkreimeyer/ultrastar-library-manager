@@ -62,10 +62,10 @@ func shmDir(t *testing.T) (shm, tmp string) {
 // like a rename on the same file system fails.
 func TestMoveCrossDeviceSrcRemovalFails(t *testing.T) {
 	testutil.SkipIfRoot(t)
-	for _, real := range []bool{false, true} {
-		t.Run(fmt.Sprintf("realDevices=%v", real), func(t *testing.T) {
+	for _, realRun := range []bool{false, true} {
+		t.Run(fmt.Sprintf("realDevices=%v", realRun), func(t *testing.T) {
 			var srcRoot, dstRoot string
-			if real {
+			if realRun {
 				srcRoot, dstRoot = shmDir(t)
 			} else {
 				simulateCrossDevice(t)
@@ -106,10 +106,10 @@ func TestMoveCrossDeviceSrcRemovalFails(t *testing.T) {
 // A move across file systems: the target is an exact copy, the source is gone, and no
 // hidden leftover remains in the source folder.
 func TestMoveCrossDevice(t *testing.T) {
-	for _, real := range []bool{false, true} {
-		t.Run(fmt.Sprintf("realDevices=%v", real), func(t *testing.T) {
+	for _, realRun := range []bool{false, true} {
+		t.Run(fmt.Sprintf("realDevices=%v", realRun), func(t *testing.T) {
 			var srcRoot, dstRoot string
-			if real {
+			if realRun {
 				srcRoot, dstRoot = shmDir(t)
 			} else {
 				simulateCrossDevice(t)

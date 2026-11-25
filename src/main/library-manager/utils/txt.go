@@ -23,7 +23,7 @@ import (
 // resolves like UltraStar does: the last occurrence wins.
 func HeaderTags(text string) map[string]string {
 	tags := map[string]string{}
-	for _, line := range splitLines(strings.TrimPrefix(text, "\ufeff")) {
+	for _, line := range splitLines(strings.TrimPrefix(text, bomText)) {
 		if songtxt.IsBodyLine(line) {
 			break
 		}
@@ -42,7 +42,7 @@ func HeaderTags(text string) map[string]string {
 
 // startsWithTag reports whether the first non-blank line of text is a tag line.
 func startsWithTag(text string) bool {
-	for _, line := range splitLines(strings.TrimPrefix(text, "\ufeff")) {
+	for _, line := range splitLines(strings.TrimPrefix(text, bomText)) {
 		if line = strings.TrimSpace(line); line != "" {
 			return strings.HasPrefix(line, "#")
 		}
@@ -308,7 +308,7 @@ func FileReferenceReplacement(ops *fsops.Ops, dir, oldName, newName string) (txt
 		body := strings.TrimRight(line, "\r\n")
 		ending := line[len(body):]
 		// Leading blanks are allowed before the "#", as in HeaderTags.
-		trimmed := strings.TrimLeft(strings.TrimPrefix(body, "\ufeff"), " \t")
+		trimmed := strings.TrimLeft(strings.TrimPrefix(body, bomText), " \t")
 		if songtxt.IsBodyLine(trimmed) {
 			break // end of header
 		}

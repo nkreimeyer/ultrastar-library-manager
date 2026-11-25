@@ -26,6 +26,19 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+// The header tags fixtxt reads and writes, as they are matched (hasTag) and written.
+const (
+	tagArtist       = "#ARTIST"
+	tagTitle        = "#TITLE"
+	tagMP3          = "#MP3"
+	tagAudio        = "#AUDIO"
+	tagVideo        = "#VIDEO"
+	tagVocals       = "#VOCALS"
+	tagInstrumental = "#INSTRUMENTAL"
+	tagCover        = "#COVER"
+	tagBackground   = "#BACKGROUND"
+)
+
 // SongInfo holds the header tags fixtxt reads from a song txt.
 type SongInfo struct {
 	Artist     string
@@ -292,8 +305,8 @@ func handleFolder(cfg config.Config, ops *fsops.Ops, col *collector, opts Option
 	hasCover, hasBackground := files.cover != "", files.background != ""
 	if final := updateTxtFile(cfg, ops, col, opts, folder, txtFile, files); final != nil {
 		header := final[:headerLen(final)]
-		hasCover = tagNamesImage(folder, header, "#COVER")
-		hasBackground = tagNamesImage(folder, header, "#BACKGROUND")
+		hasCover = tagNamesImage(folder, header, tagCover)
+		hasBackground = tagNamesImage(folder, header, tagBackground)
 	}
 
 	if !hasCover {
@@ -581,7 +594,7 @@ func fillNameTags(lines []string, rootDir string, info *SongInfo) (insert, fille
 	fill := utils.TagsFromFolderName(filepath.Base(rootDir), info.Artist, info.Title)
 	if fill.Reason != "" {
 		var missing []string
-		for _, m := range []struct{ tag, value string }{{"#ARTIST", info.Artist}, {"#TITLE", info.Title}} {
+		for _, m := range []struct{ tag, value string }{{tagArtist, info.Artist}, {tagTitle, info.Title}} {
 			if m.value == "" {
 				missing = append(missing, m.tag)
 			}
@@ -596,8 +609,8 @@ func fillNameTags(lines []string, rootDir string, info *SongInfo) (insert, fille
 		value string
 		dst   *string
 	}{
-		{"#TITLE", fill.FillTitle, fill.Title, &info.Title},
-		{"#ARTIST", fill.FillArtist, fill.Artist, &info.Artist},
+		{tagTitle, fill.FillTitle, fill.Title, &info.Title},
+		{tagArtist, fill.FillArtist, fill.Artist, &info.Artist},
 	} {
 		if !f.ok {
 			continue
@@ -640,7 +653,7 @@ func (choice fileChoice) isMainAudio(name string) bool {
 // UltraStar needs an audio tag.
 func chooseAudio(rootDir string, lines []string, files songFiles, info SongInfo, video fileChoice) fileChoice {
 	stems := map[string]bool{}
-	for _, tag := range []string{"#VOCALS", "#INSTRUMENTAL"} {
+	for _, tag := range []string{tagVocals, tagInstrumental} {
 		if onDisk, _, found := utils.ResolveFileName(rootDir, getTagValue(lines, tag)); found {
 			stems[onDisk] = true
 		}
@@ -682,7 +695,7 @@ func chooseVideo(rootDir string, lines []string, files songFiles, info SongInfo)
 		choice.name = files.video[0]
 		return choice
 	}
-	for _, tag := range []string{"#VIDEO", "#MP3", "#AUDIO"} {
+	for _, tag := range []string{tagVideo, tagMP3, tagAudio} {
 		if onDisk, _, found := utils.ResolveFileName(rootDir, getTagValue(lines, tag)); found && slices.Contains(files.video, onDisk) {
 			choice.name = onDisk
 			return choice
@@ -721,7 +734,7 @@ func preferredFile(rootDir string, candidates []string, files songFiles, info So
 // stale sibling tag (format 1.1 txts carry both, and players use #AUDIO).
 func preferTaggedAudio(rootDir string, header []string, audio fileChoice) fileChoice {
 	for _, line := range header {
-		if !hasTag(line, "#MP3") && !hasTag(line, "#AUDIO") {
+		if !hasTag(line, tagMP3) && !hasTag(line, tagAudio) {
 			continue
 		}
 		if onDisk, _, found := utils.ResolveFileName(rootDir, tagValue(line)); found && slices.Contains(audio.ambiguous, onDisk) {
@@ -787,7 +800,7 @@ func updateTagsInLines(rootDir string, lines, updatedLines []string, files songF
 	for i, line := range lines {
 		updatedLines[i] = line
 		switch {
-		case hasTag(line, "#MP3"), hasTag(line, "#AUDIO"):
+		case hasTag(line, tagMP3), hasTag(line, tagAudio):
 			found = setFlag(found, flagAudio)
 			tag, value := splitTag(line)
 			v, ok, unresolved := resolveFileTag(rootDir, value, audio, audio.isMainAudio, utils.IsVideoFile)
@@ -795,28 +808,28 @@ func updateTagsInLines(rootDir string, lines, updatedLines []string, files songF
 				rewrite(i, tag, v)
 			}
 			audioUnresolved = audioUnresolved || unresolved
-		case hasTag(line, "#VIDEO"):
+		case hasTag(line, tagVideo):
 			found = setFlag(found, flagVideo)
 			v, ok, unresolved := resolveFileTag(rootDir, tagValue(line), video, utils.IsVideoFile, nil)
 			if ok {
-				rewrite(i, "#VIDEO", v)
+				rewrite(i, tagVideo, v)
 			}
 			videoUnresolved = videoUnresolved || unresolved
-		case hasTag(line, "#VOCALS"), hasTag(line, "#INSTRUMENTAL"):
+		case hasTag(line, tagVocals), hasTag(line, tagInstrumental):
 			// Stems are never chosen or inserted, only spelled exactly like the file on disk.
 			tag, value := splitTag(line)
 			if onDisk, exact, found := utils.ResolveFileName(rootDir, value); found && !exact && utf8.ValidString(onDisk) {
 				rewrite(i, tag, onDisk)
 			}
-		case hasTag(line, "#COVER"):
+		case hasTag(line, tagCover):
 			found = setFlag(found, flagCover)
 			if upd.cover {
-				rewrite(i, "#COVER", files.cover)
+				rewrite(i, tagCover, files.cover)
 			}
-		case hasTag(line, "#BACKGROUND"):
+		case hasTag(line, tagBackground):
 			found = setFlag(found, flagBackground)
 			if upd.background {
-				rewrite(i, "#BACKGROUND", files.background)
+				rewrite(i, tagBackground, files.background)
 			}
 		}
 	}
@@ -980,12 +993,12 @@ func nameTagLine(lines []string, tag string) (int, string) {
 }
 
 func getSongInfoFromTxtFile(lines []string) SongInfo {
-	_, artist := nameTagLine(lines, "#ARTIST")
-	_, title := nameTagLine(lines, "#TITLE")
+	_, artist := nameTagLine(lines, tagArtist)
+	_, title := nameTagLine(lines, tagTitle)
 	return SongInfo{
 		Artist:     artist,
 		Title:      title,
-		Cover:      getTagValue(lines, "#COVER"),
-		Background: getTagValue(lines, "#BACKGROUND"),
+		Cover:      getTagValue(lines, tagCover),
+		Background: getTagValue(lines, tagBackground),
 	}
 }

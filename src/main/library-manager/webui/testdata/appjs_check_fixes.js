@@ -76,7 +76,13 @@ const ctx = {
   console, document, fetch, Node, Intl, JSON, Promise, Date, Math, Set, Map, Object, Array, String, Number, Error,
   setTimeout, clearTimeout, queueMicrotask,
   localStorage: { getItem: () => null, setItem() {} },
-  window: { scrollTo() {} },
+  window: {
+    scrollTo() {},
+    listeners: {},
+    addEventListener(type, fn) {
+      this.listeners[type] = fn;
+    },
+  },
   EventSource: class { addEventListener() {} },
 };
 vm.createContext(ctx);
@@ -174,6 +180,19 @@ async function main() {
   await run(`stopJob()`);
   check(!byId.stop.disabled && byId.stop.textContent === "Stop", "the stop button after a failed stop: " + byId.stop.disabled + " " + byId.stop.textContent);
   check(byId["stop-hint"].textContent.includes("not signed in"), "the stop hint after a failed stop: " + byId["stop-hint"].textContent);
+
+  // A rejection nobody waits for (a bug in the page) is shown as a notice, not lost.
+  const onRejection = ctx.window.listeners.unhandledrejection;
+  check(typeof onRejection === "function", "no unhandledrejection listener");
+  if (onRejection) {
+    const logged = console.error;
+    console.error = () => {};
+    run(`S.notice = null; S.view = "setup"; S.sys = { os: "linux", toolsOK: true, tools: [] }`);
+    onRejection({ reason: new Error("boom") });
+    onRejection({ reason: "plain" });
+    console.error = logged;
+    check(run(`S.notice?.kind`) === "bad" && run(`S.notice?.text`) === "plain", "the notice of an unhandled rejection: " + JSON.stringify(run(`S.notice`)));
+  }
 
   if (failures) process.exit(1);
   console.log("ok");

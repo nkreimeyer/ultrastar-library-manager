@@ -19,7 +19,7 @@ func TestContentHashKeepsBPMPrecision(t *testing.T) {
 	if hashOf(t, withB("120")) == hashOf(t, withB("130")) {
 		t.Error("BPM changes to 120 and 130 give the same hash")
 	}
-	if hashOf(t, withB("120")) != hashOf(t, withB("120")) {
+	if first, again := hashOf(t, withB("120")), hashOf(t, withB("120")); first != again {
 		t.Error("the same chart gives two hashes")
 	}
 }
@@ -125,7 +125,7 @@ func TestNewProfileChartKeyGrid(t *testing.T) {
 	if key(2, 2) == key(2, 3) {
 		t.Error("lengths 20 and 30 ms are on other grid points")
 	}
-	if key(2, 2) != key(2, 2) {
+	if first, again := key(2, 2), key(2, 2); first != again {
 		t.Error("the key is not stable")
 	}
 }

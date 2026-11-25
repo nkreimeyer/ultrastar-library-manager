@@ -151,9 +151,9 @@ func TestPipelineMergesLeftoverCategory(t *testing.T) {
 
 	planned := runPipeline(t, mustConfig(t, songs, true)).Stats()
 	cfg := mustConfig(t, songs, false)
-	real := runPipeline(t, cfg).Stats()
-	if planned.Moved != real.Moved {
-		t.Errorf("dry-run planned %d moves, real run did %d", planned.Moved, real.Moved)
+	realStats := runPipeline(t, cfg).Stats()
+	if planned.Moved != realStats.Moved {
+		t.Errorf("dry-run planned %d moves, real run did %d", planned.Moved, realStats.Moved)
 	}
 	for _, rel := range []string{"Cat/readme.txt", "Cat/A - Broken/cover.jpg", "Cat/B - Broken/song.txt"} {
 		if _, err := os.Stat(filepath.Join(cfg.InvalidDir(), filepath.FromSlash(rel))); err != nil {

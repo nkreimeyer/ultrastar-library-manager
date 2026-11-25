@@ -31,7 +31,7 @@ const localStorage = {
 class Node {}
 const ctx = vm.createContext({
   document: { getElementById: () => stubEl(), querySelectorAll: () => [], createElement: () => stubEl() },
-  window: { scrollTo() {} },
+  window: { scrollTo() {}, addEventListener() {} },
   localStorage,
   Node,
   fetch: () => Promise.reject(new Error("no network in tests")),

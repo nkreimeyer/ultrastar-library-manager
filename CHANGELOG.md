@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- In the web UI, an unexpected error in one of the page's background steps (checking the folders, starting a job, handling its end) is shown as a notice ("Something went wrong in this page") instead of being lost silently.
+
 ## [0.4.0] - 2026-11-23
 
 ### Added

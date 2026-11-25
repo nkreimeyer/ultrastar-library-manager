@@ -12,6 +12,10 @@ import (
 	"github.com/nkreimeyer/library-manager/organize"
 )
 
+// undoUsageLine is the second usage line of the journaled commands (organize, dedupe, add,
+// remove); its %s is the command name.
+const undoUsageLine = "       %s -undo [-o <out> | -l <library>] [-n] [-v level]\n\n"
+
 // The steps every command shares: usage errors, the leftover-argument check, -v, -undo and
 // the summary with the exit code.
 

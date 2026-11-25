@@ -174,11 +174,11 @@ func TestConversionBlockedByExistingMp4(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	real := fsops.New(false)
-	if err := Run(cfg, real); err != nil {
+	realOps := fsops.New(false)
+	if err := Run(cfg, realOps); err != nil {
 		t.Fatal(err)
 	}
-	if st := real.Stats(); st != (fsops.Stats{}) {
+	if st := realOps.Stats(); st != (fsops.Stats{}) {
 		t.Errorf("real run Stats = %+v, want nothing done", st)
 	}
 	if after := testutil.Snapshot(t, songDir); after != before {

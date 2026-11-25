@@ -87,7 +87,7 @@ func TestRunDedupe(t *testing.T) {
 	if st.Moved != dst.Moved || st.Failed != 0 {
 		t.Errorf("real run moved %d (failed %d), dry run planned %d", st.Moved, st.Failed, dst.Moved)
 	}
-	if a, b := comparable(dryRep), comparable(rep); !reflect.DeepEqual(a, b) {
+	if a, b := comparableReport(dryRep), comparableReport(rep); !reflect.DeepEqual(a, b) {
 		da, _ := fsops.MarshalReport(a)
 		db, _ := fsops.MarshalReport(b)
 		t.Errorf("dry-run plan differs from the real run:\n%s\nreal:\n%s", da, db)
@@ -191,7 +191,7 @@ func TestRunAdd(t *testing.T) {
 	if st.Moved != dst.Moved || st.Failed != 0 {
 		t.Errorf("real run moved %d (failed %d), dry run planned %d", st.Moved, st.Failed, dst.Moved)
 	}
-	if a, b := comparable(dryRep), comparable(rep); !reflect.DeepEqual(a, b) {
+	if a, b := comparableReport(dryRep), comparableReport(rep); !reflect.DeepEqual(a, b) {
 		da, _ := fsops.MarshalReport(a)
 		db, _ := fsops.MarshalReport(b)
 		t.Errorf("dry-run plan differs from the real run:\n%s\nreal:\n%s", da, db)

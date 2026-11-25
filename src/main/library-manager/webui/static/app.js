@@ -414,7 +414,7 @@ function recentField(key) {
       S.f[key] = p;
       saveForm();
       render();
-      validate();
+      void validate();
     } }, p)));
 }
 
@@ -530,7 +530,7 @@ async function pickFolder(start, onPick) {
       list,
       h("label", { class: "check" }, h("input", { type: "checkbox", checked: hidden, onchange: (e) => {
         hidden = e.target.checked;
-        show(l.path);
+        void show(l.path);
       } }), h("span", { class: "small" }, "Show hidden folders")),
       h("div", { class: "actions" },
         h("button", { class: "btn primary", type: "button", disabled: !!l.error, onclick: () => {
@@ -626,7 +626,7 @@ async function validate() {
       const box = document.getElementById("history");
       if (box) box.replaceChildren(historyList());
     }
-    if (advanced()) loadHistory(seq, res.library, res.outDir);
+    if (advanced()) void loadHistory(seq, res.library, res.outDir);
   } catch (e) {
     if (seq !== validateSeq) return;
     S.resolved = null;
@@ -688,7 +688,7 @@ function viewSetup() {
         S.resolveError = null;
         S.history = null;
         render();
-        validate();
+        void validate();
       } }),
       h("span", { class: "t" }, t.title),
       h("span", { class: "d" }, t.desc),
@@ -791,7 +791,7 @@ async function startJob(path, body) {
     S.waitingFor = job.id;
     S.view = "running";
     render();
-    if (S.lastJob?.id === job.id && S.lastJob.state !== "running") onJobEnd(S.lastJob);
+    if (S.lastJob?.id === job.id && S.lastJob.state !== "running") void onJobEnd(S.lastJob);
   } catch (e) {
     S.notice = { kind: "bad", title: e.message, details: e.details };
     render();
@@ -883,14 +883,14 @@ function viewOverview() {
     aside.length ? h("button", { class: "btn", type: "button", onclick: () => {
       S.task = "restore";
       localStorage.setItem("lm-task", "restore");
-      loadAside();
+      void loadAside();
     } }, "Look at what is set aside") : null,
     h("button", { class: "btn", type: "button", onclick: () => startJob("/api/overview", { library: o.library, out: o.outDir }) }, "Count again"),
     h("button", { class: "btn", type: "button", onclick: () => {
       S.view = "setup";
       S.notice = null;
       render();
-      validate();
+      void validate();
     } }, "Back to the Main Menu")));
   return frag;
 }
@@ -908,7 +908,7 @@ function viewExported() {
       S.view = "setup";
       S.notice = null;
       render();
-      validate();
+      void validate();
     } }, "Back to the Main Menu")));
   return frag;
 }
@@ -935,14 +935,14 @@ function viewOriginals() {
         `${bytesText(o.bytes)} are freed. This cannot be undone.`,
         "Only the copies in the output folder are deleted, nothing in your library.",
       ], "Delete the backups");
-      if (ok) startJob("/api/originals/delete", { library: o.config.library, out: o.config.outDir });
+      if (ok) void startJob("/api/originals/delete", { library: o.config.library, out: o.config.outDir });
     } }, `Delete the backups (${bytesText(o.bytes)})`) : null,
     h("button", { class: "btn", type: "button", onclick: () => openOriginals(o.config) }, "Look again"),
     h("button", { class: "btn", type: "button", onclick: () => {
       S.view = "setup";
       S.notice = null;
       render();
-      validate();
+      void validate();
     } }, "Back")));
   return frag;
 }
@@ -994,13 +994,13 @@ function viewReports() {
     S.view = S.reportsFrom === "done" && S.done ? "done" : "setup";
     S.notice = null;
     render();
-    if (S.view === "setup") validate();
+    if (S.view === "setup") void validate();
   } }, "Back")));
   return frag;
 }
 
 function startAnalysis() {
-  startJob(`/api/${S.task === "remove" ? "remove" : S.task === "check" ? "check" : "organize"}/analyse`, organizeRequest(true));
+  void startJob(`/api/${S.task === "remove" ? "remove" : S.task === "check" ? "check" : "organize"}/analyse`, organizeRequest(true));
 }
 
 // patternsField is the text box of the remove task: one artist or "Artist - Title" per line.
@@ -1067,7 +1067,7 @@ function viewOptions() {
       S.view = "setup";
       S.notice = null;
       render();
-      validate();
+      void validate();
     } }, "Back"),
     h("span", { class: "muted small" }, "Nothing is changed yet. Audio and video are worked on only when you go ahead."),
   ));
@@ -1075,7 +1075,7 @@ function viewOptions() {
 }
 
 function undo(library, out) {
-  startJob("/api/organize/undo", { library, out });
+  void startJob("/api/organize/undo", { library, out });
 }
 
 // ---------------------------------------------------------------- running
@@ -1191,7 +1191,7 @@ function connectEvents() {
     if (j.id !== S.waitingFor) return;
     S.job = j;
     if (j.state === "running") updateRunning();
-    else onJobEnd(j);
+    else void onJobEnd(j);
   });
   es.addEventListener("log", (e) => {
     const lines = JSON.parse(e.data);
@@ -1587,7 +1587,7 @@ function viewOrganizeReview() {
     h("button", { class: "btn primary", type: "button", disabled: !todo || v.applied, onclick: async () => {
       const aside = [sum.duplicates ? plural(sum.duplicates, "duplicate", "duplicates") : "", sum.invalid ? plural(sum.invalid, "broken song", "broken songs") : ""].filter(Boolean);
       const ok = await confirmDialog(t ? "Tidy up now?" : `${moveLabel}?`, [
-        t && t.textFiles.length ? `${plural(t.textFiles.length, "song text is", "song texts are")} fixed.` : "",
+        t?.textFiles.length ? `${plural(t.textFiles.length, "song text is", "song texts are")} fixed.` : "",
         t && t.leftovers.length + t.brokenFolders.length ? `${plural(t.leftovers.length + t.brokenFolders.length, "file or folder goes", "files and folders go")} to ${out}.` : "",
         aside.length ? `${aside.join(" and ")} ${sum.duplicates + sum.invalid === 1 ? "goes" : "go"} to ${out}.` : "",
         sum.toLibrary ? `${plural(sum.toLibrary, "song moves", "songs move")} into ${v.config.library}.` : "",
@@ -1595,14 +1595,14 @@ function viewOrganizeReview() {
         moving && t && fileChanges ? "The song texts and leftover files are handled first. If any song changed since the check, no song folder is moved after that and you see the new plan." : "",
         moving && !(t && fileChanges) ? "If any song changed since the check, no song folder is moved and you see the new plan first." : "",
       ].filter(Boolean), moveLabel);
-      if (ok) startJob("/api/organize/apply", { analysis: v.id });
+      if (ok) void startJob("/api/organize/apply", { analysis: v.id });
     } }, moveLabel),
     h("button", { class: "btn", type: "button", onclick: startAnalysis }, "Check again"),
     h("button", { class: "btn", type: "button", onclick: () => {
       S.view = t ? "options" : "setup";
       S.notice = null;
       render();
-      if (!t) validate();
+      if (!t) void validate();
     } }, "Back"),
   ));
   if (advanced() && songsShown) add(frag, organizeTable(v));
@@ -1636,7 +1636,7 @@ function viewAside() {
       "They go back to where they came from. Nothing is overwritten: an item whose old place is taken stays here.",
       "Every move is recorded, so you can undo it afterwards.",
     ], "Put back");
-    if (ok) startJob("/api/setaside/restore", { library: v.config.library, out: v.config.outDir, items: chosen.map((it) => ({ section: it.section, rel: it.rel })) });
+    if (ok) void startJob("/api/setaside/restore", { library: v.config.library, out: v.config.outDir, items: chosen.map((it) => ({ section: it.section, rel: it.rel })) });
   } }, "Choose what to put back");
   const row = (it) => {
     const note = it.blocked ? it.blocked : !it.exact && advanced() ? `probably goes back to ${it.origin}` : "";
@@ -1676,7 +1676,7 @@ function viewAside() {
       S.view = S.asideFrom === "overview" && S.overview ? "overview" : "setup";
       S.notice = null;
       render();
-      if (S.view === "setup") validate();
+      if (S.view === "setup") void validate();
     } }, "Back")));
   queueMicrotask(update);
   return frag;
@@ -1732,14 +1732,14 @@ function viewCheckReview() {
         stays ? `${plural(stays, "broken song stays", "broken songs stay")}: the song text could not be decoded unambiguously, so its errors may only come from a wrong guess.` : "",
         "This is not part of undo: move a folder back by hand if you want it again.",
       ], "Set them aside");
-      if (go) startJob("/api/check/apply", { analysis: v.id });
+      if (go) void startJob("/api/check/apply", { analysis: v.id });
     } }, `Set aside ${plural(movable.length, "broken song", "broken songs")}…`) : null,
     h("button", { class: movable.length && advanced() ? "btn" : "btn primary", type: "button", onclick: startAnalysis }, "Check again"),
     h("button", { class: "btn", type: "button", onclick: () => {
       S.view = "setup";
       S.notice = null;
       render();
-      validate();
+      void validate();
     } }, "Back"),
   ));
   return frag;
@@ -1801,7 +1801,7 @@ function viewRemoveReview() {
       S.rmKeep.size ? `${plural(S.rmKeep.size, "song stays", "songs stay")} in the library, as you chose.` : "",
       "If any song changed since the check, nothing is moved and you see the new plan first.",
     ].filter(Boolean), `Remove ${plural(k, "song", "songs")}`);
-    if (ok) startJob("/api/remove/apply", { analysis: v.id, keep: [...S.rmKeep] });
+    if (ok) void startJob("/api/remove/apply", { analysis: v.id, keep: [...S.rmKeep] });
   } }, "Remove");
   queueMicrotask(update);
   add(frag, h("div", { class: "actions" },
@@ -1811,7 +1811,7 @@ function viewRemoveReview() {
       S.view = "setup";
       S.notice = null;
       render();
-      validate();
+      void validate();
     } }, "Back"),
   ));
   return frag;
@@ -1894,7 +1894,7 @@ function viewDone() {
     S.view = "setup";
     S.notice = null;
     render();
-    validate();
+    void validate();
   } }, "Back to the Main Menu");
   const reports = d.cfg ? h("button", { class: "btn", type: "button", onclick: () => openReports(d.cfg) }, "Read the reports") : null;
   if (d.kind === "organize" && j.result?.tidy) {
@@ -1929,11 +1929,11 @@ function viewDone() {
       st.moved && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Undo this run") : null,
       h("button", { class: "btn", type: "button", onclick: () => {
         if (S.aside) {
-          loadAside();
+          void loadAside();
         } else {
           S.view = "setup";
           render();
-          validate();
+          void validate();
         }
       } }, "Back to the list"),
       reports, again));
@@ -1982,15 +1982,23 @@ for (const b of document.querySelectorAll(".switch button")) {
       S.resolved = S.resolveError = S.history = null;
     }
     render();
-    if (S.view === "setup") validate();
+    if (S.view === "setup") void validate();
   });
 }
+
+// The page starts its async steps without waiting for them (void). They catch their own
+// network errors; what else goes wrong in one (a bug in the page) is shown, not lost.
+window.addEventListener("unhandledrejection", (e) => {
+  console.error(e.reason);
+  S.notice = { kind: "bad", title: "Something went wrong in this page", text: String(e.reason?.message ?? e.reason) };
+  render();
+});
 
 async function start() {
   if (!(await loadSystem())) return;
   try {
     const j = await get("/api/job");
-    if (j && j.state === "running") {
+    if (j?.state === "running") {
       S.job = j;
       S.waitingFor = j.id;
       S.view = "running";
@@ -2000,7 +2008,7 @@ async function start() {
   }
   connectEvents();
   render();
-  if (S.view === "setup") validate();
+  if (S.view === "setup") void validate();
 }
 
-start();
+void start();

@@ -68,19 +68,19 @@ func TestMoveIntoCopyIntoConcurrentSameNameDistinctTargets(t *testing.T) {
 		}
 		return names, out
 	}
-	real, _ := run(false)
+	realStats, _ := run(false)
 	dry, _ := run(true)
 	want := []string{"cover.jpg", "cover (2).jpg", "cover (3).jpg"}
 	for _, w := range want {
 		found := false
-		for _, g := range real {
+		for _, g := range realStats {
 			found = found || g == w
 		}
 		if !found {
-			t.Errorf("real run names lack %q: %v", w, real)
+			t.Errorf("real run names lack %q: %v", w, realStats)
 		}
 	}
-	if fmt.Sprint(real) != fmt.Sprint(dry) {
-		t.Errorf("dry-run names differ from the real run:\nreal %v\ndry  %v", real, dry)
+	if fmt.Sprint(realStats) != fmt.Sprint(dry) {
+		t.Errorf("dry-run names differ from the real run:\nreal %v\ndry  %v", realStats, dry)
 	}
 }

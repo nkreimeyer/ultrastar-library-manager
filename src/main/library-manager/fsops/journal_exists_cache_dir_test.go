@@ -69,7 +69,7 @@ func TestExists(t *testing.T) {
 		t.Error("dry run touched the disk")
 	}
 	// Exists cleans the path.
-	if real := New(false); !real.Exists(root + "/./a.txt") {
+	if realOps := New(false); !realOps.Exists(root + "/./a.txt") {
 		t.Error("Exists does not clean its path")
 	}
 }
