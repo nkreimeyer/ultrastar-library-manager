@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-25
+
 ### Fixed
 
 - In the web UI, an unexpected error in one of the page's background steps (checking the folders, starting a job, handling its end) is shown as a notice ("Something went wrong in this page") instead of being lost silently.
@@ -162,7 +164,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Modules fixtxt, cleanup, check (`-k`), fixvideos (`-m`) and fixaudio (`-a`) with dry run (`-n`), one output folder and nothing deleted.
 - Release builds for Linux, Windows and macOS.
 
-[Unreleased]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/nkreimeyer/ultrastar-library-manager/compare/v0.2.2...v0.3.0
