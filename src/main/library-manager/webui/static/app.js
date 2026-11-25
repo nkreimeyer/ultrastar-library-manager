@@ -1207,143 +1207,183 @@ function resultFolders(j) {
   return j.result?.library ? { library: j.result.library, outDir: j.result.outDir } : null;
 }
 
+// What onJobEnd does at the end of each kind of job. Each handler gets the job j and
+// c = { failed(title): the notice of a failed job, tidy: a tidy-up's job }; tidy- kinds are
+// handled as their organize- kind. A handler sets the view (and S.notice only on a
+// failure); onJobEnd renders.
+
+// loadAnalysis fetches the analysis id of kind (organize, check, remove).
+const loadAnalysis = (kind, id) => get(`/api/${kind}/analysis?id=${encodeURIComponent(id)}`);
+
+// stoppedOrFailed is the notice of a job that did not finish: stopped by the user, or failed.
+const stoppedOrFailed = (j, stoppedTitle, failedNotice) => (j.state === "cancelled" ? { kind: "", title: stoppedTitle } : failedNotice);
+
+// organizeDone is the done page of an organize apply; fallback gives the folders when the
+// result names none.
+const organizeDone = (j, fallback) => ({ kind: "organize", job: j, stopped: j.state === "cancelled", cfg: resultFolders(j) || fallback });
+
+// flagDone is the done page of the job kind marked by flag (originals, restore, check,
+// remove), with the folders of its result or else fallback.
+const flagDone = (flag, j, fallback) => ({ kind: "organize", [flag]: true, job: j, stopped: j.state === "cancelled", cfg: resultFolders(j) || fallback });
+
+async function endOrganizeAnalyse(j, c) {
+  S.rem = S.chk = null;
+  if (j.state === "done") {
+    S.org = await loadAnalysis("organize", j.result.analysis);
+    S.open = new Set();
+    S.view = "review";
+  } else {
+    S.view = c.tidy ? "options" : "setup";
+    S.notice = stoppedOrFailed(j, "Stopped. Nothing was changed.", c.failed("The check did not finish"));
+  }
+}
+
+// organizePlanChanged shows the new plan of an apply that stopped before the first move.
+async function organizePlanChanged(j, tidy) {
+  S.org = await loadAnalysis("organize", j.result.analysis);
+  S.view = "review";
+  S.notice = tidy
+    ? { kind: "bad", title: "Something changed since you checked, so no song folders were moved", text: "The song texts and leftover files were taken care of already; audio and video were not worked on yet. Here is the new song plan. Look through it again before you go ahead.", details: advanced() ? j.details : null }
+    : { kind: "bad", title: "Something changed since you checked, so nothing was moved", text: "Here is the new plan. Look through it again before you move anything.", details: advanced() ? j.details : null };
+}
+
+async function endOrganizeApply(j, c) {
+  S.rem = S.chk = null;
+  if (j.state === "done" || j.state === "cancelled") {
+    // From the result: after a reload S.org is not loaded.
+    if (!S.org && j.result?.analysis) S.org = await loadAnalysis("organize", j.result.analysis).catch(() => null);
+    S.done = organizeDone(j, S.org?.config);
+    S.view = "done";
+  } else if (j.result?.planChanged) {
+    await organizePlanChanged(j, c.tidy);
+  } else if (c.tidy && resultFolders(j)) {
+    S.done = organizeDone(j);
+    S.view = "done";
+    S.notice = c.failed("Not everything could be done");
+  } else if (j.stats?.moved && resultFolders(j)) {
+    // Some songs moved before it failed: offer the undo.
+    S.done = organizeDone(j);
+    S.view = "done";
+    S.notice = c.failed("Moving did not finish");
+  } else {
+    // After a reload S.org is not loaded: the result names the analysis. If it is gone
+    // the page shows the setup with the failure, not the error of the load.
+    if (!S.org && j.result?.analysis) S.org = await loadAnalysis("organize", j.result.analysis).catch(() => null);
+    S.view = S.org ? "review" : "setup";
+    S.notice = c.failed("Moving did not finish");
+  }
+}
+
+// endResult shows the result of a job that only reads (overview, export) on its own page.
+function endResult(j, c, key, view, failedTitle) {
+  if (j.state === "done") {
+    S[key] = j.result;
+    S.view = view;
+  } else {
+    S.view = "setup";
+    S.notice = stoppedOrFailed(j, "Stopped.", c.failed(failedTitle));
+  }
+}
+
+function endOriginalsDelete(j, c) {
+  S.done = flagDone("originals", j, S.originals?.config);
+  S.view = "done";
+  if (j.state === "failed") S.notice = c.failed("Not everything could be deleted");
+}
+
+function endRestore(j, c) {
+  S.done = flagDone("restore", j, S.aside?.config);
+  S.view = "done";
+  if (j.state === "failed") S.notice = c.failed("Not everything could be put back");
+}
+
+async function endCheckAnalyse(j, c) {
+  if (j.state === "done") {
+    S.chk = await loadAnalysis("check", j.result.analysis);
+    S.rem = S.org = null;
+    S.open = new Set();
+    S.view = "review";
+  } else {
+    S.view = "setup";
+    S.notice = stoppedOrFailed(j, "Stopped.", c.failed("The check did not finish"));
+  }
+}
+
+function endCheckApply(j, c) {
+  if (j.state === "done" || j.state === "cancelled" || (j.stats?.moved && resultFolders(j))) {
+    S.done = flagDone("check", j, S.chk?.config);
+    S.view = "done";
+    if (j.state === "failed") S.notice = c.failed("Not everything could be done");
+  } else {
+    S.view = S.chk ? "review" : "setup";
+    S.notice = c.failed("The check did not finish");
+  }
+}
+
+async function endRemoveAnalyse(j, c) {
+  if (j.state === "done") {
+    S.rem = await loadAnalysis("remove", j.result.analysis);
+    S.org = S.chk = null;
+    S.open = new Set();
+    S.rmKeep = new Set();
+    S.view = "review";
+  } else {
+    S.view = "setup";
+    S.notice = stoppedOrFailed(j, "Stopped. Nothing was changed.", c.failed("The check did not finish"));
+  }
+}
+
+async function endRemoveApply(j, c) {
+  if (j.state === "done" || j.state === "cancelled") {
+    S.done = flagDone("remove", j, S.rem?.config);
+    S.view = "done";
+  } else if (j.result?.planChanged) {
+    S.rem = await loadAnalysis("remove", j.result.analysis);
+    S.rmKeep = new Set();
+    S.view = "review";
+    S.notice = { kind: "bad", title: "Something changed since you checked, so nothing was moved", text: "Here is the new plan. Look through it again before you remove anything.", details: advanced() ? j.details : null };
+  } else if (j.stats?.moved && resultFolders(j)) {
+    S.done = { kind: "organize", remove: true, job: j, stopped: false, cfg: resultFolders(j) };
+    S.view = "done";
+    S.notice = c.failed("Removing did not finish");
+  } else {
+    S.view = S.rem ? "review" : "setup";
+    S.notice = c.failed("Removing did not finish");
+  }
+}
+
+function endUndo(j, c) {
+  // Never the folders of an earlier result: a retry must undo the same journal.
+  S.done = { kind: "undo", job: j, cfg: resultFolders(j) };
+  S.view = "done";
+  if (j.state === "failed") S.notice = c.failed("Undo did not finish");
+}
+
+// A Map, not an object: a kind such as "constructor" must find no handler.
+const JOB_END = new Map([
+  ["organize-analyse", endOrganizeAnalyse],
+  ["organize-apply", endOrganizeApply],
+  ["overview", (j, c) => endResult(j, c, "overview", "overview", "Counting did not finish")],
+  ["export", (j, c) => endResult(j, c, "exported", "exported", "The export did not finish")],
+  ["originals-delete", endOriginalsDelete],
+  ["setaside-restore", endRestore],
+  ["check-analyse", endCheckAnalyse],
+  ["check-apply", endCheckApply],
+  ["remove-analyse", endRemoveAnalyse],
+  ["remove-apply", endRemoveApply],
+  ["organize-undo", endUndo],
+]);
+
 async function onJobEnd(j) {
+  // Marked before the first await: a second event for the job is ignored meanwhile.
   if (S.handled.has(j.id)) return;
   S.handled.add(j.id);
   S.waitingFor = null;
-  const failed = (title) => ({ kind: "bad", title, text: j.error, details: j.details });
-  const tidy = isTidyJob(j);
+  const c = { failed: (title) => ({ kind: "bad", title, text: j.error, details: j.details }), tidy: isTidyJob(j) };
   try {
-    switch (j.kind.replace(/^tidy-/, "organize-")) {
-      case "organize-analyse":
-        S.rem = S.chk = null;
-        if (j.state === "done") {
-          S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`);
-          S.open = new Set();
-          S.view = "review";
-        } else {
-          S.view = tidy ? "options" : "setup";
-          S.notice = j.state === "cancelled" ? { kind: "", title: "Stopped. Nothing was changed." } : failed("The check did not finish");
-        }
-        break;
-      case "organize-apply":
-        S.rem = S.chk = null;
-        if (j.state === "done" || j.state === "cancelled") {
-          // From the result: after a reload S.org is not loaded.
-          if (!S.org && j.result?.analysis) S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`).catch(() => null);
-          S.done = { kind: "organize", job: j, stopped: j.state === "cancelled", cfg: resultFolders(j) || S.org?.config };
-          S.view = "done";
-        } else if (j.result?.planChanged) {
-          S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`);
-          S.view = "review";
-          S.notice = tidy
-            ? { kind: "bad", title: "Something changed since you checked, so no song folders were moved", text: "The song texts and leftover files were taken care of already; audio and video were not worked on yet. Here is the new song plan. Look through it again before you go ahead.", details: advanced() ? j.details : null }
-            : { kind: "bad", title: "Something changed since you checked, so nothing was moved", text: "Here is the new plan. Look through it again before you move anything.", details: advanced() ? j.details : null };
-        } else if (tidy && resultFolders(j)) {
-          S.done = { kind: "organize", job: j, stopped: false, cfg: resultFolders(j) };
-          S.view = "done";
-          S.notice = failed("Not everything could be done");
-        } else if (j.stats?.moved && resultFolders(j)) {
-          // Some songs moved before it failed: offer the undo.
-          S.done = { kind: "organize", job: j, stopped: false, cfg: resultFolders(j) };
-          S.view = "done";
-          S.notice = failed("Moving did not finish");
-        } else {
-          // After a reload S.org is not loaded: the result names the analysis. If it is gone
-          // the page shows the setup with the failure, not the error of the load.
-          if (!S.org && j.result?.analysis) S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`).catch(() => null);
-          S.view = S.org ? "review" : "setup";
-          S.notice = failed("Moving did not finish");
-        }
-        break;
-      case "overview":
-        if (j.state === "done") {
-          S.overview = j.result;
-          S.view = "overview";
-        } else {
-          S.view = "setup";
-          S.notice = j.state === "cancelled" ? { kind: "", title: "Stopped." } : failed("Counting did not finish");
-        }
-        break;
-      case "export":
-        if (j.state === "done") {
-          S.exported = j.result;
-          S.view = "exported";
-        } else {
-          S.view = "setup";
-          S.notice = j.state === "cancelled" ? { kind: "", title: "Stopped." } : failed("The export did not finish");
-        }
-        break;
-      case "originals-delete":
-        S.done = { kind: "organize", originals: true, job: j, stopped: j.state === "cancelled", cfg: resultFolders(j) || S.originals?.config };
-        S.view = "done";
-        if (j.state === "failed") S.notice = failed("Not everything could be deleted");
-        break;
-      case "setaside-restore":
-        S.done = { kind: "organize", restore: true, job: j, stopped: j.state === "cancelled", cfg: resultFolders(j) || S.aside?.config };
-        S.view = "done";
-        if (j.state === "failed") S.notice = failed("Not everything could be put back");
-        break;
-      case "check-analyse":
-        if (j.state === "done") {
-          S.chk = await get(`/api/check/analysis?id=${encodeURIComponent(j.result.analysis)}`);
-          S.rem = S.org = null;
-          S.open = new Set();
-          S.view = "review";
-        } else {
-          S.view = "setup";
-          S.notice = j.state === "cancelled" ? { kind: "", title: "Stopped." } : failed("The check did not finish");
-        }
-        break;
-      case "check-apply":
-        if (j.state === "done" || j.state === "cancelled" || (j.stats?.moved && resultFolders(j))) {
-          S.done = { kind: "organize", check: true, job: j, stopped: j.state === "cancelled", cfg: resultFolders(j) || S.chk?.config };
-          S.view = "done";
-          if (j.state === "failed") S.notice = failed("Not everything could be done");
-        } else {
-          S.view = S.chk ? "review" : "setup";
-          S.notice = failed("The check did not finish");
-        }
-        break;
-      case "remove-analyse":
-        if (j.state === "done") {
-          S.rem = await get(`/api/remove/analysis?id=${encodeURIComponent(j.result.analysis)}`);
-          S.org = S.chk = null;
-          S.open = new Set();
-          S.rmKeep = new Set();
-          S.view = "review";
-        } else {
-          S.view = "setup";
-          S.notice = j.state === "cancelled" ? { kind: "", title: "Stopped. Nothing was changed." } : failed("The check did not finish");
-        }
-        break;
-      case "remove-apply":
-        if (j.state === "done" || j.state === "cancelled") {
-          S.done = { kind: "organize", remove: true, job: j, stopped: j.state === "cancelled", cfg: resultFolders(j) || S.rem?.config };
-          S.view = "done";
-        } else if (j.result?.planChanged) {
-          S.rem = await get(`/api/remove/analysis?id=${encodeURIComponent(j.result.analysis)}`);
-          S.rmKeep = new Set();
-          S.view = "review";
-          S.notice = { kind: "bad", title: "Something changed since you checked, so nothing was moved", text: "Here is the new plan. Look through it again before you remove anything.", details: advanced() ? j.details : null };
-        } else if (j.stats?.moved && resultFolders(j)) {
-          S.done = { kind: "organize", remove: true, job: j, stopped: false, cfg: resultFolders(j) };
-          S.view = "done";
-          S.notice = failed("Removing did not finish");
-        } else {
-          S.view = S.rem ? "review" : "setup";
-          S.notice = failed("Removing did not finish");
-        }
-        break;
-      case "organize-undo":
-        // Never the folders of an earlier result: a retry must undo the same journal.
-        S.done = { kind: "undo", job: j, cfg: resultFolders(j) };
-        S.view = "done";
-        if (j.state === "failed") S.notice = failed("Undo did not finish");
-        break;
-      default:
-        S.view = "setup";
-    }
+    const end = JOB_END.get(j.kind.replace(/^tidy-/, "organize-"));
+    if (end) await end(j, c);
+    else S.view = "setup";
     render();
   } catch (e) {
     S.view = "setup";
