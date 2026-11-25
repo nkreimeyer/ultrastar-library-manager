@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - In the web UI, an unexpected error in one of the page's background steps (checking the folders, starting a job, handling its end) is shown as a notice ("Something went wrong in this page") instead of being lost silently.
+- In the web UI, a run that went through but could not move some songs (or an undo that could not move some back) is no longer titled "Done" or "Undone": it says "Not everything could be done" or "Not everything could be moved back".
+- In the web UI, a run stopped before it moved anything says "No song folder was moved" instead of offering an undo that is not there; a stopped removal says "removed", and a single folder is "it".
+- In the web UI, "Back to the list" after putting songs back, and "Look at what is set aside" on the overview, list the library just worked on, not the one the main menu's form holds.
+- In the web UI, a failed move whose plan cannot be loaded again after a page reload still says "Moving did not finish".
 
 ## [0.4.0] - 2026-11-23
 

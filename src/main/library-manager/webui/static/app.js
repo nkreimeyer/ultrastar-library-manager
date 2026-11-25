@@ -216,7 +216,7 @@ function loadForm() {
 const S = {
   mode: localStorage.getItem("lm-mode") === "advanced" ? "advanced" : "easy",
   // A task of the advanced mode is not offered, so not remembered, in the easy mode.
-  task: TASKS[localStorage.getItem("lm-task")] && (localStorage.getItem("lm-mode") === "advanced" || !TASKS[localStorage.getItem("lm-task")].advanced) ? localStorage.getItem("lm-task") : "dedupe",
+  task: Object.hasOwn(TASKS, localStorage.getItem("lm-task") ?? "") && (localStorage.getItem("lm-mode") === "advanced" || !TASKS[localStorage.getItem("lm-task")].advanced) ? localStorage.getItem("lm-task") : "dedupe",
   f: loadForm(),
   sys: null,
   view: "setup", // setup | options (tidy-up) | running | review | done
@@ -753,7 +753,7 @@ function viewSetup() {
       render();
       window.scrollTo(0, 0);
     } }, "Next")
-    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: S.task === "restore" ? loadAside : S.task === "reports" ? () => openReports(organizeRequest()) : S.task === "originals" ? () => openOriginals(organizeRequest()) : S.task === "overview" ? () => startJob("/api/overview", organizeRequest()) : S.task === "export" ? () => startJob("/api/export", organizeRequest()) : startAnalysis },
+    : h("button", { class: "btn primary", id: "start", type: "button", disabled: true, onclick: S.task === "restore" ? () => loadAside() : S.task === "reports" ? () => openReports(organizeRequest()) : S.task === "originals" ? () => openOriginals(organizeRequest()) : S.task === "overview" ? () => startJob("/api/overview", organizeRequest()) : S.task === "export" ? () => startJob("/api/export", organizeRequest()) : startAnalysis },
       S.task === "export" ? "Export" : S.task === "check" ? "Check songs" : S.task === "restore" ? "Look" : S.task === "reports" ? "Show reports" : S.task === "originals" ? "Look" : S.task === "overview" ? "Count songs" : "Check first"),
   h("span", { class: "muted small" }, S.task === "dedupe" ? "Next you choose what to tidy up."
     : S.task === "check" ? "Nothing in the library is changed. It can take a while for a big library."
@@ -799,7 +799,8 @@ async function startJob(path, body) {
 }
 
 // loadAside lists what is set aside for the restore task and shows the browser.
-async function loadAside() {
+// req names the library and output folder; without it they come from the form.
+async function loadAside(req) {
   if (S.view === "setup" || S.view === "overview") S.asideFrom = S.view;
   const btn = document.getElementById("start");
   if (btn) {
@@ -807,7 +808,7 @@ async function loadAside() {
     btn.textContent = "Looking…";
   }
   try {
-    S.aside = await post("/api/setaside/list", organizeRequest());
+    S.aside = await post("/api/setaside/list", req || organizeRequest());
     rememberLibrary(S.aside.config.library);
     S.pick = new Set();
     S.open = new Set();
@@ -883,7 +884,7 @@ function viewOverview() {
     aside.length ? h("button", { class: "btn", type: "button", onclick: () => {
       S.task = "restore";
       localStorage.setItem("lm-task", "restore");
-      void loadAside();
+      void loadAside({ library: o.library, out: o.outDir });
     } }, "Look at what is set aside") : null,
     h("button", { class: "btn", type: "button", onclick: () => startJob("/api/overview", { library: o.library, out: o.outDir }) }, "Count again"),
     h("button", { class: "btn", type: "button", onclick: () => {
@@ -1248,8 +1249,9 @@ async function onJobEnd(j) {
           S.view = "done";
           S.notice = failed("Moving did not finish");
         } else {
-          // After a reload S.org is not loaded: the result names the analysis.
-          if (!S.org && j.result?.analysis) S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`);
+          // After a reload S.org is not loaded: the result names the analysis. If it is gone
+          // the page shows the setup with the failure, not the error of the load.
+          if (!S.org && j.result?.analysis) S.org = await get(`/api/organize/analysis?id=${encodeURIComponent(j.result.analysis)}`).catch(() => null);
           S.view = S.org ? "review" : "setup";
           S.notice = failed("Moving did not finish");
         }
@@ -1671,7 +1673,7 @@ function viewAside() {
   }
   if (tally.childNodes.length) add(frag, tally);
   add(frag, h("div", { class: "actions" }, go,
-    h("button", { class: "btn", type: "button", onclick: loadAside }, "Look again"),
+    h("button", { class: "btn", type: "button", onclick: () => loadAside() }, "Look again"),
     h("button", { class: "btn", type: "button", onclick: () => {
       S.view = S.asideFrom === "overview" && S.overview ? "overview" : "setup";
       S.notice = null;
@@ -1874,14 +1876,19 @@ function organizeTable(v) {
 // ---------------------------------------------------------------- done
 
 // doneTitle is the heading of the done page of an organize, remove or check apply: a job
-// that failed was not stopped by the user.
-const doneTitle = (d) => d.stopped ? "Stopped part-way" : d.job.state === "done" ? "Done" : "Not everything could be done";
+// that failed was not stopped by the user, and one that went through with failed moves
+// (counted, not an error) did not do everything either.
+const doneTitle = (d) => d.stopped ? "Stopped part-way" : d.job.state === "done" && !d.job.stats?.failed ? "Done" : "Not everything could be done";
 
 // movedText says what an organize or remove apply moved.
 function movedText(d) {
   const st = d.job.stats || {};
-  if (d.stopped) return `${plural(st.moved, "song folder was", "song folders were")} moved before you stopped. Undo puts them back.`;
-  if (d.job.state !== "done") return `${plural(st.moved, "song folder was", "song folders were")} ${d.remove ? "removed" : "moved"} before the run broke off. Undo puts them back.`;
+  const verb = d.remove ? "removed" : "moved";
+  if (d.stopped || d.job.state !== "done") {
+    const when = d.stopped ? "before you stopped" : "before the run broke off";
+    if (!st.moved) return `No song folder was ${verb} ${when}.`;
+    return `${plural(st.moved, "song folder was", "song folders were")} ${verb} ${when}. Undo puts ${st.moved === 1 ? "it" : "them"} back.`;
+  }
   return d.remove ? `${plural(st.moved, "song folder", "song folders")} removed from the library.` : `${plural(st.moved, "song folder", "song folders")} moved.`;
 }
 
@@ -1941,7 +1948,7 @@ function restoreFailedNotice(n) {
 // backToListButton goes back to the list of set-aside items (it keeps the notice).
 const backToListButton = () => h("button", { class: "btn", type: "button", onclick: () => {
   if (S.aside) {
-    void loadAside();
+    void loadAside({ library: S.aside.config.library, out: S.aside.config.outDir });
   } else {
     S.view = "setup";
     render();
@@ -1983,7 +1990,9 @@ function doneOrganize(frag, { d, st, again, reports }) {
 
 function doneUndo(frag, { d, j, st, again, reports }) {
   const stopped = j.state === "cancelled";
-  const title = j.state === "done" ? "Undone" : stopped ? "Stopped part-way" : "Undo did not finish";
+  let title = "Undo did not finish";
+  if (stopped) title = "Stopped part-way";
+  else if (j.state === "done") title = st.failed ? "Not everything could be moved back" : "Undone";
   add(frag, h("h1", null, title));
   add(frag, noticeBox(S.notice));
   add(frag, h("p", null, `${plural(st.moved, "song folder is", "song folders are")} back where ${st.moved === 1 ? "it was" : "they were"}.`

@@ -321,4 +321,7 @@ module.exports = [
     await env.click(btn);
     return sent(env).filter((r) => r.url === "/api/organize/undo");
   } })),
+  // Stopped before the first move: nothing to undo, so no undo sentence.
+  { name: "organize stopped before any move", run: (env) => page(env, org("cancelled", { moved: 0 })) },
+  { name: "remove stopped before any move", run: (env) => page(env, org("cancelled", { moved: 0 }, { remove: true })) },
 ];

@@ -1,0 +1,3 @@
+{
+"look at what is set aside lists the counted library": {"task":"restore","stored":"restore","requests":[{"method":"POST","url":"/api/setaside/list","body":{"library":"/counted/lib","out":"/counted/out"}}]}
+}
