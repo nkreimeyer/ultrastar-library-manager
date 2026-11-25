@@ -1885,6 +1885,120 @@ function movedText(d) {
   return d.remove ? `${plural(st.moved, "song folder", "song folders")} removed from the library.` : `${plural(st.moved, "song folder", "song folders")} moved.`;
 }
 
+// logHint points to the log under a failure notice.
+const logHint = () => (advanced() ? "The log below says why." : "Switch to Advanced to see the log.");
+
+// undoButton undoes the run of the done object d, with its folders when clicked.
+const undoButton = (d, label) => h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, label);
+
+// doneVariant names the done page of d: the first that fits, in this order.
+function doneVariant(d) {
+  if (d.kind === "organize" && d.job.result?.tidy) return "tidy";
+  if (d.originals) return "originals";
+  if (d.restore) return "restore";
+  if (d.check) return "check";
+  if (d.kind === "organize") return "organize";
+  if (d.kind === "undo") return "undo";
+  return null;
+}
+
+// The done pages. Each adds its part to frag; p holds the done object d, its job j, the
+// job's stats st, and the buttons all pages share (again: back to the main menu; reports:
+// the report viewer, null without folders).
+function doneTidy(frag, { d, j, st, again, reports }) {
+  const steps = j.result.steps || [];
+  const songsMoved = steps.find((s) => s.step === "songs")?.stats.moved || 0;
+  add(frag, h("h1", null, doneTitle(d)));
+  add(frag, noticeBox(S.notice));
+  const lines = steps.flatMap((s) => (STEP_DONE[s.step]?.(s.stats) || []).filter(Boolean));
+  if (lines.length) add(frag, h("ul", { class: "done-list" }, lines.map((l) => h("li", null, l))));
+  else if (j.state === "done") add(frag, h("p", null, "Nothing needed to be changed."));
+  const errors = steps.filter((s) => s.error);
+  if (errors.length && !S.notice) add(frag, noticeBox({ kind: "bad", title: `${plural(errors.length, "step", "steps")} did not finish`, details: errors.map((s) => `${PHASES[s.step] || s.step}: ${s.error}`) }));
+  if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "file or folder", "files or folders")} could not be worked on`, text: logHint() }));
+  if (d.stopped) add(frag, h("p", null, "Run the tidy-up again to finish the rest: what is done already is skipped."));
+  if (d.cfg) add(frag, h("p", null, "Set-aside songs and files are in ", h("span", { class: "path" }, d.cfg.outDir), ", together with the reports. Look through them before you delete anything."));
+  add(frag, h("div", { class: "actions" },
+    songsMoved && d.cfg ? undoButton(d, "Put back the set-aside songs") : null,
+    reports, again));
+}
+
+function doneOriginals(frag, { d, st, again }) {
+  add(frag, h("h1", null, d.stopped ? "Stopped part-way" : st.failed ? "Not everything could be deleted" : "Done"));
+  add(frag, noticeBox(S.notice));
+  add(frag, h("p", null, `${plural(st.removed, "backup file", "backup files")} deleted${d.stopped ? " before you stopped" : ""}.`));
+  if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "file", "files")} could not be deleted`, text: logHint() }));
+  add(frag, h("div", { class: "actions" }, again));
+}
+
+// restoreFailedNotice says that n items stayed where they were.
+function restoreFailedNotice(n) {
+  const one = n === 1;
+  return noticeBox({ kind: "bad", title: `${plural(n, "item", "items")} stayed where ${one ? "it was" : "they were"}`,
+    text: `Something was in the way, or it is not known where ${one ? "it" : "they"} came from.${advanced() ? " The log below says which." : " Switch to Advanced to see the log."}` });
+}
+
+// backToListButton goes back to the list of set-aside items (it keeps the notice).
+const backToListButton = () => h("button", { class: "btn", type: "button", onclick: () => {
+  if (S.aside) {
+    void loadAside();
+  } else {
+    S.view = "setup";
+    render();
+    void validate();
+  }
+} }, "Back to the list");
+
+function doneRestore(frag, { d, j, st, again, reports }) {
+  const allBack = j.state === "done" && !st.failed;
+  add(frag, h("h1", null, d.stopped ? "Stopped part-way" : allBack ? "Done" : "Not everything could be put back"));
+  add(frag, noticeBox(S.notice));
+  add(frag, h("p", null, `${plural(st.moved, "item was", "items were")} put back${d.stopped ? " before you stopped" : ""}.`));
+  if (st.failed) add(frag, restoreFailedNotice(st.failed));
+  add(frag, h("div", { class: "actions" },
+    st.moved && d.cfg ? undoButton(d, "Undo this run") : null,
+    backToListButton(),
+    reports, again));
+}
+
+function doneCheck(frag, { d, st, again, reports }) {
+  add(frag, h("h1", null, doneTitle(d)));
+  add(frag, noticeBox(S.notice));
+  add(frag, h("p", null, `${plural(st.moved, "broken song folder", "broken song folders")} moved to invalid.`));
+  if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "move", "moves")} failed`, text: logHint() }));
+  if (d.cfg) add(frag, h("p", null, "They are in ", h("span", { class: "path" }, joinPath(d.cfg.outDir, "invalid")), ". This cannot be undone with one click: move a folder back by hand if you want it again."));
+  add(frag, h("div", { class: "actions" }, reports, again));
+}
+
+function doneOrganize(frag, { d, st, again, reports }) {
+  add(frag, h("h1", null, doneTitle(d)));
+  add(frag, noticeBox(S.notice));
+  add(frag, h("p", null, movedText(d)));
+  if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "move", "moves")} failed`, text: logHint() }));
+  if (d.cfg) add(frag, h("p", null, d.remove ? "Removed songs are in " : "Set-aside songs are in ", h("span", { class: "path" }, d.remove ? joinPath(d.cfg.outDir, "removed") : d.cfg.outDir), ". Look through them before you delete anything."));
+  add(frag, h("div", { class: "actions" },
+    st.moved && d.cfg ? undoButton(d, "Undo this run") : null,
+    reports, again));
+}
+
+function doneUndo(frag, { d, j, st, again, reports }) {
+  const stopped = j.state === "cancelled";
+  const title = j.state === "done" ? "Undone" : stopped ? "Stopped part-way" : "Undo did not finish";
+  add(frag, h("h1", null, title));
+  add(frag, noticeBox(S.notice));
+  add(frag, h("p", null, `${plural(st.moved, "song folder is", "song folders are")} back where ${st.moved === 1 ? "it was" : "they were"}.`
+    + (stopped ? " Undo again to move back the rest." : "")));
+  if (st.failed) {
+    add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "folder", "folders")} could not be moved back`,
+      text: "If something is in the way, fix it (the log says what) and undo again: folders that are back already are skipped. A folder that is gone is not looked for again." }));
+  }
+  add(frag, h("div", { class: "actions" },
+    (st.failed || stopped) && d.cfg ? undoButton(d, stopped ? "Undo again" : "Try the undo again") : null,
+    reports, again));
+}
+
+const DONE_PAGES = { tidy: doneTidy, originals: doneOriginals, restore: doneRestore, check: doneCheck, organize: doneOrganize, undo: doneUndo };
+
 function viewDone() {
   const d = S.done;
   const j = d.job;
@@ -1897,76 +2011,8 @@ function viewDone() {
     void validate();
   } }, "Back to the Main Menu");
   const reports = d.cfg ? h("button", { class: "btn", type: "button", onclick: () => openReports(d.cfg) }, "Read the reports") : null;
-  if (d.kind === "organize" && j.result?.tidy) {
-    const steps = j.result.steps || [];
-    const songsMoved = steps.find((s) => s.step === "songs")?.stats.moved || 0;
-    add(frag, h("h1", null, d.stopped ? "Stopped part-way" : j.state === "done" ? "Done" : "Not everything could be done"));
-    add(frag, noticeBox(S.notice));
-    const lines = steps.flatMap((s) => (STEP_DONE[s.step]?.(s.stats) || []).filter(Boolean));
-    if (lines.length) add(frag, h("ul", { class: "done-list" }, lines.map((l) => h("li", null, l))));
-    else if (j.state === "done") add(frag, h("p", null, "Nothing needed to be changed."));
-    const errors = steps.filter((s) => s.error);
-    if (errors.length && !S.notice) add(frag, noticeBox({ kind: "bad", title: `${plural(errors.length, "step", "steps")} did not finish`, details: errors.map((s) => `${PHASES[s.step] || s.step}: ${s.error}`) }));
-    if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "file or folder", "files or folders")} could not be worked on`, text: advanced() ? "The log below says why." : "Switch to Advanced to see the log." }));
-    if (d.stopped) add(frag, h("p", null, "Run the tidy-up again to finish the rest: what is done already is skipped."));
-    if (d.cfg) add(frag, h("p", null, "Set-aside songs and files are in ", h("span", { class: "path" }, d.cfg.outDir), ", together with the reports. Look through them before you delete anything."));
-    add(frag, h("div", { class: "actions" },
-      songsMoved && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Put back the set-aside songs") : null,
-      reports, again));
-  } else if (d.originals) {
-    add(frag, h("h1", null, d.stopped ? "Stopped part-way" : st.failed ? "Not everything could be deleted" : "Done"));
-    add(frag, noticeBox(S.notice));
-    add(frag, h("p", null, `${plural(st.removed, "backup file", "backup files")} deleted${d.stopped ? " before you stopped" : ""}.`));
-    if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "file", "files")} could not be deleted`, text: advanced() ? "The log below says why." : "Switch to Advanced to see the log." }));
-    add(frag, h("div", { class: "actions" }, again));
-  } else if (d.restore) {
-    add(frag, h("h1", null, d.stopped ? "Stopped part-way" : j.state === "done" && !st.failed ? "Done" : "Not everything could be put back"));
-    add(frag, noticeBox(S.notice));
-    add(frag, h("p", null, `${plural(st.moved, "item was", "items were")} put back${d.stopped ? " before you stopped" : ""}.`));
-    if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "item", "items")} stayed where ${st.failed === 1 ? "it was" : "they were"}`,
-      text: `Something was in the way, or it is not known where ${st.failed === 1 ? "it" : "they"} came from.${advanced() ? " The log below says which." : " Switch to Advanced to see the log."}` }));
-    add(frag, h("div", { class: "actions" },
-      st.moved && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Undo this run") : null,
-      h("button", { class: "btn", type: "button", onclick: () => {
-        if (S.aside) {
-          void loadAside();
-        } else {
-          S.view = "setup";
-          render();
-          void validate();
-        }
-      } }, "Back to the list"),
-      reports, again));
-  } else if (d.check) {
-    add(frag, h("h1", null, doneTitle(d)));
-    add(frag, noticeBox(S.notice));
-    add(frag, h("p", null, `${plural(st.moved, "broken song folder", "broken song folders")} moved to invalid.`));
-    if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "move", "moves")} failed`, text: advanced() ? "The log below says why." : "Switch to Advanced to see the log." }));
-    if (d.cfg) add(frag, h("p", null, "They are in ", h("span", { class: "path" }, joinPath(d.cfg.outDir, "invalid")), ". This cannot be undone with one click: move a folder back by hand if you want it again."));
-    add(frag, h("div", { class: "actions" }, reports, again));
-  } else if (d.kind === "organize") {
-    add(frag, h("h1", null, doneTitle(d)));
-    add(frag, noticeBox(S.notice));
-    add(frag, h("p", null, movedText(d)));
-    if (st.failed) add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "move", "moves")} failed`, text: advanced() ? "The log below says why." : "Switch to Advanced to see the log." }));
-    if (d.cfg) add(frag, h("p", null, d.remove ? "Removed songs are in " : "Set-aside songs are in ", h("span", { class: "path" }, d.remove ? joinPath(d.cfg.outDir, "removed") : d.cfg.outDir), ". Look through them before you delete anything."));
-    add(frag, h("div", { class: "actions" },
-      st.moved && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, "Undo this run") : null,
-      reports, again));
-  } else if (d.kind === "undo") {
-    const stopped = j.state === "cancelled";
-    add(frag, h("h1", null, j.state === "done" ? "Undone" : stopped ? "Stopped part-way" : "Undo did not finish"));
-    add(frag, noticeBox(S.notice));
-    add(frag, h("p", null, `${plural(st.moved, "song folder is", "song folders are")} back where ${st.moved === 1 ? "it was" : "they were"}.`
-      + (stopped ? " Undo again to move back the rest." : "")));
-    if (st.failed) {
-      add(frag, noticeBox({ kind: "bad", title: `${plural(st.failed, "folder", "folders")} could not be moved back`,
-        text: "If something is in the way, fix it (the log says what) and undo again: folders that are back already are skipped. A folder that is gone is not looked for again." }));
-    }
-    add(frag, h("div", { class: "actions" },
-      (st.failed || stopped) && d.cfg ? h("button", { class: "btn", type: "button", onclick: () => undo(d.cfg.library, d.cfg.outDir) }, stopped ? "Undo again" : "Try the undo again") : null,
-      reports, again));
-  }
+  const page = DONE_PAGES[doneVariant(d)];
+  if (page) page(frag, { d, j, st, again, reports });
   return frag;
 }
 

@@ -86,6 +86,27 @@ func TestAppJSFixes(t *testing.T) {
 	}
 }
 
+// TestAppJSGolden runs testdata/appjs_golden.js against static/app.js (needs node): the
+// pages and state the page builds for each case of testdata/appjs_golden/*.cases.js must
+// equal the stored values in appjs_golden/*.json. After a change the page is meant to
+// show, write them again with
+//
+//	node testdata/appjs_golden.js static/app.js --update
+//
+// and review the diff of the .json files.
+func TestAppJSGolden(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not on PATH")
+	}
+	cmd := exec.Command(node, "testdata/appjs_golden.js", "static/app.js")
+	cmd.Env = append(os.Environ(), "TZ=UTC", "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
+	out, err := cmd.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "ok" {
+		t.Errorf("app.js golden checks: %v\n%s", err, out)
+	}
+}
+
 // Every kind a tally item is given has a color in style.css.
 func TestTallyKindsHaveStyles(t *testing.T) {
 	js, err := os.ReadFile("static/app.js")

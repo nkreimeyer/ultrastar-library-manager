@@ -120,7 +120,11 @@ src/main/library-manager/     Go module github.com/nkreimeyer/library-manager (g
                               static/ (index.html, style.css, app.js, icon.svg: embedded, no build step);
                               appjs_test.go: TestAppJS and TestAppJSFixes run testdata/appjs_check.js and appjs_check_fixes.js
                               with node (skipped without node: app.js in a vm with a fake DOM and fetch), TestAppJSFieldNames
-                              pins the JSON names app.js reads, TestTallyKindsHaveStyles a .kind-<k> color per tally kind
+                              pins the JSON names app.js reads, TestTallyKindsHaveStyles a .kind-<k> color per tally kind;
+                              TestAppJSGolden runs testdata/appjs_golden.js: app.js per case in a fresh vm with a fake DOM,
+                              the cases of appjs_golden/<area>.cases.js (done, jobend, review, setup) compared with
+                              <area>.json (`--update` writes them, `--area` runs one); they pin the behaviour of the
+                              complex view functions, so a refactor of app.js must leave every value as it is
   export/                     the CSV song list (export.go): Collect (discovery, txt read through ops, sorted by FoldString of
                               artist/title), FromTxt (a row from a parsed txt: tags, BPM with a dot, Length = end of the last
                               note via BeatToMs in whole seconds, Duet = IsDuet), WriteCSV (encoding/csv = RFC 4180 quoting,
